@@ -20,7 +20,7 @@ import numpy as np
 from src.models.load_model import load_transformer, load_vae, load_qwenvl
 from src.utils.logger import get_logger
 from src.data.dataset import loader
-from src.data.cache_manager import EmbeddingCacheManager
+from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
 
 
 logger = get_logger(__name__, log_level="INFO")
@@ -43,11 +43,12 @@ class Trainer:
         self.lr_scheduler = None
         self.noise_scheduler = None
         self.global_step = 0
-        self.setup()
+        self.setup_accelerator()
         self.setup_models()
         self.configure_optimizers()
 
-    def setup(self):
+
+    def setup_accelerator(self):
         """初始化加速器和日志配置"""
         logging_dir = os.path.join(self.config.logging.output_dir, self.config.logging.logging_dir)
         accelerator_project_config = ProjectConfiguration(
@@ -111,9 +112,6 @@ class Trainer:
         transformer.add_adapter(lora_config)
         transformer.train()
         transformer.enable_gradient_checkpointing()
-
-        self.models['text_encoder'].to(self.accelerator.device)
-        self.models['vae'].to(self.accelerator.device, dtype=self.weight_dtype)
 
         # 冻结非 LoRA 参数
         self.models['vae'].requires_grad_(False)
@@ -183,18 +181,18 @@ class Trainer:
             sigma = sigma.unsqueeze(-1)
         return sigma
 
-    def encode_image(self, image):
+    def encode_image(self, image, device):
         # 使用 inference_mode() 获得更好的推理性能
         with torch.inference_mode():
             # 使用 autocast 确保 bf16 推理
             with torch.autocast(device_type=self.accelerator.device.type, dtype=self.weight_dtype, enabled=True):
-                pixel_values = image.to(dtype=self.weight_dtype, device=self.accelerator.device, non_blocking=True)
+                pixel_values = image.to(dtype=self.weight_dtype, device=device, non_blocking=True)
                 pixel_values = pixel_values.unsqueeze(2)
                 pixel_latents = self.models['vae'].encode(pixel_values).latent_dist.sample()
                 pixel_latents = pixel_latents.permute(0, 2, 1, 3, 4)
         return pixel_latents
 
-    def encode_prompt(self, prompt:str, prompt_image: np.ndarray)->tuple[torch.Tensor, torch.Tensor]:
+    def encode_prompt(self, prompt:str, prompt_image: np.ndarray, device: str)->tuple[torch.Tensor, torch.Tensor]:
         text_encoding_pipeline = self.models['text_encoder']
         # 使用 inference_mode() 获得更好的推理性能
         with torch.inference_mode():
@@ -205,7 +203,7 @@ class Trainer:
                 prompt_embeds, prompt_embeds_mask = text_encoding_pipeline.encode_prompt(
                         image=prompt_image,
                         prompt=[prompt],
-                        device=text_encoding_pipeline.device,
+                        device=device,
                         num_images_per_prompt=1,
                         max_sequence_length=1024,
                     )
@@ -397,7 +395,7 @@ class Trainer:
 
         # 训练循环
         train_loss = 0.0
-        for epoch in range(1):
+        for epoch in range(self.config.train.num_epochs):
             for step, batch in enumerate(train_dataloader):
                 with self.accelerator.accumulate(self.models['transformer']):
                     loss = self.training_step(batch)
@@ -447,11 +445,45 @@ class Trainer:
         self.accelerator.wait_for_everyone()
         self.accelerator.end_training()
 
+    def cache_step(self, batch, vae_encoder_device,text_encoder_device ):
+        """缓存步骤"""
+        image, control, prompt = batch['image'], batch['control'], batch['prompt']
+        file_hashes = batch['file_hashes']
+        image_hash = file_hashes['image_hash']
+        control_hash = file_hashes['control_hash']
+        prompt_hash = file_hashes['prompt_hash']
+        pixel_latent = self.encode_image(image, vae_encoder_device)
+        control_latent = self.encode_image(control, vae_encoder_device)
+        prompt_embed, prompt_embeds_mask = self.encode_prompt(prompt, control, text_encoder_device)
+        n_samples = pixel_latent.shape[0]
+        for i in range(n_samples):
+            self.cache_manager.save_cache('pixel_latent', image_hash[i], pixel_latent[i])
+            self.cache_manager.save_cache('control_latent', control_hash[i], control_latent[i])
+            self.cache_manager.save_cache('prompt_embed', prompt_hash[i], prompt_embed[i])
+            self.cache_manager.save_cache('prompt_embeds_mask', prompt_hash[i], prompt_embeds_mask[i])
+
+
+    def cache(self, train_dataloader):
+        from tqdm import tqdm
+        self.cache_manager = EmbeddingCacheManager(self.config.cache.cache_dir)
+        vae_encoder_device = self.config.cache.vae_encoder_device
+        text_encoder_device = self.config.cache.text_encoder_device
+        self.models['text_encoder'].to(text_encoder_device)
+        self.models['vae'].to(vae_encoder_device)
+
+        for _, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
+            self.cache_step(batch, vae_encoder_device, text_encoder_device)
+        logger.info(f"Cache completed")
+        self.models['text_encoder'].cpu()
+        self.models['vae'].cpu()
+        # unload models and exit
+        del self.models['text_encoder']
+        del self.models['vae']
+        exit()
+
 
 if __name__ == "__main__":
     config_file = 'configs/qwen_image_edit_config.yaml'
     from src.data.config import load_config_from_yaml
     config = load_config_from_yaml(config_file)
     trainer = Trainer(config)
-    trainer.setup()
-    trainer.setup_models()

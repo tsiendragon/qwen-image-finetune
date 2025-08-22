@@ -42,10 +42,15 @@ train:
   train_batch_size: 1
   gradient_accumulation_steps: 1
   max_train_steps: 3000
+  num_epochs: 3
   checkpointing_steps: 250
   checkpoints_total_limit: 10
   max_grad_norm: 1.0
   mixed_precision: "bf16"
+
+cache:
+  vae_encoder_device: 1
+  text_encoder_device: 2
 
 # Additional training parameters that may be needed
 resume_from_checkpoint: "latest"

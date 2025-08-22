@@ -118,9 +118,9 @@ class OptimizerConfig:
     class_path: str = "torch.optim.AdamW"
     init_args: Dict[str, Any] = field(default_factory=lambda: {
         "lr": 1e-4,
-        "weight_decay": 1e-2,
+        # "weight_decay": 1e-2,
         "betas": [0.9, 0.999],
-        "eps": 1e-8
+        # "eps": 1e-8
     })
 
     def __post_init__(self):
@@ -162,6 +162,7 @@ class TrainConfig:
     train_batch_size: int = 1
     gradient_accumulation_steps: int = 4
     max_train_steps: int = 1000
+    num_epochs: int = 3
     checkpointing_steps: int = 500
     checkpoints_total_limit: Optional[int] = None
     max_grad_norm: float = 1.0
@@ -174,6 +175,7 @@ class TrainConfig:
             "train_batch_size": self.train_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "max_train_steps": self.max_train_steps,
+            "num_epochs": self.num_epochs,
             "checkpointing_steps": self.checkpointing_steps
         }
 
@@ -252,6 +254,7 @@ class Config:
             "train_batch_size": self.train.train_batch_size,
             "gradient_accumulation_steps": self.train.gradient_accumulation_steps,
             "max_train_steps": self.train.max_train_steps,
+            "num_epochs": self.train.num_epochs,
             "checkpointing_steps": self.train.checkpointing_steps,
             "checkpoints_total_limit": self.train.checkpoints_total_limit,
             "max_grad_norm": self.train.max_grad_norm,
@@ -364,6 +367,7 @@ def create_sample_config(output_path: str = "config_sample.yaml") -> None:
             "train_batch_size": 1,
             "gradient_accumulation_steps": 4,
             "max_train_steps": 1000,
+            "num_epochs": 3,
             "checkpointing_steps": 500,
             "checkpoints_total_limit": 3,
             "max_grad_norm": 1.0,

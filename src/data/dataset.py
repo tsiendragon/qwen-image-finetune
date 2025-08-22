@@ -7,7 +7,7 @@ from torchvision import transforms
 import glob
 import importlib
 from typing import Optional, Dict, Any
-from src.data.cache_manager import EmbeddingCacheManager
+from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
 
 
 class ImageDataset(Dataset):
@@ -24,18 +24,21 @@ class ImageDataset(Dataset):
         self.data_config = data_config
         self.dataset_path = data_config.get('dataset_path', './dataset')
         self.image_size = data_config.get('image_size', (512, 512))
-
-        # 缓存相关配置
         self.cache_dir = data_config.get('cache_dir', None)
-        self.use_cache = data_config.get('use_cache', True) and self.cache_dir is not None
+        self.use_cache = data_config.get('use_cache', True)
 
         # 初始化缓存管理器
         if self.use_cache:
+            os.makedirs(self.cache_dir, exist_ok=True)
             self.cache_manager = EmbeddingCacheManager(self.cache_dir)
             print(f"缓存已启用，缓存目录: {self.cache_dir}")
         else:
             self.cache_manager = None
             print("缓存未启用")
+
+        self.cache_exists = check_cache_exists(self.cache_dir)
+
+
 
         # 图像路径 - 支持多种命名方式
         self.images_dir = self._find_images_directory()
@@ -50,7 +53,7 @@ class ImageDataset(Dataset):
         # 扫描所有图像文件
         self.image_files = self._scan_image_files()
 
-        # 图像预处理变换 - 将[img_w, img_h]转换为transforms.Resize期望的(height, width)格式
+        # 图像预处理变换 - 将[img_w, img_h] 转换为transforms.Resize期望的 (height, width) 格式
         if isinstance(self.image_size, (tuple, list)) and len(self.image_size) == 2:
             # 将[img_w, img_h]转换为(img_h, img_w)供PyTorch使用
             resize_size = (self.image_size[1], self.image_size[0])  # (height, width)
@@ -155,17 +158,16 @@ class ImageDataset(Dataset):
         control_image = Image.open(file_info['control']).convert('RGB')
         control_tensor = self.transform(control_image)
 
-        # 如果启用缓存，尝试加载缓存的嵌入
-        if self.use_cache and self.cache_manager:
-            # 生成文件哈希
+        if self.use_cache:
             image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])
             control_hash = self.cache_manager.get_file_hash_for_image(file_info['control'])
             prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt)
 
+        # 如果启用缓存，尝试加载缓存的嵌入
+        if self.cache_exists:
+
             # 检查缓存是否存在
             cached_data = {}
-            cache_complete = True
-
             for cache_type, file_hash in [
                 ('pixel_latent', image_hash),
                 ('control_latent', control_hash),
@@ -173,46 +175,45 @@ class ImageDataset(Dataset):
                 ('prompt_embeds_mask', prompt_hash)
             ]:
                 cached_embedding = self.cache_manager.load_cache(cache_type, file_hash)
-                if cached_embedding is not None:
-                    cached_data[cache_type] = cached_embedding
-                else:
-                    cache_complete = False
+                cached_data[cache_type] = cached_embedding
 
             # 如果所有缓存都存在，返回缓存数据
-            if cache_complete:
-                return {
-                    'cached': True,
-                    'image': image_tensor,
-                    'control': control_tensor,
-                    'pixel_latent': cached_data['pixel_latent'],
-                    'control_latent': cached_data['control_latent'],
-                    'prompt_embed': cached_data['prompt_embed'],
-                    'prompt_embeds_mask': cached_data['prompt_embeds_mask'],
-                    'prompt': prompt,
-                    'file_hashes': {
-                        'image_hash': image_hash,
-                        'control_hash': control_hash,
-                        'prompt_hash': prompt_hash
-                    }
+            data =  {
+                'cached': True,
+                'image': image_tensor,
+                'control': control_tensor,
+                'pixel_latent': cached_data['pixel_latent'],
+                'control_latent': cached_data['control_latent'],
+                'prompt_embed': cached_data['prompt_embed'],
+                'prompt_embeds_mask': cached_data['prompt_embeds_mask'],
+                'prompt': prompt,
+                'file_hashes': {
+                    'image_hash': image_hash,
+                    'control_hash': control_hash,
+                    'prompt_hash': prompt_hash
                 }
-
-        # 如果没有缓存或缓存不完整，返回原始数据
-
-        data =  {
-            'cached': False,
-            'image': image_tensor,
-            'control': control_tensor,
-            'prompt': prompt,
-            'file_paths': file_info,
-        }
-        if self.cache_manager:
-            data['file_hashes'] = {
-                'image_hash': self.cache_manager.get_file_hash_for_image(file_info['image']),
-                'control_hash': self.cache_manager.get_file_hash_for_image(file_info['control']),
-                'prompt_hash': self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt)
             }
-        self.check_none_output(data)
-        return data
+            self.check_none_output(data)
+            return data
+        else:
+
+            # 如果没有缓存或缓存不完整，返回原始数据
+
+            data =  {
+                'cached': False,
+                'image': image_tensor,
+                'control': control_tensor,
+                'prompt': prompt,
+                'file_paths': file_info,
+            }
+            if self.use_cache:
+                data['file_hashes'] = {
+                    'image_hash': image_hash,
+                    'control_hash': control_hash,
+                    'prompt_hash': prompt_hash
+                }
+            self.check_none_output(data)
+            return data
 
     def check_none_output(self, data: dict):
         for k,v in data.items():
@@ -324,3 +325,4 @@ if __name__ == "__main__":
 
         break
     print(batch['cached'])
+    print(batch['file_hashes'])

@@ -11,8 +11,11 @@ def parse_args():
         help="path to config",
     )
     parser.add_argument("--resume", type='str', default=None, help="path to resume checkpoint")
+    parser.add_argument("--cache", action="store_true", help="cache the dataset")
     args = parser.parse_args()
     config = load_config_from_yaml(args.config)
     if args.resume:
         config.resume = args.resume
+    if args.cache:
+        config.cache = True
     return config
