@@ -162,6 +162,8 @@ class ImageDataset(Dataset):
             image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])
             control_hash = self.cache_manager.get_file_hash_for_image(file_info['control'])
             prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt)
+            empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], "empty")
+
 
         # 如果启用缓存，尝试加载缓存的嵌入
         if self.cache_exists:
@@ -172,7 +174,9 @@ class ImageDataset(Dataset):
                 ('pixel_latent', image_hash),
                 ('control_latent', control_hash),
                 ('prompt_embed', prompt_hash),
-                ('prompt_embeds_mask', prompt_hash)
+                ('prompt_embeds_mask', prompt_hash),
+                ('empty_prompt_embed', empty_prompt_hash),
+                ('empty_prompt_embeds_mask', empty_prompt_hash),
             ]:
                 cached_embedding = self.cache_manager.load_cache(cache_type, file_hash)
                 cached_data[cache_type] = cached_embedding
@@ -186,11 +190,14 @@ class ImageDataset(Dataset):
                 'control_latent': cached_data['control_latent'],
                 'prompt_embed': cached_data['prompt_embed'],
                 'prompt_embeds_mask': cached_data['prompt_embeds_mask'],
+                'empty_prompt_embed': cached_data['empty_prompt_embed'],
+                'empty_prompt_embeds_mask': cached_data['empty_prompt_embeds_mask'],
                 'prompt': prompt,
                 'file_hashes': {
                     'image_hash': image_hash,
                     'control_hash': control_hash,
-                    'prompt_hash': prompt_hash
+                    'prompt_hash': prompt_hash,
+                    'empty_prompt_hash': empty_prompt_hash
                 }
             }
             self.check_none_output(data)
@@ -210,7 +217,8 @@ class ImageDataset(Dataset):
                 data['file_hashes'] = {
                     'image_hash': image_hash,
                     'control_hash': control_hash,
-                    'prompt_hash': prompt_hash
+                    'prompt_hash': prompt_hash,
+                    'empty_prompt_hash': empty_prompt_hash
                 }
             self.check_none_output(data)
             return data
@@ -222,39 +230,6 @@ class ImageDataset(Dataset):
                     assert vv is not None, f"value is None for key {kk} in {k}"
             else:
                 assert v is not None, f"value is None for key {k}"
-
-    def save_embeddings_to_cache(self, idx: int, embeddings: Dict[str, torch.Tensor]) -> None:
-        """
-        保存计算出的嵌入到缓存
-        Args:
-            idx: 样本索引
-            embeddings: 包含各种嵌入的字典
-        """
-        if not self.use_cache or not self.cache_manager:
-            return
-
-        file_info = self.image_files[idx]
-
-        # 读取提示文本
-        with open(file_info['caption'], 'r', encoding='utf-8') as f:
-            prompt = f.read().strip()
-
-        # 生成哈希值
-        image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])
-        control_hash = self.cache_manager.get_file_hash_for_image(file_info['control'])
-        prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt)
-
-        # 保存嵌入
-        cache_mappings = {
-            'pixel_latent': image_hash,
-            'control_latent': control_hash,
-            'prompt_embed': prompt_hash,
-            'prompt_embeds_mask': prompt_hash
-        }
-
-        for embedding_type, file_hash in cache_mappings.items():
-            if embedding_type in embeddings:
-                self.cache_manager.save_cache(embedding_type, file_hash, embeddings[embedding_type])
 
     def get_cache_stats(self) -> Optional[Dict[str, int]]:
         """

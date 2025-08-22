@@ -25,12 +25,16 @@ logging:
   tracker_project_name: "lora_test"
 
 optimizer:
-  class_path: "torch.optim.AdamW"
+  class_path: bnb.optim.Adam8bit
   init_args:
     lr: 0.0002
-    weight_decay: 0.01
     betas: [0.9, 0.999]
-    eps: 1e-8
+  # class_path: "torch.optim.AdamW"
+  # init_args:
+  #   lr: 0.0002
+  #   weight_decay: 0.01
+  #   betas: [0.9, 0.999]
+  #   eps: 1e-8
 
 lr_scheduler:
   scheduler_type: "constant_with_warmup"

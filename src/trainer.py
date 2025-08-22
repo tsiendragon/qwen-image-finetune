@@ -5,6 +5,8 @@ import torch
 from tqdm.auto import tqdm
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
+from diffusers.loaders import AttnProcsLayers
+
 from diffusers import FlowMatchEulerDiscreteScheduler, QwenImagePipeline
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
@@ -33,6 +35,23 @@ def calculate_dimensions(target_area, ratio):
     height = round(height / 32) * 32
 
     return width, height, None
+
+def lora_processors(model):
+    processors = {}
+
+    def fn_recursive_add_processors(name: str, module: torch.nn.Module, processors):
+        if 'lora' in name:
+            processors[name] = module
+            print(name)
+        for sub_name, child in module.named_children():
+            fn_recursive_add_processors(f"{name}.{sub_name}", child, processors)
+
+        return processors
+
+    for name, module in model.named_children():
+        fn_recursive_add_processors(name, module, processors)
+
+    return processors
 
 class Trainer:
     def __init__(self, config):
@@ -363,8 +382,10 @@ class Trainer:
     def fit(self, train_dataloader):
         """主训练循环"""
         # 准备模型和优化器
-        transformer, optimizer, _, lr_scheduler = self.accelerator.prepare(
-            self.models['transformer'], self.optimizer, train_dataloader, self.lr_scheduler
+        lora_layers_model = AttnProcsLayers(lora_processors(self.models['transformer']))
+
+        lora_layers_model, optimizer, _, lr_scheduler = self.accelerator.prepare(
+            lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
         )
         self.models['transformer'] = transformer
         self.optimizer = optimizer
