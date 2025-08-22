@@ -9,10 +9,6 @@ from trainer import Trainer
 logger = get_logger(__name__, log_level="INFO")
 
 
-
-
-
-
 def main():
     """使用模块化的 Trainer 类进行训练"""
     # 解析配置
@@ -33,9 +29,11 @@ def main():
 
     # 加载数据
     train_dataloader = loader(**config.data.init_args)
-
-    # 开始训练
-    trainer.fit(train_dataloader)
+    if config.cache:
+        trainer.cache(train_dataloader)
+    else:
+        # 开始训练
+        trainer.fit(train_dataloader)
 
 
 if __name__ == "__main__":

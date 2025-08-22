@@ -74,7 +74,7 @@ class EmbeddingCacheManager:
             data: 要缓存的张量数据
         """
         cache_path = self._get_cache_path(cache_type, file_hash)
-        torch.save(data.cpu(), cache_path)
+        torch.save(data.cpu().to(torch.float16), cache_path)
 
     def load_cache(self, cache_type: str, file_hash: str) -> Optional[torch.Tensor]:
         """
