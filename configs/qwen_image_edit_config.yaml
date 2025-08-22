@@ -1,0 +1,48 @@
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
+  rank: 16
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+
+data:
+  class_path: "src.data.dataset.ImageDataset"
+  init_args:
+    dataset_path: "/data/kyc_gen/id_card/images"
+    image_size: [832, 576]
+    cache_dir: "/data/lilong/experiment/id_card_qwen_image_lora/cache"
+    use_cache: true
+
+logging:
+  output_dir: "/data/lilong/experiment/id_card_qwen_image_lora"
+  logging_dir: "logs"
+  report_to: "tensorboard"
+  tracker_project_name: "lora_test"
+
+optimizer:
+  class_path: "torch.optim.AdamW"
+  init_args:
+    lr: 0.0002
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+    eps: 1e-8
+
+lr_scheduler:
+  scheduler_type: "constant_with_warmup"
+  warmup_steps: 10
+  num_cycles: 0.5
+  power: 1.0
+
+train:
+  train_batch_size: 1
+  gradient_accumulation_steps: 1
+  max_train_steps: 3000
+  checkpointing_steps: 250
+  checkpoints_total_limit: 10
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+
+# Additional training parameters that may be needed
+resume_from_checkpoint: "latest"
