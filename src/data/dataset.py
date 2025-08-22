@@ -147,6 +147,13 @@ class ImageDataset(Dataset):
         with open(file_info['caption'], 'r', encoding='utf-8') as f:
             prompt = f.read().strip()
 
+        image = Image.open(file_info['image']).convert('RGB')
+        image_tensor = self.transform(image)
+
+        # 加载控制图像
+        control_image = Image.open(file_info['control']).convert('RGB')
+        control_tensor = self.transform(control_image)
+
         # 如果启用缓存，尝试加载缓存的嵌入
         if self.use_cache and self.cache_manager:
             # 生成文件哈希
@@ -174,6 +181,8 @@ class ImageDataset(Dataset):
             if cache_complete:
                 return {
                     'cached': True,
+                    'image': image_tensor,
+                    'control': control_tensor,
                     'pixel_latent': cached_data['pixel_latent'],
                     'control_latent': cached_data['control_latent'],
                     'prompt_embed': cached_data['prompt_embed'],
@@ -187,25 +196,30 @@ class ImageDataset(Dataset):
                 }
 
         # 如果没有缓存或缓存不完整，返回原始数据
-        image = Image.open(file_info['image']).convert('RGB')
-        image_tensor = self.transform(image)
 
-        # 加载控制图像
-        control_image = Image.open(file_info['control']).convert('RGB')
-        control_tensor = self.transform(control_image)
-
-        return {
+        data =  {
             'cached': False,
             'image': image_tensor,
             'control': control_tensor,
             'prompt': prompt,
             'file_paths': file_info,
-            'file_hashes': {
-                'image_hash': self.cache_manager.get_file_hash_for_image(file_info['image']) if self.cache_manager else None,
-                'control_hash': self.cache_manager.get_file_hash_for_image(file_info['control']) if self.cache_manager else None,
-                'prompt_hash': self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt) if self.cache_manager else None
-            }
         }
+        if self.cache_manager:
+            data['file_hashes'] = {
+                'image_hash': self.cache_manager.get_file_hash_for_image(file_info['image']),
+                'control_hash': self.cache_manager.get_file_hash_for_image(file_info['control']),
+                'prompt_hash': self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt)
+            }
+        self.check_none_output(data)
+        return data
+
+    def check_none_output(self, data: dict):
+        for k,v in data.items():
+            if isinstance(v, dict):
+                for kk, vv in v.items():
+                    assert vv is not None, f"value is None for key {kk} in {k}"
+            else:
+                assert v is not None, f"value is None for key {k}"
 
     def save_embeddings_to_cache(self, idx: int, embeddings: Dict[str, torch.Tensor]) -> None:
         """
@@ -293,7 +307,7 @@ if __name__ == "__main__":
         'dataset_path': '/data/kyc_gen/id_card/',
         'image_size': (512, 312)
     }
-    dataloader = loader(data_config)
+    dataloader = loader(**data_config)
     for batch in dataloader:
         for k, v in batch.items():
             if isinstance(v, torch.Tensor):
