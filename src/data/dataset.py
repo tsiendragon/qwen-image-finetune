@@ -5,8 +5,9 @@ from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 import glob
+import importlib
 from typing import Optional, Dict, Any
-from .cache_manager import EmbeddingCacheManager
+from src.data.cache_manager import EmbeddingCacheManager
 
 
 class ImageDataset(Dataset):
@@ -265,34 +266,34 @@ class ImageDataset(Dataset):
         return None
 
 
-def loader(dataset_path: str,
-          image_size: tuple = (832, 576),
-          batch_size: int = 1,
-          num_workers: int = 0,
-          cache_dir: Optional[str] = None,
-          use_cache: bool = True,
-          shuffle: bool = True) -> DataLoader:
+def loader(
+        class_path: str,
+        init_args: dict,
+        batch_size: int = 1,
+        num_workers: int = 0,
+        shuffle: bool = True) -> DataLoader:
     """
-    创建数据加载器
+    动态加载数据集类并创建DataLoader
     Args:
-        dataset_path: 数据集路径
-        image_size: 图像尺寸
-        batch_size: 批量大小
-        num_workers: 工作进程数
-        cache_dir: 缓存目录路径
-        use_cache: 是否使用缓存
+        class_path: 类的完整路径，如 'src.data.dataset.ImageDataset'
+        init_args: 用于初始化数据集类的参数字典
+        batch_size: 批次大小
+        num_workers: 数据加载的工作进程数
         shuffle: 是否打乱数据
     Returns:
-        DataLoader 实例
+        DataLoader对象
     """
-    data_config = {
-        'dataset_path': dataset_path,
-        'image_size': image_size,
-        'cache_dir': cache_dir,
-        'use_cache': use_cache
-    }
+    # 解析类路径
+    module_path, class_name = class_path.rsplit('.', 1)
 
-    dataset = ImageDataset(data_config)
+    # 动态导入模块
+    module = importlib.import_module(module_path)
+
+    # 获取类对象
+    dataset_class = getattr(module, class_name)
+
+    # 使用init_args实例化类
+    dataset = dataset_class(init_args)
 
     return DataLoader(
         dataset,
@@ -303,14 +304,23 @@ def loader(dataset_path: str,
     )
 
 if __name__ == "__main__":
-    data_config = {
-        'dataset_path': '/data/kyc_gen/id_card/',
-        'image_size': (512, 312)
-    }
-    dataloader = loader(**data_config)
+    from src.data.config import load_config_from_yaml
+    config_file = 'configs/qwen_image_edit_config.yaml'
+    config = load_config_from_yaml(config_file)
+    data_config = config.data
+    dataloader = loader(
+        data_config.class_path,
+        data_config.init_args,
+        data_config.batch_size,
+        data_config.num_workers,
+        data_config.shuffle
+    )
     for batch in dataloader:
         for k, v in batch.items():
             if isinstance(v, torch.Tensor):
                 print(k, v.shape)
             else:
                 print(k, v)
+
+        break
+    print(batch['cached'])

@@ -15,10 +15,13 @@ from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
 from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
-from models.load_model import load_transformer, load_vae, load_qwenvl
-from utils.logger import get_logger
 import math
 import numpy as np
+from src.models.load_model import load_transformer, load_vae, load_qwenvl
+from src.utils.logger import get_logger
+from src.data.dataset import loader
+from src.data.cache_manager import EmbeddingCacheManager
+
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -40,6 +43,9 @@ class Trainer:
         self.lr_scheduler = None
         self.noise_scheduler = None
         self.global_step = 0
+        self.setup()
+        self.setup_models()
+        self.configure_optimizers()
 
     def setup(self):
         """初始化加速器和日志配置"""
@@ -125,6 +131,26 @@ class Trainer:
 
         logger.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
+        # 为推理优化模型
+        self._optimize_for_inference()
+
+    def _optimize_for_inference(self):
+        """优化模型以提升推理性能"""
+        # 设置 VAE 为评估模式并启用推理优化
+
+        # 为所有模型启用 bf16 推理优化
+        if self.weight_dtype == torch.bfloat16:
+            # 确保所有非训练模型使用 bf16
+            for model_name, model in self.models.items():
+                if model_name != 'transformer':  # transformer 在训练时需要特殊处理
+                    model.eval()
+                    model.to(dtype=self.weight_dtype)
+
+        # 启用推理优化标志
+        torch.backends.cudnn.benchmark = True  # 对于固定输入尺寸的情况，可以优化卷积操作
+
+        logger.info(f"模型推理优化完成，使用精度: {self.weight_dtype}")
+
     def configure_optimizers(self):
         """配置优化器和学习率调度器"""
         lora_layers = filter(lambda p: p.requires_grad, self.models['transformer'].parameters())
@@ -158,25 +184,31 @@ class Trainer:
         return sigma
 
     def encode_image(self, image):
-        with torch.no_grad():
-            pixel_values = image.to(dtype=self.weight_dtype).to(self.accelerator.device)
-            pixel_values = pixel_values.unsqueeze(2)
-            pixel_latents = self.models['vae'].encode(pixel_values).latent_dist.sample()
-            pixel_latents = pixel_latents.permute(0, 2, 1, 3, 4)
+        # 使用 inference_mode() 获得更好的推理性能
+        with torch.inference_mode():
+            # 使用 autocast 确保 bf16 推理
+            with torch.autocast(device_type=self.accelerator.device.type, dtype=self.weight_dtype, enabled=True):
+                pixel_values = image.to(dtype=self.weight_dtype, device=self.accelerator.device, non_blocking=True)
+                pixel_values = pixel_values.unsqueeze(2)
+                pixel_latents = self.models['vae'].encode(pixel_values).latent_dist.sample()
+                pixel_latents = pixel_latents.permute(0, 2, 1, 3, 4)
         return pixel_latents
 
     def encode_prompt(self, prompt:str, prompt_image: np.ndarray)->tuple[torch.Tensor, torch.Tensor]:
         text_encoding_pipeline = self.models['text_encoder']
-        with torch.no_grad():
-            calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, prompt_image.shape[0] / prompt_image.shape[1])
-            prompt_image = text_encoding_pipeline.image_processor.resize(prompt_image, calculated_height, calculated_width)
-            prompt_embeds, prompt_embeds_mask = text_encoding_pipeline.encode_prompt(
-                    image=prompt_image,
-                    prompt=[prompt],
-                    device=text_encoding_pipeline.device,
-                    num_images_per_prompt=1,
-                    max_sequence_length=1024,
-                )
+        # 使用 inference_mode() 获得更好的推理性能
+        with torch.inference_mode():
+            # 使用 autocast 确保 bf16 推理
+            with torch.autocast(device_type=self.accelerator.device.type, dtype=self.weight_dtype, enabled=True):
+                calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, prompt_image.shape[0] / prompt_image.shape[1])
+                prompt_image = text_encoding_pipeline.image_processor.resize(prompt_image, calculated_height, calculated_width)
+                prompt_embeds, prompt_embeds_mask = text_encoding_pipeline.encode_prompt(
+                        image=prompt_image,
+                        prompt=[prompt],
+                        device=text_encoding_pipeline.device,
+                        num_images_per_prompt=1,
+                        max_sequence_length=1024,
+                    )
         return prompt_embeds, prompt_embeds_mask
 
     def training_step(self, batch):
@@ -200,19 +232,19 @@ class Trainer:
     def _training_step_compute(self, batch):
         """计算嵌入的训练步骤（无缓存）"""
         image, control, prompt = batch['image'], batch['control'], batch['prompt']
-
-        with torch.no_grad():
+        pixel_latents = self.encode_image(image)
+        control_latents = self.encode_image(control)
+        prompt_embeds, prompt_embeds_mask = self.encode_prompt(prompt, control)
+        # 使用 inference_mode() 进行编码推理，性能更好
+        with torch.inference_mode():
             # 编码图像
-            pixel_latents = self.encode_image(image)
-            control_latents = self.encode_image(control)
-            prompt_embeds, prompt_embeds_mask = self.encode_prompt(prompt, control)
             # 标准化潜在向量
             vae_config = self.models['vae'].config
-            latents_mean = torch.tensor(vae_config.latents_mean).view(1, 1, vae_config.z_dim, 1, 1).to(
-                pixel_latents.device, pixel_latents.dtype
+            latents_mean = torch.tensor(vae_config.latents_mean, dtype=self.weight_dtype).view(1, 1, vae_config.z_dim, 1, 1).to(
+                pixel_latents.device, non_blocking=True
             )
-            latents_std = 1.0 / torch.tensor(vae_config.latents_std).view(1, 1, vae_config.z_dim, 1, 1).to(
-                pixel_latents.device, pixel_latents.dtype
+            latents_std = (1.0 / torch.tensor(vae_config.latents_std, dtype=self.weight_dtype)).view(1, 1, vae_config.z_dim, 1, 1).to(
+                pixel_latents.device, non_blocking=True
             )
             pixel_latents = (pixel_latents - latents_mean) * latents_std
             control_latents = (control_latents - latents_mean) * latents_std
@@ -414,3 +446,12 @@ class Trainer:
 
         self.accelerator.wait_for_everyone()
         self.accelerator.end_training()
+
+
+if __name__ == "__main__":
+    config_file = 'configs/qwen_image_edit_config.yaml'
+    from src.data.config import load_config_from_yaml
+    config = load_config_from_yaml(config_file)
+    trainer = Trainer(config)
+    trainer.setup()
+    trainer.setup_models()

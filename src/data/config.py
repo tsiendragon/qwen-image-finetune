@@ -55,6 +55,9 @@ class DataConfig:
     """数据相关配置"""
     class_path: str = "torch.utils.data.Dataset"
     init_args: Dict[str, Any] = field(default_factory=dict)
+    batch_size: int = 1
+    num_workers: int = 1
+    shuffle: bool = True
 
     def __post_init__(self):
         """验证数据配置"""

@@ -10,10 +10,13 @@ model:
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/data/kyc_gen/id_card/images"
+    dataset_path: "/data/kyc_gen/id_card/"
     image_size: [832, 576]
     cache_dir: "/data/lilong/experiment/id_card_qwen_image_lora/cache"
     use_cache: true
+  batch_size: 2
+  num_workers: 2
+  shuffle: true
 
 logging:
   output_dir: "/data/lilong/experiment/id_card_qwen_image_lora"

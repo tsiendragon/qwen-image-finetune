@@ -1,4 +1,4 @@
-from data.config import load_config_from_yaml
+from src.data.config import load_config_from_yaml
 import argparse
 
 def parse_args():

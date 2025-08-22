@@ -31,11 +31,6 @@ def main():
     # 创建训练器
     trainer = Trainer(config)
 
-    # 设置训练器
-    trainer.setup()
-    trainer.setup_models()
-    trainer.configure_optimizers()
-
     # 加载数据
     train_dataloader = loader(**config.data.init_args)
 
