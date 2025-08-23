@@ -38,11 +38,14 @@ class ModelConfig:
     pretrained_model_name_or_path: str = "Qwen/Qwen-Image-Edit"
     rank: int = 16  # LoRA rank (为了兼容性保留)
     lora: LoraConfig = field(default_factory=LoraConfig)
+    quantize: bool = False
 
     def __post_init__(self):
         """验证模型配置"""
         if not isinstance(self.rank, int) or self.rank <= 0:
             raise ValueError(f"rank must be a positive integer, got {self.rank}")
+        if not isinstance(self.quantize, bool):
+            raise ValueError(f"quantize must be a boolean, got {self.quantize}")
 
         # 确保 lora.r 与 rank 保持一致
         if self.lora.r != self.rank:
@@ -157,6 +160,32 @@ class OptimizerConfig:
 
 
 @dataclass
+class CacheConfig:
+    """缓存相关配置"""
+    vae_encoder_device: Optional[str] = None  # VAE 编码器设备 ID
+    text_encoder_device: Optional[str] = None  # 文本编码器设备 ID
+    use_cache: bool = True
+    cache_dir: str = "/data/lilong/experiment/id_card_qwen_image_lora/cache"
+
+    def __post_init__(self):
+        """验证缓存配置"""
+        # 验证设备 ID
+        if self.vae_encoder_device is not None:
+            if not isinstance(self.vae_encoder_device, str):
+                raise ValueError(f"vae_encoder_device must be a non-negative string or None, got {self.vae_encoder_device}")
+
+        if self.text_encoder_device is not None:
+            if not isinstance(self.text_encoder_device, str):
+                raise ValueError(f"text_encoder_device must be a non-negative string or None, got {self.text_encoder_device}")
+
+        if not isinstance(self.use_cache, bool):
+            raise ValueError(f"use_cache must be a boolean, got {self.use_cache}")
+
+        if not isinstance(self.cache_dir, str) or not self.cache_dir:
+            raise ValueError(f"cache_dir must be a non-empty string, got {self.cache_dir}")
+
+
+@dataclass
 class TrainConfig:
     """训练相关配置"""
     train_batch_size: int = 1
@@ -206,6 +235,7 @@ class Config:
     optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
     lr_scheduler: LRSchedulerConfig = field(default_factory=LRSchedulerConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
 
     def to_flat_dict(self) -> Dict[str, Any]:
         """将配置转换为扁平字典格式，与 train.py 中的 args 兼容"""
@@ -261,6 +291,12 @@ class Config:
             "mixed_precision": self.train.mixed_precision,
         })
 
+        # Cache 配置
+        flat_config.update({
+            "vae_encoder_device": self.cache.vae_encoder_device,
+            "text_encoder_device": self.cache.text_encoder_device,
+        })
+
         return flat_config
 
 
@@ -310,7 +346,8 @@ def load_config_from_yaml(yaml_path: str) -> Config:
         logging=LoggingConfig(**config_dict.get("logging", {})),
         optimizer=OptimizerConfig(**config_dict.get("optimizer", {})),
         lr_scheduler=LRSchedulerConfig(**config_dict.get("lr_scheduler", {})),
-        train=TrainConfig(**config_dict.get("train", {}))
+        train=TrainConfig(**config_dict.get("train", {})),
+        cache=CacheConfig(**config_dict.get("cache", {}))
     )
 
     return config
@@ -372,6 +409,10 @@ def create_sample_config(output_path: str = "config_sample.yaml") -> None:
             "checkpoints_total_limit": 3,
             "max_grad_norm": 1.0,
             "mixed_precision": "bf16"
+        },
+        "cache": {
+            "vae_encoder_device": 1,
+            "text_encoder_device": 2
         }
     }
 

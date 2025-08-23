@@ -17,3 +17,4 @@ peft
 tabulate
 psutil
 ipykernel
+optimum

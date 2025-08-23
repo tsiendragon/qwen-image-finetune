@@ -1,10 +1,9 @@
-import datasets
 import diffusers
 import transformers
-from data.dataset import loader
-from utils.options import parse_args
-from utils.logger import get_logger
-from trainer import Trainer
+from src.data.dataset import loader
+from src.utils.options import parse_args
+from src.utils.logger import get_logger
+from src.trainer import Trainer
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -16,11 +15,9 @@ def main():
 
     # 设置日志级别
     if hasattr(config, 'local_rank') and config.local_rank == 0:
-        datasets.utils.logging.set_verbosity_warning()
         transformers.utils.logging.set_verbosity_warning()
         diffusers.utils.logging.set_verbosity_info()
     else:
-        datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
 
@@ -28,8 +25,15 @@ def main():
     trainer = Trainer(config)
 
     # 加载数据
-    train_dataloader = loader(**config.data.init_args)
-    if config.cache:
+    train_dataloader = loader(
+        config.data.class_path,
+        config.data.init_args,
+        batch_size=config.data.batch_size,
+        num_workers=config.data.num_workers,
+        shuffle=config.data.shuffle,
+    )
+
+    if config.mode == 'cache':
         trainer.cache(train_dataloader)
     else:
         # 开始训练

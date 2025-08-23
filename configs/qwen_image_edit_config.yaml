@@ -1,6 +1,7 @@
 model:
   pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
   rank: 16
+  quantize: true
   lora:
     r: 16
     lora_alpha: 16
@@ -12,8 +13,11 @@ data:
   init_args:
     dataset_path: "/data/kyc_gen/id_card/"
     image_size: [832, 576]
-    cache_dir: "/data/lilong/experiment/id_card_qwen_image_lora/cache"
-    use_cache: true
+    caption_dropout_rate: 0.1
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+
+
   batch_size: 2
   num_workers: 2
   shuffle: true
@@ -43,7 +47,6 @@ lr_scheduler:
   power: 1.0
 
 train:
-  train_batch_size: 1
   gradient_accumulation_steps: 1
   max_train_steps: 3000
   num_epochs: 3
@@ -52,9 +55,11 @@ train:
   max_grad_norm: 1.0
   mixed_precision: "bf16"
 
-cache:
-  vae_encoder_device: 1
-  text_encoder_device: 2
 
+cache:
+  vae_encoder_device: cuda:1
+  text_encoder_device: cuda:2
+  cache_dir: "/data/lilong/experiment/id_card_qwen_image_lora/cache"
+  use_cache: true
 # Additional training parameters that may be needed
 resume_from_checkpoint: "latest"

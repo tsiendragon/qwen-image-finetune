@@ -6,7 +6,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 import glob
 import importlib
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
 
 
@@ -62,7 +62,7 @@ class ImageDataset(Dataset):
 
         self.transform = transforms.Compose([
             transforms.Resize(resize_size),
-            transforms.ToTensor(),
+            # transforms.ToTensor(),
         ])
 
     def _find_images_directory(self):
@@ -270,14 +270,18 @@ def loader(
 
     # 使用init_args实例化类
     dataset = dataset_class(init_args)
+    cache_manager = dataset.cache_manager
 
-    return DataLoader(
+    dataloader =  DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True
     )
+    setattr(dataloader, 'cache_manager', cache_manager)
+    setattr(dataloader, 'dataset', dataset)
+    return dataloader
 
 if __name__ == "__main__":
     from src.data.config import load_config_from_yaml
@@ -301,3 +305,4 @@ if __name__ == "__main__":
         break
     print(batch['cached'])
     print(batch['file_hashes'])
+    print(dataloader.cache_manager)

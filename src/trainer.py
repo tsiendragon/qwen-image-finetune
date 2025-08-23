@@ -2,6 +2,7 @@ import copy
 import os
 import shutil
 import torch
+import random
 from tqdm.auto import tqdm
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
@@ -22,7 +23,7 @@ import numpy as np
 from src.models.load_model import load_transformer, load_vae, load_qwenvl
 from src.utils.logger import get_logger
 from src.data.dataset import loader
-from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
+from src.data.cache_manager import check_cache_exists
 
 
 logger = get_logger(__name__, log_level="INFO")
@@ -36,22 +37,23 @@ def calculate_dimensions(target_area, ratio):
 
     return width, height, None
 
-def lora_processors(model):
-    processors = {}
+def get_lora_layers(model):
+    """这个 get_lora_layers 函数的作用是遍历整个神经网络模型,找出并收集所有与LoRA相关的模块"""
+    lora_layers = {}
 
-    def fn_recursive_add_processors(name: str, module: torch.nn.Module, processors):
+    def fn_recursive_find_lora_layer(name: str, module: torch.nn.Module, processors):
         if 'lora' in name:
-            processors[name] = module
+            lora_layers[name] = module
             print(name)
         for sub_name, child in module.named_children():
-            fn_recursive_add_processors(f"{name}.{sub_name}", child, processors)
+            fn_recursive_find_lora_layer(f"{name}.{sub_name}", child, lora_layers)
 
-        return processors
+        return lora_layers
 
     for name, module in model.named_children():
-        fn_recursive_add_processors(name, module, processors)
+        fn_recursive_find_lora_layer(name, module, lora_layers)
 
-    return processors
+    return lora_layers
 
 class Trainer:
     def __init__(self, config):
@@ -62,38 +64,12 @@ class Trainer:
         self.lr_scheduler = None
         self.noise_scheduler = None
         self.global_step = 0
-        self.setup_accelerator()
-        self.setup_models()
-        self.configure_optimizers()
+        self.cache_exist = check_cache_exists(self.config.cache.cache_dir)
+        self.use_cache = self.config.cache.use_cache
+        self.qunantize = self.config.model.quantize
+        self.weight_dtype = torch.bfloat16 # default use bfloat16 dtype
+        self.batch_size = self.config.data.batch_size
 
-
-    def setup_accelerator(self):
-        """初始化加速器和日志配置"""
-        logging_dir = os.path.join(self.config.logging.output_dir, self.config.logging.logging_dir)
-        accelerator_project_config = ProjectConfiguration(
-            project_dir=self.config.logging.output_dir,
-            logging_dir=logging_dir
-        )
-
-        self.accelerator = Accelerator(
-            gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
-            mixed_precision=self.config.train.mixed_precision,
-            log_with=self.config.logging.report_to,
-            project_config=accelerator_project_config,
-        )
-
-        # 设置权重数据类型
-        self.weight_dtype = torch.float32
-        if self.accelerator.mixed_precision == "fp16":
-            self.weight_dtype = torch.float16
-        elif self.accelerator.mixed_precision == "bf16":
-            self.weight_dtype = torch.bfloat16
-
-        # 创建输出目录
-        if self.accelerator.is_main_process and self.config.logging.output_dir is not None:
-            os.makedirs(self.config.logging.output_dir, exist_ok=True)
-
-        logger.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
     def setup_models(self):
         """加载和配置模型"""
@@ -111,7 +87,86 @@ class Trainer:
             weight_dtype=self.weight_dtype
         )
 
+        # 冻结非 LoRA 参数
+        self.models['vae'].requires_grad_(False)
+        self.models['transformer'].requires_grad_(False)
+        self.vae_scale_factor = 2 ** len(self.models['vae'].temperal_downsample)
+
+    def setup_accelerator(self):
+        """初始化加速器和日志配置"""
+        logging_dir = os.path.join(self.config.logging.output_dir, self.config.logging.logging_dir)
+        accelerator_project_config = ProjectConfiguration(
+            project_dir=self.config.logging.output_dir,
+            logging_dir=logging_dir
+        )
+
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
+            mixed_precision=self.config.train.mixed_precision,
+            log_with=self.config.logging.report_to,
+            project_config=accelerator_project_config,
+        )
+
+        # 设置权重数据类型
+
+        if self.accelerator.mixed_precision == "fp16":
+            self.weight_dtype = torch.float16
+        elif self.accelerator.mixed_precision == "bf16":
+            self.weight_dtype = torch.bfloat16
+
+        # 创建输出目录
+        if self.accelerator.is_main_process and self.config.logging.output_dir is not None:
+            os.makedirs(self.config.logging.output_dir, exist_ok=True)
+
+        logger.info(f"Mixed precision: {self.accelerator.mixed_precision}")
+
+    def unwrap_model(self, model):
+        """- Purpose: Removes wrappers added by Hugging Face Accelerate library
+        - What it removes:
+            - DistributedDataParallel (DDP) wrappers for multi-GPU training
+            - DataParallel wrappers
+            - Other distributed training wrappers
+        - Why needed: During distributed training, Accelerate wraps your model to handle parallel execution
+        """
+        model = self.accelerator.unwrap_model(model)
+        model = model._orig_mod if is_compiled_module(model) else model
+        return model
+
+    def quantize_model(self, diffusion_transformer):
+        from optimum.quanto import quantize, qfloat8, freeze
+
+        torch_dtype = self.weight_dtype
+        device = self.accelerator.device
+        all_blocks = list(diffusion_transformer.transformer_blocks)
+        for block in tqdm(all_blocks):
+            block.to(device, dtype=torch_dtype)
+            quantize(block, weights=qfloat8)
+            freeze(block)
+            block.to('cpu')
+        diffusion_transformer.to(device, dtype=torch_dtype)
+        quantize(diffusion_transformer, weights=qfloat8)
+        freeze(diffusion_transformer)
+        return diffusion_transformer
+
+
+
+    def setup_noise_scheduler(self):
+        # 设置调度器
+        from diffusers import FlowMatchEulerDiscreteScheduler
+
+        self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            self.config.model.pretrained_model_name_or_path,
+            subfolder="scheduler",
+        )
+
+    def setup_lora(self):
         # 配置 LoRA
+        from peft import LoraConfig
+        if self.qunantize:
+            self.models['transformer'] = self.quantize_model(self.models['transformer'])
+        else:
+            self.models['transformer'].to(self.accelerator.device)
+
         lora_config = LoraConfig(
             r=self.config.model.lora.r,
             lora_alpha=self.config.model.lora.lora_alpha,
@@ -119,59 +174,46 @@ class Trainer:
             target_modules=self.config.model.lora.target_modules,
         )
 
-        # 设置调度器
-        self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-            self.config.model.pretrained_model_name_or_path,
-            subfolder="scheduler",
-        )
-
         # 配置模型
-        transformer = self.models['transformer']
-        transformer.to(self.accelerator.device, dtype=self.weight_dtype)
-        transformer.add_adapter(lora_config)
-        transformer.train()
-        transformer.enable_gradient_checkpointing()
-
-        # 冻结非 LoRA 参数
-        self.models['vae'].requires_grad_(False)
-        transformer.requires_grad_(False)
+        if self.qunantize:
+            self.models['transformer'].to(self.accelerator.device)
+        else:
+            self.models['transformer'].to(self.accelerator.device, dtype=self.weight_dtype)
+        self.models['transformer'].add_adapter(lora_config)
+        self.models['transformer'].requires_grad_(False)
+        self.models['transformer'].train()
+        self.models['transformer'].enable_gradient_checkpointing()
 
         # 只训练 LoRA 参数
         trainable_params = 0
-        for name, param in transformer.named_parameters():
+        for name, param in self.models['transformer'].named_parameters():
             if 'lora' in name:
                 param.requires_grad = True
                 trainable_params += param.numel()
             else:
                 param.requires_grad = False
-        self.vae_scale_factor = 2 ** len(self.models['vae'].temperal_downsample)
 
         logger.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
-        # 为推理优化模型
-        self._optimize_for_inference()
 
-    def _optimize_for_inference(self):
+    def optimize_for_inference(self):
         """优化模型以提升推理性能"""
         # 设置 VAE 为评估模式并启用推理优化
-
         # 为所有模型启用 bf16 推理优化
-        if self.weight_dtype == torch.bfloat16:
-            # 确保所有非训练模型使用 bf16
-            for model_name, model in self.models.items():
-                if model_name != 'transformer':  # transformer 在训练时需要特殊处理
-                    model.eval()
+        # 确保所有非训练模型使用 bf16
+        for model_name, model in self.models.items():
+            if model_name != 'transformer':  # transformer 在训练时需要特殊处理
+                if self.weight_dtype == torch.bfloat16:
                     model.to(dtype=self.weight_dtype)
+                model.eval()
 
         # 启用推理优化标志
         torch.backends.cudnn.benchmark = True  # 对于固定输入尺寸的情况，可以优化卷积操作
-
         logger.info(f"模型推理优化完成，使用精度: {self.weight_dtype}")
 
     def configure_optimizers(self):
         """配置优化器和学习率调度器"""
         lora_layers = filter(lambda p: p.requires_grad, self.models['transformer'].parameters())
-
         self.optimizer = torch.optim.AdamW(
             lora_layers,
             lr=self.config.optimizer.init_args["lr"],
@@ -194,29 +236,78 @@ class Trainer:
         schedule_timesteps = noise_scheduler_copy.timesteps.to(self.accelerator.device)
         timesteps = timesteps.to(self.accelerator.device)
         step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
-
         sigma = sigmas[step_indices].flatten()
         while len(sigma.shape) < n_dim:
             sigma = sigma.unsqueeze(-1)
         return sigma
 
-    def encode_image(self, image, device):
+    def set_model_devices(self,cache_exist=False, use_cache=False, mode='train'):
+        """unload embedding models to save memory according to different mode"""
+        import gc
+
+        if mode =='train':
+            assert hasattr(self,'accelerator'), "accelerator must be set before setting model devices"
+
+        # train
+        if cache_exist and use_cache and mode=='train':
+            # 1. use cache embedding:
+            #  need transformer
+            # all on devices
+            self.models['text_encoder'].cpu()
+            torch.cuda.empty_cache()
+            self.models['vae'].cpu()
+            torch.cuda.empty_cache()
+            del self.models['text_encoder']
+            del self.models['vae']
+            gc.collect()
+
+            # setup devices
+            self.models['transformer'].to(self.accelerator.device)
+
+        elif use_cache == False and mode == 'train':
+            # 2. not use cache embedding:
+            # need vae.encoder
+            # need text_encoder
+            # need transformer
+            self.models['vae'].decoder.cpu()
+            torch.cuda.empty_cache()
+            gc.collect()
+
+            self.models['vae'].encoder.to(self.accelerator.device)
+            self.models['text_encoder'].to(self.accelerator.device)
+            self.models['transformer'].to(self.accelerator.device)
+
+        elif mode == 'cache':
+            # cache
+            # 1.cache embedding
+                # need vae.encoder
+                # need text_encoder
+            self.models['transformer'].cpu()
+            torch.cuda.empty_cache()
+            del self.models['transformer']
+            gc.collect()
+            self.models['vae'].decoder.cpu()
+            torch.cuda.empty_cache()
+            gc.collect()
+
+
+    def encode_image(self, image, device, device_type='cuda'):
         # 使用 inference_mode() 获得更好的推理性能
         with torch.inference_mode():
             # 使用 autocast 确保 bf16 推理
-            with torch.autocast(device_type=self.accelerator.device.type, dtype=self.weight_dtype, enabled=True):
+            with torch.autocast(device_type=device_type, dtype=self.weight_dtype, enabled=True):
                 pixel_values = image.to(dtype=self.weight_dtype, device=device, non_blocking=True)
                 pixel_values = pixel_values.unsqueeze(2)
                 pixel_latents = self.models['vae'].encode(pixel_values).latent_dist.sample()
                 pixel_latents = pixel_latents.permute(0, 2, 1, 3, 4)
         return pixel_latents
 
-    def encode_prompt(self, prompt:str, prompt_image: np.ndarray, device: str)->tuple[torch.Tensor, torch.Tensor]:
+    def encode_prompt(self, prompt:str, prompt_image: np.ndarray, device: str, device_type='cuda')->tuple[torch.Tensor, torch.Tensor]:
         text_encoding_pipeline = self.models['text_encoder']
         # 使用 inference_mode() 获得更好的推理性能
         with torch.inference_mode():
             # 使用 autocast 确保 bf16 推理
-            with torch.autocast(device_type=self.accelerator.device.type, dtype=self.weight_dtype, enabled=True):
+            with torch.autocast(device_type=device_type, dtype=self.weight_dtype, enabled=True):
                 calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, prompt_image.shape[0] / prompt_image.shape[1])
                 prompt_image = text_encoding_pipeline.image_processor.resize(prompt_image, calculated_height, calculated_width)
                 prompt_embeds, prompt_embeds_mask = text_encoding_pipeline.encode_prompt(
@@ -226,6 +317,22 @@ class Trainer:
                         num_images_per_prompt=1,
                         max_sequence_length=1024,
                     )
+        return prompt_embeds, prompt_embeds_mask
+
+    def encode_empty_prompt(self, prompt_image: np.ndarray, device: str, device_type='cuda')->tuple[torch.Tensor, torch.Tensor]:
+        # random dropout the prompt, will use empty prompt in the dataset by `caption_dropout_rate`
+        text_encoding_pipeline = self.models['text_encoder']
+        with torch.inference_mode():
+            with torch.autocast(device_type=device_type, dtype=self.weight_dtype, enabled=True):
+                calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, prompt_image.shape[0] / prompt_image.shape[1])
+                prompt_image = text_encoding_pipeline.image_processor.resize(prompt_image, calculated_height, calculated_width)
+                prompt_embeds, prompt_embeds_mask = text_encoding_pipeline.encode_prompt(
+                    image=prompt_image,
+                    prompt=[""],
+                    device=device,
+                    num_images_per_prompt=1,
+                    max_sequence_length=1024,
+                )
         return prompt_embeds, prompt_embeds_mask
 
     def training_step(self, batch):
@@ -251,6 +358,8 @@ class Trainer:
         image, control, prompt = batch['image'], batch['control'], batch['prompt']
         pixel_latents = self.encode_image(image)
         control_latents = self.encode_image(control)
+        if random.random() < self.config.train.caption_dropout_rate:
+            prompt = ""
         prompt_embeds, prompt_embeds_mask = self.encode_prompt(prompt, control)
         # 使用 inference_mode() 进行编码推理，性能更好
         with torch.inference_mode():
@@ -345,7 +454,7 @@ class Trainer:
 
         return loss
 
-    def save_checkpoint(self, global_step):
+    def save_checkpoint(self, epoch, global_step):
         """保存检查点"""
         if not self.accelerator.is_main_process:
             return
@@ -364,7 +473,7 @@ class Trainer:
                     removing_checkpoint = os.path.join(self.config.logging.output_dir, removing_checkpoint)
                     shutil.rmtree(removing_checkpoint)
 
-        save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-{global_step}")
+        save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}")
         os.makedirs(save_path, exist_ok=True)
 
         # 保存 LoRA 权重
@@ -381,13 +490,16 @@ class Trainer:
 
     def fit(self, train_dataloader):
         """主训练循环"""
+        self.setup_accelerator()
         # 准备模型和优化器
-        lora_layers_model = AttnProcsLayers(lora_processors(self.models['transformer']))
+
+
+        lora_layers_model = AttnProcsLayers(get_lora_layers(self.models['transformer']))
+        self.models['transformer'].enable_gradient_checkpointing()
 
         lora_layers_model, optimizer, _, lr_scheduler = self.accelerator.prepare(
             lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
         )
-        self.models['transformer'] = transformer
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
 
@@ -397,13 +509,13 @@ class Trainer:
 
         # 训练信息
         total_batch_size = (
-            self.config.train.train_batch_size *
+            self.batch_size *
             self.accelerator.num_processes *
             self.config.train.gradient_accumulation_steps
         )
 
         logger.info("***** Running training *****")
-        logger.info(f"  Instantaneous batch size per device = {self.config.train.train_batch_size}")
+        logger.info(f"  Instantaneous batch size per device = {self.batch_size}")
         logger.info(f"  Total train batch size = {total_batch_size}")
         logger.info(f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}")
 
@@ -417,7 +529,7 @@ class Trainer:
         # 训练循环
         train_loss = 0.0
         for epoch in range(self.config.train.num_epochs):
-            for step, batch in enumerate(train_dataloader):
+            for _, batch in enumerate(train_dataloader):
                 with self.accelerator.accumulate(self.models['transformer']):
                     loss = self.training_step(batch)
 
@@ -450,7 +562,7 @@ class Trainer:
 
                     # 保存检查点
                     if self.global_step % self.config.train.checkpointing_steps == 0:
-                        self.save_checkpoint(self.global_step)
+                        self.save_checkpoint(epoch, self.global_step)
 
                 # 更新进度条
                 logs = {
@@ -473,24 +585,41 @@ class Trainer:
         image_hash = file_hashes['image_hash']
         control_hash = file_hashes['control_hash']
         prompt_hash = file_hashes['prompt_hash']
+        empty_prompt_hash = file_hashes['empty_prompt_hash']
         pixel_latent = self.encode_image(image, vae_encoder_device)
         control_latent = self.encode_image(control, vae_encoder_device)
         prompt_embed, prompt_embeds_mask = self.encode_prompt(prompt, control, text_encoder_device)
+        empty_prompt_embed, empty_prompt_embeds_mask = self.encode_empty_prompt(control, text_encoder_device)
+        print('shape of pixel_latent', pixel_latent.shape)
+        print('shape of control_latent', control_latent.shape)
+        print('shape of prompt_embed', prompt_embed.shape)
+        print('shape of prompt_embeds_mask', prompt_embeds_mask.shape)
+        print('shape of empty_prompt_embed', empty_prompt_embed.shape)
+        print('shape of empty_prompt_embeds_mask', empty_prompt_embeds_mask.shape)
+        1/0
         n_samples = pixel_latent.shape[0]
         for i in range(n_samples):
             self.cache_manager.save_cache('pixel_latent', image_hash[i], pixel_latent[i])
             self.cache_manager.save_cache('control_latent', control_hash[i], control_latent[i])
             self.cache_manager.save_cache('prompt_embed', prompt_hash[i], prompt_embed[i])
             self.cache_manager.save_cache('prompt_embeds_mask', prompt_hash[i], prompt_embeds_mask[i])
+            self.cache_manager.save_cache('empty_prompt_embed', empty_prompt_hash[i], empty_prompt_embed[i])
+            self.cache_manager.save_cache('empty_prompt_embeds_mask', empty_prompt_hash[i], empty_prompt_embeds_mask[i])
 
 
     def cache(self, train_dataloader):
         from tqdm import tqdm
-        self.cache_manager = EmbeddingCacheManager(self.config.cache.cache_dir)
+
+        self.cache_manager = train_dataloader.cache_manager
         vae_encoder_device = self.config.cache.vae_encoder_device
         text_encoder_device = self.config.cache.text_encoder_device
+        self.weight_dtype = torch.bfloat16
+        self.setup_models()  # load the model
+        self.set_model_devices(cache_exist=False, use_cache=True, mode='cache')
+
         self.models['text_encoder'].to(text_encoder_device)
-        self.models['vae'].to(vae_encoder_device)
+        self.models['vae'].to(vae_encoder_device, dtype=self.weight_dtype)
+        self.models['vae'].decoder.to('cpu')
 
         for _, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
             self.cache_step(batch, vae_encoder_device, text_encoder_device)

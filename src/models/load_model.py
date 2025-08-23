@@ -1,4 +1,4 @@
-from diffusers import AutoencoderKLQwenImage, QwenImagePipeline
+from diffusers import AutoencoderKLQwenImage, QwenImageEditPipeline
 from src.models.transformer_qwenimage import QwenImageTransformer2DModel
 
 def load_vae(pretrained_model_name_or_path, weight_dtype):
@@ -11,7 +11,7 @@ def load_vae(pretrained_model_name_or_path, weight_dtype):
     return vae
 
 def load_qwenvl(pretrained_model_name_or_path, weight_dtype):
-    text_encoding_pipeline = QwenImagePipeline.from_pretrained(
+    text_encoding_pipeline = QwenImageEditPipeline.from_pretrained(
         pretrained_model_name_or_path,
         transformer=None,
         vae=None,
