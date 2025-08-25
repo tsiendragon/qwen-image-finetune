@@ -1,16 +1,24 @@
 import os
-import numpy as np
-import torch
-from PIL import Image
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
 import glob
+import cv2
 import importlib
 from typing import Optional, Dict
 from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
 
 
 class ImageDataset(Dataset):
+    """
+    Dataset:
+        image: RGB numpy array [3, img_h, img_w]
+        control: RGB numpy array [3, img_h, img_w]
+        prompt: str
+        file_hashes: dict
+            - image_hash: str
+            - control_hash: str
+            - prompt_hash: str
+            - empty_prompt_hash: str
+    """
     def __init__(self, data_config):
         """
         初始化数据集
@@ -20,6 +28,7 @@ class ImageDataset(Dataset):
                 - image_size: 图像尺寸 [img_w, img_h]，默认为(512, 512)
                 - cache_dir: 缓存目录路径，如果提供则启用缓存
                 - use_cache: 是否使用缓存，默认为 True
+
         """
         self.data_config = data_config
         self.dataset_path = data_config.get('dataset_path', './dataset')
@@ -38,9 +47,6 @@ class ImageDataset(Dataset):
 
         self.cache_exists = check_cache_exists(self.cache_dir)
 
-
-
-        # 图像路径 - 支持多种命名方式
         self.images_dir = self._find_images_directory()
         self.control_dir = self._find_control_directory()
 
@@ -52,18 +58,19 @@ class ImageDataset(Dataset):
 
         # 扫描所有图像文件
         self.image_files = self._scan_image_files()
-
         # 图像预处理变换 - 将[img_w, img_h] 转换为transforms.Resize期望的 (height, width) 格式
         if isinstance(self.image_size, (tuple, list)) and len(self.image_size) == 2:
             # 将[img_w, img_h]转换为(img_h, img_w)供PyTorch使用
-            resize_size = (self.image_size[1], self.image_size[0])  # (height, width)
+            self.resize_size = (self.image_size[1], self.image_size[0])  # (height, width)
         else:
-            resize_size = self.image_size
+            self.resize_size = self.image_size
 
-        self.transform = transforms.Compose([
-            transforms.Resize(resize_size),
-            # transforms.ToTensor(),
-        ])
+    def preprocess(self, image_path):
+        img = cv2.imread(image_path)
+        img = img[:, :, ::-1]
+        img = cv2.resize(img, self.resize_size)
+        img = img.transpose(2, 0, 1)
+        return img
 
     def _find_images_directory(self):
         """查找图像目录，支持多种命名方式"""
@@ -151,12 +158,10 @@ class ImageDataset(Dataset):
         with open(file_info['caption'], 'r', encoding='utf-8') as f:
             prompt = f.read().strip()
 
-        image = Image.open(file_info['image']).convert('RGB')
-        image_tensor = self.transform(image)
+        image_numpy = self.preprocess(file_info['image'])
 
         # 加载控制图像
-        control_image = Image.open(file_info['control']).convert('RGB')
-        control_tensor = self.transform(control_image)
+        control_numpy = self.preprocess(file_info['control'])
 
         if self.use_cache:
             image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])
@@ -164,10 +169,8 @@ class ImageDataset(Dataset):
             prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt)
             empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], "empty")
 
-
-        # 如果启用缓存，尝试加载缓存的嵌入
         if self.cache_exists:
-
+            # 如果启用缓存，尝试加载缓存的嵌入
             # 检查缓存是否存在
             cached_data = {}
             for cache_type, file_hash in [
@@ -182,10 +185,10 @@ class ImageDataset(Dataset):
                 cached_data[cache_type] = cached_embedding
 
             # 如果所有缓存都存在，返回缓存数据
-            data =  {
+            data = {
                 'cached': True,
-                'image': image_tensor,
-                'control': control_tensor,
+                'image': image_numpy,
+                'control': control_numpy,
                 'pixel_latent': cached_data['pixel_latent'],
                 'control_latent': cached_data['control_latent'],
                 'prompt_embed': cached_data['prompt_embed'],
@@ -206,10 +209,10 @@ class ImageDataset(Dataset):
 
             # 如果没有缓存或缓存不完整，返回原始数据
 
-            data =  {
+            data = {
                 'cached': False,
-                'image': image_tensor,
-                'control': control_tensor,
+                'image': image_numpy,
+                'control': control_numpy,
                 'prompt': prompt,
                 'file_paths': file_info,
             }
@@ -224,7 +227,7 @@ class ImageDataset(Dataset):
             return data
 
     def check_none_output(self, data: dict):
-        for k,v in data.items():
+        for k, v in data.items():
             if isinstance(v, dict):
                 for kk, vv in v.items():
                     assert vv is not None, f"value is None for key {kk} in {k}"
@@ -272,7 +275,7 @@ def loader(
     dataset = dataset_class(init_args)
     cache_manager = dataset.cache_manager
 
-    dataloader =  DataLoader(
+    dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
@@ -280,11 +283,12 @@ def loader(
         pin_memory=True
     )
     setattr(dataloader, 'cache_manager', cache_manager)
-    setattr(dataloader, 'dataset', dataset)
     return dataloader
+
 
 if __name__ == "__main__":
     from src.data.config import load_config_from_yaml
+    import torch
     config_file = 'configs/qwen_image_edit_config.yaml'
     config = load_config_from_yaml(config_file)
     data_config = config.data

@@ -4,6 +4,166 @@
 
 Qwen Image是一个基于双流架构（Double-Stream Architecture）的扩散模型，用于图像编辑和生成任务。该模型采用联合注意力机制同时处理图像和文本信息，实现文本引导的图像生成/编辑。
 
+## 数据预处理管道
+
+### Embedding预计算流程概述
+
+在模型训练之前，Qwen Image使用预计算的embedding来提高训练效率。整个预处理过程包括**文本embedding预计算**和**图像embedding预计算**两个并行的管道。
+
+### 文本Embedding预计算过程
+
+#### 处理流程
+1. **初始化文本编码管道**
+   ```python
+   text_encoding_pipeline = QwenImageEditPipeline.from_pretrained(
+       args.pretrained_model_name_or_path, transformer=None, vae=None, torch_dtype=weight_dtype
+   )
+   ```
+   - **作用**：加载预训练的Qwen图像编辑管道，但只保留文本编码部分
+   - **输入**：预训练模型路径
+   - **输出**：文本编码管道对象
+
+2. **图片和文本配对处理**
+   ```python
+   for img_name in tqdm([i for i in os.listdir(args.data_config.control_dir) if ".png" in i or '.jpg' in i]):
+       img_path = os.path.join(args.data_config.control_dir, img_name)
+       txt_path = os.path.join(args.data_config.img_dir, img_name.split('.')[0] + '.txt')
+   ```
+   - **作用**：遍历控制图片目录，为每张图片找到对应的文本文件
+   - **输入**：图片目录和文本目录路径
+   - **输出**：图片路径和对应文本路径的配对
+
+3. **图片预处理和尺寸计算**
+   ```python
+   img = Image.open(img_path).convert('RGB')
+   calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, img.size[0] / img.size[1])
+   prompt_image = text_encoding_pipeline.image_processor.resize(img, calculated_height, calculated_width)
+   ```
+   - **作用**：
+     - 打开图片并转换为RGB格式
+     - 根据原图比例计算新的宽高（保持总像素数为1024×1024）
+     - 将图片调整到计算出的尺寸
+   - **输入**：图片路径
+   - **输出**：预处理后的图片张量
+
+4. **多模态编码**
+   ```python
+   prompt = open(txt_path).read()
+   prompt_embeds, prompt_embeds_mask = text_encoding_pipeline.encode_prompt(
+       image=prompt_image,
+       prompt=[prompt],
+       device=text_encoding_pipeline.device,
+       num_images_per_prompt=1,
+       max_sequence_length=1024,
+   )
+   ```
+   - **作用**：
+     - 读取文本内容
+     - 将图片和文本一起编码为embedding（多模态融合）
+     - 生成注意力mask用于后续计算
+   - **输入**：预处理后的图片 + 文本prompt
+   - **输出**：prompt_embeds（文本embedding）和 prompt_embeds_mask（注意力mask）
+
+5. **Embedding缓存**
+   ```python
+   cached_text_embeddings[img_name.split('.')[0] + '.txt'] = {
+       'prompt_embeds': prompt_embeds[0].to('cpu'),
+       'prompt_embeds_mask': prompt_embeds_mask[0].to('cpu')
+   }
+   ```
+   - **作用**：将计算出的embedding保存到内存或磁盘，避免训练时重复计算
+   - **输入**：计算出的embedding
+   - **输出**：缓存的embedding字典
+
+### 图像Embedding预计算过程
+
+#### 处理流程
+1. **VAE编码器初始化**
+   ```python
+   vae = AutoencoderKLQwenImage.from_pretrained(
+       args.pretrained_model_name_or_path, subfolder="vae"
+   )
+   ```
+   - **作用**：加载变分自编码器（VAE），用于将图片编码到潜在空间
+   - **输入**：预训练模型路径
+   - **输出**：VAE编码器对象
+
+2. **目标图片预处理**
+   ```python
+   img = Image.open(os.path.join(args.data_config.img_dir, img_name)).convert('RGB')
+   calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, img.size[0] / img.size[1])
+   img = text_encoding_pipeline.image_processor.resize(img, calculated_height, calculated_width)
+   ```
+   - **作用**：遍历目标图片目录，调整图片尺寸保持比例
+   - **输入**：图片目录路径
+   - **输出**：预处理后的图片
+
+3. **图片标准化处理**
+   ```python
+   img = torch.from_numpy((np.array(img) / 127.5) - 1)
+   img = img.permute(2, 0, 1).unsqueeze(0)
+   pixel_values = img.unsqueeze(2)  # 添加时间维度
+   ```
+   - **作用**：
+     - 将像素值从[0,255]标准化到[-1,1]
+     - 调整张量维度：(H,W,C) → (C,H,W) → (1,C,H,W) → (1,C,1,H,W)
+     - 添加时间维度变成5D张量以适配VAE
+   - **输入**：PIL图片
+   - **输出**：标准化的5D张量
+
+4. **VAE潜在空间编码**
+   ```python
+   pixel_latents = vae.encode(pixel_values).latent_dist.sample().to('cpu')[0]
+   ```
+   - **作用**：使用VAE将图片编码到潜在空间，大幅降低计算复杂度
+   - **输入**：标准化的图片张量
+   - **输出**：图片的潜在表示（latent）
+
+5. **控制图片处理**
+   - 对控制图片目录执行相同的VAE编码过程
+   - 生成控制图片的embedding用于条件生成
+
+### 预计算流程图
+
+```mermaid
+flowchart TD
+    subgraph "文本Embedding预计算"
+        A["图片路径 + 文本路径"] --> B["加载QwenImageEditPipeline"]
+        B --> C["图片预处理<br/>尺寸调整 + RGB转换"]
+        C --> D["读取文本prompt"]
+        D --> E["多模态编码<br/>encode_prompt()"]
+        E --> F["缓存text embedding<br/>prompt_embeds + mask"]
+    end
+
+    subgraph "图像Embedding预计算"
+        G["图片路径"] --> H["加载AutoencoderKLQwenImage"]
+        H --> I["图片预处理<br/>尺寸调整 + 标准化"]
+        I --> J["转换为5D张量<br/>添加时间维度"]
+        J --> K["VAE编码<br/>encode().sample()"]
+        K --> L["缓存image latents"]
+    end
+
+    subgraph "训练时使用"
+        M["从缓存加载embedding"] --> N["直接进入训练循环<br/>跳过重复计算"]
+    end
+
+    F --> M
+    L --> M
+
+    style A fill:#e8f5e8
+    style G fill:#e1f5fe
+    style E fill:#fff3e0
+    style K fill:#fff3e0
+    style N fill:#f3e5f5
+```
+
+### 预计算的优势
+
+1. **训练加速**：避免每个epoch重复计算embedding，显著提升训练速度
+2. **内存优化**：可选择磁盘缓存模式，减少GPU内存占用
+3. **一致性保证**：所有训练步骤使用相同的embedding，确保训练稳定性
+4. **多模态融合**：文本embedding已经包含图像信息，提供更丰富的语义表示
+
 ## 整体架构
 
 ### 核心特性
