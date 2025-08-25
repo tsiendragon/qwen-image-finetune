@@ -681,7 +681,7 @@ class Trainer:
             image = self.pipline_resize_fn(image, calculated_height, calculated_width)
         return image
 
-    def vae_image_standarization(self, image: PIL.image):
+    def vae_image_standarization(self, image: PIL.Image):
         image = np.array(image).astype("float32")
         image = (image / 127.5) - 1
         image = torch.from_numpy(image)
@@ -714,7 +714,7 @@ class Trainer:
             control_latent = self.encode_image(
                 control_i, vae_encoder_device
             )  # torch: [B，C，H,W]
-            print("size", image_i.size, control_i.size, type(image_i), type(control_i))
+            print("size", image_i.size(), control_i.size(), type(image_i), type(control_i))
 
             prompt_embed, prompt_embeds_mask = self.encode_prompt(
                 prompt_i, control_i, text_encoder_device
@@ -728,7 +728,12 @@ class Trainer:
             print("shape of prompt_embeds_mask", prompt_embeds_mask.shape)
             print("shape of empty_prompt_embed", empty_prompt_embed.shape)
             print("shape of empty_prompt_embeds_mask", empty_prompt_embeds_mask.shape)
-
+            # shape of pixel_latent torch.Size([16, 1, 104, 72])
+            # shape of control_latent torch.Size([16, 1, 104, 72])
+            # shape of prompt_embed torch.Size([1639, 3584])
+            # shape of prompt_embeds_mask torch.Size([1639])
+            # shape of empty_prompt_embed torch.Size([1340, 3584])
+            # shape of empty_prompt_embeds_mask torch.Size([1340])
             self.cache_manager.save_cache("pixel_latent", image_hash[i], pixel_latent)
             self.cache_manager.save_cache(
                 "control_latent", control_hash[i], control_latent

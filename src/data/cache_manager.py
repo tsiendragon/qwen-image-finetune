@@ -40,7 +40,9 @@ class EmbeddingCacheManager:
             'pixel_latent': self.cache_root / 'pixel_latent',
             'control_latent': self.cache_root / 'control_latent',
             'prompt_embed': self.cache_root / 'prompt_embed',
-            'prompt_embeds_mask': self.cache_root / 'prompt_embeds_mask'
+            'prompt_embeds_mask': self.cache_root / 'prompt_embeds_mask',
+            'empty_prompt_embed': self.cache_root / 'empty_prompt_embed',
+            'empty_prompt_embeds_mask': self.cache_root / 'empty_prompt_embeds_mask'
         }
 
         # 创建缓存目录
