@@ -7,13 +7,16 @@ model:
     lora_alpha: 16
     init_lora_weights: "gaussian"
     target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
 
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/mnt/dgx3-raid/lilong/data/kyc_gen/aligned/"
+    # dataset_path: "/mnt/dgx3-raid/lilong/data/kyc_gen/aligned/"
+    dataset_path: "/raid/lilong/data/kyc_gen/aligned/"
     image_size: [832, 576]
     caption_dropout_rate: 0.1
+    prompt_image_dropout_rate: 0.1
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
   batch_size: 2
@@ -21,7 +24,8 @@ data:
   shuffle: true
 
 logging:
-  output_dir: "/mnt/dgx3-raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/"
+  # output_dir: "/mnt/dgx3-raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/"
+  output_dir: "/raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/"
   logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "lora_test"
@@ -56,8 +60,15 @@ train:
 cache:
   vae_encoder_device: cuda:1
   text_encoder_device: cuda:2
-  cache_dir: "/mnt/dgx3-raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/cache"
+  # cache_dir: "/mnt/dgx3-raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/cache"
+  cache_dir: "/raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/cache"
   use_cache: true
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:1
+    transformer: cuda:2
 
 # Additional training parameters that may be needed
 resume_from_checkpoint: "latest"

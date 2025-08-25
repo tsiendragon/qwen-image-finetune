@@ -1,4 +1,5 @@
 import os
+import random
 from torch.utils.data import Dataset, DataLoader
 import glob
 import cv2
@@ -183,7 +184,12 @@ class ImageDataset(Dataset):
             ]:
                 cached_embedding = self.cache_manager.load_cache(cache_type, file_hash)
                 cached_data[cache_type] = cached_embedding
-
+            if random.random() < self.data_config.get('cache_drop_rate', 0.0):
+                prompt_embed = cached_data['empty_prompt_embed']
+                prompt_embeds_mask = cached_data['empty_prompt_embeds_mask']
+            else:
+                prompt_embed = cached_data['prompt_embed']
+                prompt_embeds_mask = cached_data['prompt_embeds_mask']
             # 如果所有缓存都存在，返回缓存数据
             data = {
                 'cached': True,
@@ -191,10 +197,8 @@ class ImageDataset(Dataset):
                 'control': control_numpy,
                 'pixel_latent': cached_data['pixel_latent'],
                 'control_latent': cached_data['control_latent'],
-                'prompt_embed': cached_data['prompt_embed'],
-                'prompt_embeds_mask': cached_data['prompt_embeds_mask'],
-                'empty_prompt_embed': cached_data['empty_prompt_embed'],
-                'empty_prompt_embeds_mask': cached_data['empty_prompt_embeds_mask'],
+                'prompt_embed': prompt_embed,
+                'prompt_embeds_mask': prompt_embeds_mask,
                 'prompt': prompt,
                 'file_hashes': {
                     'image_hash': image_hash,

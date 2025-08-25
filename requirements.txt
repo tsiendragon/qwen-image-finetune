@@ -17,4 +17,5 @@ peft
 tabulate
 psutil
 ipykernel
-optimum
+# optimum
+optimum-quanto

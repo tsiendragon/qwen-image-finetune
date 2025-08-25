@@ -7,6 +7,7 @@ model:
     lora_alpha: 16
     init_lora_weights: "gaussian"
     target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
 
 data:
   class_path: "src.data.dataset.ImageDataset"
@@ -14,6 +15,8 @@ data:
     dataset_path: "/data/kyc_gen/id_card/"
     image_size: [832, 576]
     caption_dropout_rate: 0.1
+    prompt_image_dropout_rate: 0.1
+
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
 
@@ -61,5 +64,12 @@ cache:
   text_encoder_device: cuda:2
   cache_dir: "/data/lilong/experiment/id_card_qwen_image_lora/cache"
   use_cache: true
+
+
+predict:
+  devices:
+    vae: cuda:1
+    text_encoder: cuda:2
+    transformer: cuda:3
 # Additional training parameters that may be needed
 resume_from_checkpoint: "latest"
