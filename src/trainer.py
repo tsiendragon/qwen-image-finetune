@@ -750,7 +750,6 @@ class Trainer:
                 empty_prompt_hash[i],
                 empty_prompt_embeds_mask,
             )
-            1 / 0
 
     def cache(self, train_dataloader):
         from tqdm import tqdm
