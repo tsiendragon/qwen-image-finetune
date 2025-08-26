@@ -849,7 +849,7 @@ class Trainer:
                 self.models['transformer'],
                 self.config.predict.devices['transformer']
             )
-            #has problem
+            # has problem
         else:
             self.models['transformer'].to(self.config.predict.devices['transformer'])
         self.models['vae'].to(self.config.predict.devices['vae'])
@@ -859,25 +859,25 @@ class Trainer:
         self,
         prompt_image: np.ndarray,
         prompt: str,
+        negative_prompt: str = "",
         num_inference_steps: int = 20,
-        guidance_scale: float = 4.5
+        true_cfg_scale: float = 4.0
     ) -> np.ndarray:
         """
         对单张图片进行推理预测
-
         Args:
             prompt_image: numpy.ndarray RGB [H,W,C], 输入的提示图片
             prompt: str, 文本提示
+            negative_prompt: str, 负面文本提示，默认为空
             num_inference_steps: int, 推理步数，默认20
-            guidance_scale: float, 引导强度，默认4.5
-
+            true_cfg_scale: float, 真实CFG引导强度，默认4.0
         Returns:
             numpy.ndarray: 生成的图片，RGB格式 [H,W,C]
         """
 
         # 图像预处理：numpy -> torch tensor
         prompt_image_tensor = self._preprocess_image(prompt_image)
-        intermediate_images =[]
+        intermediate_images = []
         # 文本和图像编码
         with torch.inference_mode():
             # auto cast 会自动转化某些层为 float32
@@ -928,12 +928,6 @@ class Trainer:
                 # 生成随机噪声作为初始状态
                 latent_height = control_latents.shape[3]
                 latent_width = control_latents.shape[4]
-                latents = torch.randn(
-                    (1, control_latents.shape[1], control_latents.shape[2], latent_height, latent_width),
-                    device=self.config.predict.devices['transformer'],
-                    dtype=self.weight_dtype
-                )
-                # [1, 1, 16, 88, 128]: [B,T,C,H,W]
 
                 # 计算图像序列长度用于动态mu计算
                 # VAE编码后的latent尺寸需要除以2来得到实际的patch数量
@@ -948,8 +942,48 @@ class Trainer:
                 )
                 timesteps = self.noise_scheduler.timesteps
                 # timesteps from 1000 to 0, length = num_inference_steps
+
+                # 生成初始噪声作为起始状态 (pure noise at t=1)
+                latents = torch.randn(
+                    (1, control_latents.shape[1], control_latents.shape[2], latent_height, latent_width),
+                    device=self.config.predict.devices['transformer'],
+                    dtype=self.weight_dtype
+                )
+                # [1, 1, 16, 88, 128]: [B,T,C,H,W]
+
+                print(f"Initial latents shape: {latents.shape}")
+                print(f"Initial latents mean: {latents.mean():.4f}, std: {latents.std():.4f}")
+                print(f"Timesteps: {timesteps[:5]} ... {timesteps[-5:]}")
+                print(f"Scheduler sigmas: {self.noise_scheduler.sigmas[:5]} ... {self.noise_scheduler.sigmas[-5:]}")
                 intermediate_images.append(self.decode_image(control_latents))
 
+                # 准备negative prompt embeds (如果需要CFG)
+                use_cfg = true_cfg_scale > 1.0 and negative_prompt.strip() != ""
+                if use_cfg:
+                    # 编码negative prompt
+                    negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
+                        negative_prompt, prompt_image_tensor, self.config.predict.devices['text_encoder']
+                    )
+                    print(f"Using CFG with scale: {true_cfg_scale}")
+                    print(f"Negative prompt: '{negative_prompt}'")
+                else:
+                    print("No CFG - negative prompt empty or scale <= 1.0")
+
+                # 移动prompt embeds到transformer device
+                prompt_embeds = prompt_embeds.to(
+                    device=self.config.predict.devices['transformer'], dtype=self.weight_dtype
+                )
+                prompt_embeds_mask = prompt_embeds_mask.to(
+                    device=self.config.predict.devices['transformer']
+                )
+
+                if use_cfg:
+                    negative_prompt_embeds = negative_prompt_embeds.to(
+                        device=self.config.predict.devices['transformer'], dtype=self.weight_dtype
+                    )
+                    negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(
+                        device=self.config.predict.devices['transformer']
+                    )
 
                 # 降噪循环
                 from tqdm import tqdm
@@ -960,166 +994,129 @@ class Trainer:
 
                     intermediate_images.append(self.decode_image(latents))
 
-                    # 扩展潜在向量以进行classifier-free guidance
-                    latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
-                    # [2, 1, 16, 88, 128] # two latents for classifier-free guidance
-
-                    # 打包潜在向量
-                    packed_latents = QwenImagePipeline._pack_latents(
-                        latent_model_input,
-                        latent_model_input.shape[0],
-                        latent_model_input.shape[2],
-                        latent_model_input.shape[3],
-                        latent_model_input.shape[4],
+                    # 打包单个latents（不进行批量扩展）
+                    packed_latents_single = QwenImagePipeline._pack_latents(
+                        latents,  # [1, 1, 16, 88, 128]
+                        1,  # batch_size = 1
+                        latents.shape[2],
+                        latents.shape[3],
+                        latents.shape[4],
                     )
-                    # [2, 2816, 64] shape of packed_latents
+                    # [1, 2816, 64] shape of packed_latents_single
 
-                    packed_control_latents = QwenImagePipeline._pack_latents(
-                        control_latents.repeat(latent_model_input.shape[0], 1, 1, 1, 1),
-                        latent_model_input.shape[0],
+                    packed_control_latents_single = QwenImagePipeline._pack_latents(
+                        control_latents,
+                        1,  # batch_size = 1
                         control_latents.shape[2],
                         control_latents.shape[3],
                         control_latents.shape[4],
                     )
-                    # [2, 2816, 64] shape of packed control latents
-                    # convert to transformer device and ensure correct dtype
-                    packed_latents = packed_latents.to(
-                        device=self.config.predict.devices['transformer'],
-                        dtype=self.weight_dtype
-                    )
-                    packed_control_latents = packed_control_latents.to(
-                        device=self.config.predict.devices['transformer'],
-                        dtype=self.weight_dtype
+                    # [1, 2816, 64] shape of packed control latents
+
+                    # 准备单个输入
+                    packed_latents_single = packed_latents_single.to(
+                            self.config.predict.devices['transformer'],
+                            dtype=self.weight_dtype
+                        )
+                    packed_control_latents_single = packed_control_latents_single.to(
+                            self.config.predict.devices['transformer'],
+                            dtype=self.weight_dtype
+                        )
+                    packed_input_single = torch.cat([packed_latents_single, packed_control_latents_single], dim=1)
+                    # [1, 5632, 64] shape of packed_input_single
+                    packed_input_single = packed_input_single.to(
+                        device=self.config.predict.devices['transformer'], dtype=self.weight_dtype
                     )
 
-                    # 准备输入
-                    packed_input = torch.cat([packed_latents, packed_control_latents], dim=1)
-                    # [2, 5632, 64] shape of packed_input, by concatenating packed_latents and packed_control_latents
                     # 准备图像形状信息
-                    img_shapes = [[
+                    img_shapes_single = [[
                         (1, latents.shape[3] // 2, latents.shape[4] // 2),
                         (1, control_latents.shape[3] // 2, control_latents.shape[4] // 2),
-                    ]] * latent_model_input.shape[0]
-                    # [[(1, 44, 64), (1, 44, 64)], [(1, 44, 64), (1, 44, 64)]]
+                    ]]
+
                     # 准备文本序列长度
-                    txt_seq_lens = prompt_embeds_mask.sum(dim=0).item()
-                    txt_seq_lens = [txt_seq_lens] * latent_model_input.shape[0]
-                    # [2204, 2204]
-                    # 准备提示嵌入
-                    if guidance_scale > 1.0:
-                        # 创建空提示用于classifier-free guidance
-                        empty_prompt_embeds, empty_prompt_embeds_mask = self.encode_empty_prompt(
-                            prompt_image_tensor, self.config.predict.devices['text_encoder']
-                        )
-                        # pad empty prompt embeds to the same size of prompt_embeds
-                        max_len = max(prompt_embeds.shape[0], empty_prompt_embeds.shape[0])
+                    txt_seq_lens_single = [prompt_embeds_mask.sum().item()]
 
-                        # pad prompt_embeds if needed
-                        if prompt_embeds.shape[0] < max_len:
-                            pad_len = max_len - prompt_embeds.shape[0]
-                            pad_embeds = torch.zeros(
-                                pad_len, prompt_embeds.shape[1],
-                                dtype=prompt_embeds.dtype, device=prompt_embeds.device
-                            )
-                            prompt_embeds = torch.cat([prompt_embeds, pad_embeds], dim=0)
-                            pad_mask = torch.zeros(
-                                pad_len, dtype=prompt_embeds_mask.dtype,
-                                device=prompt_embeds_mask.device
-                            )
-                            prompt_embeds_mask = torch.cat([prompt_embeds_mask, pad_mask], dim=0)
-
-                        # pad empty_prompt_embeds if needed
-                        if empty_prompt_embeds.shape[0] < max_len:
-                            pad_len = max_len - empty_prompt_embeds.shape[0]
-                            pad_embeds = torch.zeros(
-                                pad_len, empty_prompt_embeds.shape[1],
-                                dtype=empty_prompt_embeds.dtype, device=empty_prompt_embeds.device
-                            )
-                            empty_prompt_embeds = torch.cat([empty_prompt_embeds, pad_embeds], dim=0)
-                            pad_mask = torch.zeros(
-                                pad_len, dtype=empty_prompt_embeds_mask.dtype,
-                                device=empty_prompt_embeds_mask.device
-                            )
-                            empty_prompt_embeds_mask = torch.cat([empty_prompt_embeds_mask, pad_mask], dim=0)
-
-                        combined_prompt_embeds = torch.cat([
-                            empty_prompt_embeds.unsqueeze(0),
-                            prompt_embeds.unsqueeze(0)
-                        ], dim=0).to(device=self.config.predict.devices['transformer'], dtype=self.weight_dtype)
-                        # [2, 2204, 3584] [2, max_len, 3584]
-                        combined_prompt_embeds_mask = torch.cat([
-                            empty_prompt_embeds_mask.unsqueeze(0),
-                            prompt_embeds_mask.unsqueeze(0)
-                        ], dim=0).to(device=self.config.predict.devices['transformer'])
-                        # [2, 2204] [2, max_len]
-                    else:
-                        combined_prompt_embeds = prompt_embeds.unsqueeze(0).to(
-                            device=self.config.predict.devices['transformer'], dtype=self.weight_dtype
-                        )
-                        combined_prompt_embeds_mask = prompt_embeds_mask.unsqueeze(0).to(
-                            device=self.config.predict.devices['transformer']
-                        )
-                        # [1, seq_len, 3584] combined_prompt_embeds
-                        # [1, seq_len] combined_prompt_embeds_mask
-                    # Transformer前向传播
-                    packed_input = packed_input.to(
-                        device=self.config.predict.devices['transformer'],
-                        dtype=self.weight_dtype)
-                    # mask应该保持原数据类型（布尔或整数），不转换为weight_dtype
-                    combined_prompt_embeds_mask = combined_prompt_embeds_mask.to(
-                        device=self.config.predict.devices['transformer'],
-                        dtype=torch.bool)
-                    #  got this error:fp8_marlin_gemm only supports bfloat16 and float16
-                    combined_prompt_embeds = combined_prompt_embeds.to(
-                        device=self.config.predict.devices['transformer'],
-                        dtype=self.weight_dtype
+                    # 准备timestep tensor
+                    timestep_tensor = torch.tensor([t / 1000], dtype=self.weight_dtype).to(
+                        self.config.predict.devices['transformer']
                     )
 
-                    noise_pred = self.models["transformer"](
-                        hidden_states=packed_input,
-                        timestep=(
-                            torch.tensor([t / 1000], dtype=self.weight_dtype)
-                            .repeat(latent_model_input.shape[0])
-                            .to(self.config.predict.devices['transformer'])
-                        ),
+                    velocity_pred_final = None
+
+                    # 如果使用CFG，先进行negative forward
+                    if use_cfg:
+                        # Negative forward pass
+                        velocity_pred_uncond = self.models["transformer"](
+                            hidden_states=packed_input_single,
+                            timestep=timestep_tensor,
+                            guidance=None,
+                            encoder_hidden_states_mask=negative_prompt_embeds_mask.unsqueeze(0),
+                            encoder_hidden_states=negative_prompt_embeds.unsqueeze(0),
+                            img_shapes=img_shapes_single,
+                            txt_seq_lens=txt_seq_lens_single,
+                            return_dict=False,
+                        )[0]
+                        # [1, 5632, 64] : [B,T,C]
+
+                        # 提取并unpack negative prediction
+                        velocity_pred_uncond = velocity_pred_uncond[:, :packed_latents_single.size(1)]
+                        velocity_pred_uncond = QwenImagePipeline._unpack_latents(
+                            velocity_pred_uncond,
+                            height=latents.shape[3] * self.vae_scale_factor,
+                            width=latents.shape[4] * self.vae_scale_factor,
+                            vae_scale_factor=self.vae_scale_factor,
+                        )
+                        # [1, 16, 1, 88, 128]: [B,C,T,H,W]
+
+                    # Positive forward pass
+                    velocity_pred_text = self.models["transformer"](
+                        hidden_states=packed_input_single,
+                        timestep=timestep_tensor,
                         guidance=None,
-                        encoder_hidden_states_mask=combined_prompt_embeds_mask,
-                        encoder_hidden_states=combined_prompt_embeds,
-                        img_shapes=img_shapes,
-                        txt_seq_lens=txt_seq_lens,
+                        encoder_hidden_states_mask=prompt_embeds_mask.unsqueeze(0),
+                        encoder_hidden_states=prompt_embeds.unsqueeze(0),
+                        img_shapes=img_shapes_single,
+                        txt_seq_lens=txt_seq_lens_single,
                         return_dict=False,
                     )[0]
-                    # [2, 5632, 64] : [B,T,C]
+                    # [1, 5632, 64] : [B,T,C]
 
-                    # 提取预测的噪声
-                    noise_pred = noise_pred[:, :packed_latents.size(1)]
-                    noise_pred = QwenImagePipeline._unpack_latents(
-                        noise_pred,
+                    # 提取并unpack positive prediction
+                    velocity_pred_text = velocity_pred_text[:, :packed_latents_single.size(1)]
+                    velocity_pred_text = QwenImagePipeline._unpack_latents(
+                        velocity_pred_text,
                         height=latents.shape[3] * self.vae_scale_factor,
                         width=latents.shape[4] * self.vae_scale_factor,
                         vae_scale_factor=self.vae_scale_factor,
                     )
-                    # [2, 16, 1, 88, 128]: [B,C,T,H,W]
+                    # [1, 16, 1, 88, 128]: [B,C,T,H,W]
 
-                    # Classifier-free guidance
-                    if guidance_scale > 1.0:
-                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                        # [1, 16, 1, 88, 128] : [B,C,T,H,W]
-                    # 更新潜在向量
-                    # latent: [B,T,C,H,W]， noise pred: [B,T,C,H,W]
-                    noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
+                    # 应用CFG公式
+                    if use_cfg:
+                        velocity_pred_final = (velocity_pred_uncond +
+                                               true_cfg_scale * (velocity_pred_text - velocity_pred_uncond))
+                    else:
+                        velocity_pred_final = velocity_pred_text
+
+                    # 转换维度 [B,C,T,H,W] -> [B,T,C,H,W]
+                    velocity_pred_final = velocity_pred_final.permute(0, 2, 1, 3, 4)
                     # [1, 1, 16, 88, 128] : [B,T,C,H,W]
-                    latents = self.noise_scheduler.step(noise_pred, t, latents, return_dict=False)[0]
-                    # [1, 16, 16, 88, 128]
+                    # 更新潜在向量
+                    print(f"Before step - latents shape: {latents.shape}")
+                    print(f"velocity_pred_final shape: {velocity_pred_final.shape}")
+                    print(f"Current timestep t: {t}")
 
-
+                    # 更新潜在向量
+                    latents = self.noise_scheduler.step(velocity_pred_final, t, latents, return_dict=False)[0]
+                    print(f"After step - latents shape: {latents.shape}")
 
                 image = self.decode_image(latents)
 
         return image, intermediate_images
 
     def decode_image(self, latents):
+        # correct now
         latents = latents.to(self.config.predict.devices['vae'], dtype=self.weight_dtype)
         latents_mean = (
             torch.tensor(self.vae_latent_mean, dtype=self.weight_dtype)
@@ -1132,7 +1129,7 @@ class Trainer:
             .to(latents.device)
         )
         # 逆转标准化：(latents / latents_std) + latents_mean
-        latents = latents / latents_std + latents_mean
+        latents = latents * latents_std + latents_mean
         # [1, 1, 16, 88, 128]
         # 转换回VAE期望的维度格式 [B, T, C, H, W] -> [B, C, T, H, W]
         latents = latents.permute(0, 2, 1, 3, 4)

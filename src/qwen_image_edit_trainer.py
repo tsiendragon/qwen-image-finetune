@@ -1,0 +1,1167 @@
+import copy
+import os
+import shutil
+import torch
+import random
+import PIL
+import gc
+import numpy as np
+from typing import Optional, Union, List, Dict, Any
+from PIL import Image
+from tqdm.auto import tqdm
+from typing import Union, List
+from accelerate import Accelerator
+from accelerate.utils import ProjectConfiguration
+from diffusers.loaders import AttnProcsLayers
+from diffusers.optimization import get_scheduler
+from diffusers.training_utils import (
+    compute_density_for_timestep_sampling,
+    compute_loss_weighting_for_sd3,
+)
+from diffusers.utils import convert_state_dict_to_diffusers
+from diffusers.utils.torch_utils import is_compiled_module
+from peft.utils import get_peft_model_state_dict
+from peft import LoraConfig
+
+from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
+    QwenImageEditPipeline, calculate_shift, calculate_dimensions, retrieve_latents,randn_tensor
+)
+from src.utils.logger import get_logger
+from src.data.cache_manager import check_cache_exists
+
+logger = get_logger(__name__, log_level="INFO")
+
+
+def get_lora_layers(model):
+    """遍历模型找出所有LoRA相关模块"""
+    lora_layers = {}
+
+    def fn_recursive_find_lora_layer(name: str, module: torch.nn.Module, processors):
+        if "lora" in name:
+            lora_layers[name] = module
+            print(name)
+        for sub_name, child in module.named_children():
+            fn_recursive_find_lora_layer(f"{name}.{sub_name}", child, lora_layers)
+        return lora_layers
+
+    for name, module in model.named_children():
+        fn_recursive_find_lora_layer(name, module, lora_layers)
+
+    return lora_layers
+
+
+class QwenImageEditTrainer:
+    """基于QwenImageEditPipeline的训练器类"""
+
+    def __init__(self, config):
+        self.config = config
+        self.accelerator = None
+        self.optimizer = None
+        self.lr_scheduler = None
+        self.global_step = 0
+
+        # 新增的组件属性
+        self.vae = None                   # AutoencoderKLQwenImage
+        self.text_encoder = None          # Qwen2_5_VLForConditionalGeneration (text_encoder)
+        self.transformer = None           # QwenImageTransformer2DModel
+        self.tokenizer = None             # Qwen2Tokenizer
+        self.scheduler = None             # FlowMatchEulerDiscreteScheduler
+
+        # 缓存相关属性
+        self.use_cache = config.cache.use_cache
+        self.cache_exist = check_cache_exists(config.cache.cache_dir)
+        self.cache_dir = config.cache.cache_dir
+
+        # 其他配置
+        self.quantize = config.model.quantize
+        self.weight_dtype = torch.bfloat16
+        self.batch_size = config.data.batch_size
+        self.prompt_image_dropout_rate = config.data.init_args.get('prompt_image_dropout_rate', 0.1)
+
+        # 从VAE配置中获取的参数
+        self.vae_scale_factor = None
+        self.vae_latent_mean = None
+        self.vae_latent_std = None
+        self.vae_z_dim = None
+
+    def load_model(self):
+        """从QwenImageEditPipeline加载并分离组件"""
+        logger.info("Loading QwenImageEditPipeline and separating components...")
+
+        # 使用pipeline加载完整模型
+        pipe = QwenImageEditPipeline.from_pretrained(
+            self.config.model.pretrained_model_name_or_path,
+            torch_dtype=self.weight_dtype
+        )
+
+        # 分离各个组件
+
+        from src.models.load_model import load_vae
+        self.vae = load_vae(
+            self.config.model.pretrained_model_name_or_path,
+            weight_dtype=self.weight_dtype
+        )
+        # same to model constructed from vae self.vae = pipe.vae
+        self.text_encoder = pipe.text_encoder  # text_encoder实际是qwen_vl
+        # self.transformer = pipe.transformer this is same as the following, verified
+        from src.models.load_model import load_transformer
+        self.transformer = load_transformer(
+            self.config.model.pretrained_model_name_or_path,
+            weight_dtype=self.weight_dtype
+        )
+        # load_transformer is same as pipe.transformer
+
+        from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLProcessor
+        from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+        from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
+
+        self.processor: Qwen2VLProcessor = pipe.processor
+        self.tokenizer: Qwen2Tokenizer = pipe.tokenizer
+        self.scheduler: FlowMatchEulerDiscreteScheduler = pipe.scheduler
+        # 初始化图像处理器（用于predict方法）
+        from diffusers.image_processor import VaeImageProcessor
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
+
+        # 设置VAE相关参数
+        self.vae_scale_factor = 2 ** len(self.vae.temperal_downsample)
+        self.vae_latent_mean = self.vae.config.latents_mean
+        self.vae_latent_std = self.vae.config.latents_std
+        self.vae_z_dim = self.vae.config.z_dim
+
+        # 从原始pipeline复制的属性
+        self.latent_channels = self.vae.config.z_dim
+        self._guidance_scale = 1.0
+        self._attention_kwargs = None
+        self._current_timestep = None
+        self._interrupt = False
+        self.prompt_template_encode = pipe.prompt_template_encode
+        self.prompt_template_encode_start_idx = pipe.prompt_template_encode_start_idx
+
+
+        # 设置模型为训练/评估模式
+        self.vae.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+
+        logger.info(f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}")
+
+    def setup_accelerator(self):
+        """初始化加速器和日志配置"""
+        logging_dir = os.path.join(
+            self.config.logging.output_dir, self.config.logging.logging_dir
+        )
+        accelerator_project_config = ProjectConfiguration(
+            project_dir=self.config.logging.output_dir, logging_dir=logging_dir
+        )
+
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
+            mixed_precision=self.config.train.mixed_precision,
+            log_with=self.config.logging.report_to,
+            project_config=accelerator_project_config,
+        )
+
+        # 设置权重数据类型
+        if self.accelerator.mixed_precision == "fp16":
+            self.weight_dtype = torch.float16
+        elif self.accelerator.mixed_precision == "bf16":
+            self.weight_dtype = torch.bfloat16
+
+        # 创建输出目录
+        if (
+            self.accelerator.is_main_process
+            and self.config.logging.output_dir is not None
+        ):
+            os.makedirs(self.config.logging.output_dir, exist_ok=True)
+
+        logger.info(f"Mixed precision: {self.accelerator.mixed_precision}")
+
+    def quantize_model(self, model, device):
+        """FP8量化模型"""
+        from optimum.quanto import quantize, qfloat8, freeze
+
+        torch_dtype = self.weight_dtype
+        all_blocks = list(model.transformer_blocks)
+        for block in tqdm(all_blocks):
+            block.to(device, dtype=torch_dtype)
+            quantize(block, weights=qfloat8)
+            freeze(block)
+            block.to("cpu")
+        model.to(device, dtype=torch_dtype)
+        quantize(model, weights=qfloat8)
+        freeze(model)
+        return model
+
+    def set_lora(self):
+        """设置LoRA配置"""
+        if self.quantize:
+            self.transformer = self.quantize_model(self.transformer, self.accelerator.device)
+        else:
+            self.transformer.to(self.accelerator.device)
+
+        lora_config = LoraConfig(
+            r=self.config.model.lora.r,
+            lora_alpha=self.config.model.lora.lora_alpha,
+            init_lora_weights=self.config.model.lora.init_lora_weights,
+            target_modules=self.config.model.lora.target_modules,
+        )
+
+        # 配置模型
+        if self.quantize:
+            self.transformer.to(self.accelerator.device)
+        else:
+            self.transformer.to(self.accelerator.device, dtype=self.weight_dtype)
+
+        self.transformer.add_adapter(lora_config)
+        self.transformer.requires_grad_(False)
+        self.transformer.train()
+        self.transformer.enable_gradient_checkpointing()
+
+        # 只训练 LoRA 参数
+        trainable_params = 0
+        for name, param in self.transformer.named_parameters():
+            if "lora" in name:
+                param.requires_grad = True
+                trainable_params += param.numel()
+            else:
+                param.requires_grad = False
+
+        logger.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
+
+    def load_lora(self, pretrained_weight):
+        """加载预训练的LoRA权重"""
+        if pretrained_weight is not None:
+            self.transformer.load_adapter(pretrained_weight)
+            logger.info(f"Loaded LoRA weights from {pretrained_weight}")
+
+    def save_lora(self, save_path):
+        """保存LoRA权重"""
+        unwrapped_transformer = self.accelerator.unwrap_model(self.transformer)
+        if is_compiled_module(unwrapped_transformer):
+            unwrapped_transformer = unwrapped_transformer._orig_mod
+
+        lora_state_dict = convert_state_dict_to_diffusers(
+            get_peft_model_state_dict(unwrapped_transformer)
+        )
+
+        QwenImageEditPipeline.save_lora_weights(
+            save_path, lora_state_dict, safe_serialization=True
+        )
+        logger.info(f"Saved LoRA weights to {save_path}")
+
+    def merge_lora(self):
+        """合并LoRA权重到主模型"""
+        self.transformer.merge_adapter()
+        logger.info("Merged LoRA weights into base model")
+
+    def set_model_devices(self, mode="train"):
+        """根据不同模式设置模型设备分配"""
+        if mode == "train":
+            assert hasattr(self, "accelerator"), "accelerator must be set before setting model devices"
+
+        if self.cache_exist and self.use_cache and mode == "train":
+            # 缓存模式：只需要transformer
+            self.text_encoder.cpu()
+            torch.cuda.empty_cache()
+            self.vae.cpu()
+            torch.cuda.empty_cache()
+            del self.text_encoder
+            del self.vae
+            gc.collect()
+            self.transformer.to(self.accelerator.device)
+
+        elif not self.use_cache and mode == "train":
+            # 非缓存模式：需要编码器
+            self.vae.decoder.cpu()
+            torch.cuda.empty_cache()
+            gc.collect()
+            self.vae.encoder.to(self.accelerator.device)
+            self.text_encoder.to(self.accelerator.device)
+            self.transformer.to(self.accelerator.device)
+
+        elif mode == "cache":
+            # 缓存模式：需要编码器，不需要transformer
+            self.transformer.cpu()
+            torch.cuda.empty_cache()
+            del self.transformer
+            gc.collect()
+            self.vae.decoder.cpu()
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        elif mode == "predict":
+            # 预测模式：按配置分配到不同GPU
+            devices = self.config.predict.devices
+            self.vae.to(devices.vae)
+            self.text_encoder.to(devices.text_encoder)
+            self.transformer.to(devices.transformer)
+
+    def encode_image_embedding(self, image: torch.Tensor, device):
+        """编码图像为embedding"""
+        image = self._preprocess_image_for_cache(image, adaptive_resolution=False)
+        pixel_values = self._vae_image_standardization(image)
+
+        with torch.inference_mode():
+            with torch.autocast(device_type="cuda", dtype=self.weight_dtype, enabled=True):
+                pixel_values = pixel_values.to(dtype=self.weight_dtype, device=device, non_blocking=True)
+                pixel_latents = self.vae.encode(pixel_values).latent_dist.sample()
+
+        return pixel_latents[0]
+
+    def decode_vae_latent(self, latents):
+        """解码VAE潜在向量为RGB图像"""
+        latents = latents.to(self.vae.device, dtype=self.weight_dtype)
+
+        # 逆转标准化
+        latents_mean = (
+            torch.tensor(self.vae_latent_mean, dtype=self.weight_dtype)
+            .view(1, 1, self.vae_z_dim, 1, 1)
+            .to(latents.device)
+        )
+        latents_std = (
+            torch.tensor(self.vae_latent_std, dtype=self.weight_dtype)
+            .view(1, 1, self.vae_z_dim, 1, 1)
+            .to(latents.device)
+        )
+        latents = latents * latents_std + latents_mean
+
+        # 转换维度格式
+        latents = latents.permute(0, 2, 1, 3, 4)
+
+        # 解码图像
+        image = self.vae.decode(latents).sample
+
+        # 后处理
+        image = self._postprocess_image(image)
+        return image
+
+    # 静态方法：直接引用QwenImageEditPipeline的方法
+    _pack_latents = staticmethod(QwenImageEditPipeline._pack_latents)
+    _unpack_latents = staticmethod(QwenImageEditPipeline._unpack_latents)
+
+    def _preprocess_image_for_cache(self, image: torch.Tensor, adaptive_resolution=True):
+        """预处理图像用于缓存"""
+        # 转换为PIL图像
+        image = Image.fromarray(image.permute(1, 2, 0).cpu().numpy().astype("uint8"))
+        if adaptive_resolution:
+            calculated_width, calculated_height, _ = calculate_dimensions(
+                1024 * 1024, image.size[0] / image.size[1]
+            )
+            # 使用processor的resize方法
+            image = self.processor.image_processor.resize(image, calculated_height, calculated_width)
+        return image
+
+    def _vae_image_standardization(self, image: PIL.Image):
+        """VAE图像标准化"""
+        image = np.array(image).astype("float32")
+        image = (image / 127.5) - 1
+        image = torch.from_numpy(image)
+        image = image.permute(2, 0, 1)
+        image = image.unsqueeze(0)
+        pixel_values = image.unsqueeze(2)
+        return pixel_values
+
+    def _postprocess_image(self, image_tensor: torch.Tensor) -> np.ndarray:
+        """后处理输出图像"""
+        image = image_tensor.cpu().float()
+        image = image.squeeze(2).squeeze(0)  # [C,H,W]
+        image = (image / 2 + 0.5).clamp(0, 1)  # 从[-1,1]转换到[0,1]
+        image = image.permute(1, 2, 0).numpy()  # [H,W,C]
+        image = (image * 255).astype(np.uint8)
+        return image
+
+    def training_step(self, batch):
+        """执行单个训练步骤"""
+        # 检查是否有缓存数据
+        if 'prompt_embed' in batch and 'pixel_latent' in batch and 'control_latent' in batch:
+            return self._training_step_cached(batch)
+        else:
+            return self._training_step_compute(batch)
+
+    def _training_step_cached(self, batch):
+        """使用缓存嵌入的训练步骤"""
+        pixel_latents = batch["pixel_latent"].to(self.accelerator.device, dtype=self.weight_dtype)
+        control_latents = batch["control_latent"].to(self.accelerator.device, dtype=self.weight_dtype)
+        prompt_embeds = batch["prompt_embed"].to(self.accelerator.device)
+        prompt_embeds_mask = batch["prompt_embeds_mask"].to(self.accelerator.device)
+
+        return self._compute_loss(pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask)
+
+    def _training_step_compute(self, batch):
+        """计算嵌入的训练步骤（无缓存）"""
+        image, control, prompt = batch["image"], batch["control"], batch["prompt"]
+
+        # 编码图像和控制图像
+        pixel_latents = self.encode_image_embedding(image, self.accelerator.device)
+        control_latents = self.encode_image_embedding(control, self.accelerator.device)
+
+        # 编码提示
+        if random.random() < self.config.data.init_args.get('caption_dropout_rate', 0.1):
+            prompt = ""
+        prompt_embeds, prompt_embeds_mask = self.encode_prompt_image_embedding(
+            prompt, control, self.accelerator.device
+        )
+
+        # 标准化潜在向量
+        with torch.inference_mode():
+            latents_mean = (
+                torch.tensor(self.vae_latent_mean, dtype=self.weight_dtype)
+                .view(1, 1, self.vae_z_dim, 1, 1)
+                .to(pixel_latents.device, non_blocking=True)
+            )
+            latents_std = (
+                (1.0 / torch.tensor(self.vae_latent_std, dtype=self.weight_dtype))
+                .view(1, 1, self.vae_z_dim, 1, 1)
+                .to(pixel_latents.device, non_blocking=True)
+            )
+            pixel_latents = (pixel_latents - latents_mean) * latents_std
+            control_latents = (control_latents - latents_mean) * latents_std
+
+        return self._compute_loss(pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask)
+
+    def _compute_loss(self, pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask):
+        """计算损失的通用方法"""
+        # 维度转换
+        pixel_latents = pixel_latents.permute(0, 2, 1, 3, 4)
+        control_latents = control_latents.permute(0, 2, 1, 3, 4)
+
+        # 标准化
+        latents_mean = (
+            torch.tensor(self.vae_latent_mean)
+            .view(1, 1, self.vae_z_dim, 1, 1)
+            .to(pixel_latents.device, pixel_latents.dtype)
+        )
+        latents_std = 1.0 / torch.tensor(self.vae_latent_std).view(1, 1, self.vae_z_dim, 1, 1).to(
+            pixel_latents.device, pixel_latents.dtype
+        )
+        pixel_latents = (pixel_latents - latents_mean) * latents_std
+        control_latents = (control_latents - latents_mean) * latents_std
+
+        with torch.no_grad():
+            bsz = pixel_latents.shape[0]
+            noise = torch.randn_like(
+                pixel_latents, device=self.accelerator.device, dtype=self.weight_dtype
+            )
+
+            # 采样时间步
+            u = compute_density_for_timestep_sampling(
+                weighting_scheme="none",
+                batch_size=bsz,
+                logit_mean=0.0,
+                logit_std=1.0,
+                mode_scale=1.29,
+            )
+            indices = (u * self.scheduler.config.num_train_timesteps).long()
+            timesteps = self.scheduler.timesteps[indices].to(device=pixel_latents.device)
+
+            sigmas = self._get_sigmas(timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype)
+            noisy_model_input = (1.0 - sigmas) * pixel_latents + sigmas * noise
+
+            # 打包潜在向量
+            packed_noisy_model_input = self._pack_latents(
+                noisy_model_input, bsz, noisy_model_input.shape[2],
+                noisy_model_input.shape[3], noisy_model_input.shape[4]
+            )
+
+            packed_control_latents = self._pack_latents(
+                control_latents, bsz, control_latents.shape[2],
+                control_latents.shape[3], control_latents.shape[4]
+            )
+
+            # 准备输入
+            img_shapes = [
+                [
+                    (1, noisy_model_input.shape[3] // 2, noisy_model_input.shape[4] // 2),
+                    (1, control_latents.shape[3] // 2, control_latents.shape[4] // 2),
+                ]
+            ] * bsz
+
+            packed_input = torch.cat([packed_noisy_model_input, packed_control_latents], dim=1)
+            txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
+            prompt_embeds = prompt_embeds.repeat(bsz, 1, 1)
+
+        # 前向传播
+        model_pred = self.transformer(
+            hidden_states=packed_input,
+            timestep=timesteps / 1000,
+            guidance=None,
+            encoder_hidden_states_mask=prompt_embeds_mask,
+            encoder_hidden_states=prompt_embeds,
+            img_shapes=img_shapes,
+            txt_seq_lens=txt_seq_lens,
+            return_dict=False,
+        )[0]
+
+        model_pred = model_pred[:, :packed_noisy_model_input.size(1)]
+        model_pred = self._unpack_latents(
+            model_pred,
+            height=noisy_model_input.shape[3] * self.vae_scale_factor,
+            width=noisy_model_input.shape[4] * self.vae_scale_factor,
+            vae_scale_factor=self.vae_scale_factor,
+        )
+
+        # 计算损失
+        weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
+        target = noise - pixel_latents
+        target = target.permute(0, 2, 1, 3, 4)
+
+        loss = torch.mean(
+            (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(
+                target.shape[0], -1
+            ),
+            1,
+        )
+        loss = loss.mean()
+
+        return loss
+
+    def _get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
+        """计算噪声调度器的sigma值"""
+        noise_scheduler_copy = copy.deepcopy(self.scheduler)
+        sigmas = noise_scheduler_copy.sigmas.to(device=self.accelerator.device, dtype=dtype)
+        schedule_timesteps = noise_scheduler_copy.timesteps.to(self.accelerator.device)
+        timesteps = timesteps.to(self.accelerator.device)
+        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
+        sigma = sigmas[step_indices].flatten()
+        while len(sigma.shape) < n_dim:
+            sigma = sigma.unsqueeze(-1)
+        return sigma
+
+    def configure_optimizers(self):
+        """配置优化器和学习率调度器"""
+        lora_layers = filter(lambda p: p.requires_grad, self.transformer.parameters())
+
+        # 使用配置中的优化器参数
+        optimizer_config = self.config.optimizer.init_args
+        self.optimizer = torch.optim.AdamW(
+            lora_layers,
+            lr=optimizer_config["lr"],
+            betas=optimizer_config["betas"],
+            weight_decay=optimizer_config.get("weight_decay", 0.01),
+            eps=optimizer_config.get("eps", 1e-8),
+        )
+
+        self.lr_scheduler = get_scheduler(
+            self.config.lr_scheduler.scheduler_type,
+            optimizer=self.optimizer,
+            num_warmup_steps=self.config.lr_scheduler.warmup_steps * self.accelerator.num_processes,
+            num_training_steps=self.config.train.max_train_steps * self.accelerator.num_processes,
+        )
+
+    def accelerator_prepare(self, train_dataloader):
+        """准备加速器"""
+        lora_layers_model = AttnProcsLayers(get_lora_layers(self.transformer))
+        self.transformer.enable_gradient_checkpointing()
+
+        lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
+            lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
+        )
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+
+        # 初始化追踪器
+        if self.accelerator.is_main_process:
+            self.accelerator.init_trackers(
+                self.config.logging.tracker_project_name, {"test": None}
+            )
+        return train_dataloader
+
+    def save_checkpoint(self, epoch, global_step):
+        """保存检查点"""
+        if not self.accelerator.is_main_process:
+            return
+
+        # 管理检查点数量
+        if self.config.train.checkpoints_total_limit is not None:
+            checkpoints = os.listdir(self.config.logging.output_dir)
+            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
+            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+
+            if len(checkpoints) >= self.config.train.checkpoints_total_limit:
+                num_to_remove = len(checkpoints) - self.config.train.checkpoints_total_limit + 1
+                removing_checkpoints = checkpoints[0:num_to_remove]
+
+                for removing_checkpoint in removing_checkpoints:
+                    removing_checkpoint = os.path.join(
+                        self.config.logging.output_dir, removing_checkpoint
+                    )
+                    shutil.rmtree(removing_checkpoint)
+
+        save_path = os.path.join(
+            self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
+        )
+        os.makedirs(save_path, exist_ok=True)
+
+        # 保存 LoRA 权重
+        self.save_lora(save_path)
+
+    def cache_step(self, batch, vae_encoder_device, text_encoder_device):
+        """缓存步骤 - 基于现有trainer.py的实现"""
+        image, control, prompt = batch["image"], batch["control"], batch["prompt"]
+        file_hashes = batch["file_hashes"]
+        image_hash = file_hashes["image_hash"]
+        control_hash = file_hashes["control_hash"]
+        prompt_hash = file_hashes["prompt_hash"]
+        empty_prompt_hash = file_hashes["empty_prompt_hash"]
+        n_samples = image.shape[0]
+
+        for i in range(n_samples):
+            prompt_i = prompt[i]
+            image_i = image[i]
+            control_i = control[i]
+
+            # 编码图像
+            pixel_latent = self.encode_image_embedding(image_i, vae_encoder_device)
+            control_latent = self.encode_image_embedding(control_i, vae_encoder_device)
+
+            # 编码提示
+            prompt_embed, prompt_embeds_mask = self.encode_prompt_image_embedding(
+                prompt_i, control_i, text_encoder_device
+            )
+            empty_prompt_embed, empty_prompt_embeds_mask = self._encode_empty_prompt(
+                control_i, text_encoder_device
+            )
+
+            # 保存到缓存
+            self.cache_manager.save_cache("pixel_latent", image_hash[i], pixel_latent)
+            self.cache_manager.save_cache("control_latent", control_hash[i], control_latent)
+            self.cache_manager.save_cache("prompt_embed", prompt_hash[i], prompt_embed)
+            self.cache_manager.save_cache("prompt_embeds_mask", prompt_hash[i], prompt_embeds_mask)
+            self.cache_manager.save_cache("empty_prompt_embed", empty_prompt_hash[i], empty_prompt_embed)
+            self.cache_manager.save_cache("empty_prompt_embeds_mask", empty_prompt_hash[i], empty_prompt_embeds_mask)
+
+    def _encode_empty_prompt(self, prompt_image: torch.Tensor, device: str):
+        """编码空提示"""
+        prompt_image = self._preprocess_image_for_cache(prompt_image, adaptive_resolution=True)
+
+        with torch.inference_mode():
+            with torch.autocast(device_type="cuda", dtype=self.weight_dtype, enabled=True):
+                prompt_embeds, prompt_embeds_mask = self.qwen_vl.encode_prompt(
+                    image=prompt_image,
+                    prompt=[""],
+                    device=device,
+                    num_images_per_prompt=1,
+                    max_sequence_length=1024,
+                )
+        return prompt_embeds[0], prompt_embeds_mask[0]
+
+    def cache_embeddings(self, train_dataloader):
+        """预计算并缓存embeddings"""
+        from tqdm import tqdm
+
+        self.cache_manager = train_dataloader.cache_manager
+        vae_encoder_device = self.config.cache.vae_encoder_device
+        text_encoder_device = self.config.cache.text_encoder_device
+
+        logger.info("Starting embedding caching process...")
+
+        # 加载模型
+        self.load_model()
+        self.set_model_devices(mode="cache")
+
+        # 设置设备
+        self.qwen_vl.to(text_encoder_device)
+        self.vae.to(vae_encoder_device, dtype=self.weight_dtype)
+        self.vae.decoder.to("cpu")
+
+        # 批量处理
+        for _, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
+            self.cache_step(batch, vae_encoder_device, text_encoder_device)
+
+        logger.info("Cache completed")
+
+        # 清理模型
+        self.qwen_vl.cpu()
+        self.vae.cpu()
+        del self.qwen_vl
+        del self.vae
+
+    def fit(self, train_dataloader):
+        """主训练循环"""
+        logger.info("Starting training process...")
+
+        # 设置组件
+        self.setup_accelerator()
+        self.load_model()
+        self.set_lora()
+        self.configure_optimizers()
+        self.set_model_devices(mode="train")
+        train_dataloader = self.accelerator_prepare(train_dataloader)
+
+        logger.info("***** Running training *****")
+        logger.info(f"  Instantaneous batch size per device = {self.batch_size}")
+        logger.info(f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}")
+        logger.info(f"  Use cache: {self.use_cache}, Cache exists: {self.cache_exist}")
+
+        # 进度条
+        progress_bar = tqdm(
+            range(0, self.config.train.max_train_steps),
+            desc="train",
+            disable=not self.accelerator.is_local_main_process,
+        )
+
+        # 训练循环
+        train_loss = 0.0
+        running_loss = 0.0
+
+        for epoch in range(self.config.train.num_epochs):
+            for _, batch in enumerate(train_dataloader):
+                with self.accelerator.accumulate(self.transformer):
+                    loss = self.training_step(batch)
+
+                    # 反向传播
+                    self.accelerator.backward(loss)
+                    if self.accelerator.sync_gradients:
+                        self.accelerator.clip_grad_norm_(
+                            self.transformer.parameters(),
+                            self.config.train.max_grad_norm,
+                        )
+
+                    self.optimizer.step()
+                    self.lr_scheduler.step()
+                    self.optimizer.zero_grad()
+
+                # 同步梯度时更新
+                if self.accelerator.sync_gradients:
+                    progress_bar.update(1)
+                    self.global_step += 1
+
+                    # 计算平均损失
+                    avg_loss = self.accelerator.gather(
+                        loss.repeat(self.batch_size)
+                    ).mean()
+                    train_loss += avg_loss.item() / self.config.train.gradient_accumulation_steps
+                    running_loss = train_loss
+
+                    # 记录日志
+                    self.accelerator.log({"train_loss": train_loss}, step=self.global_step)
+                    train_loss = 0.0
+
+                    # 保存检查点
+                    if self.global_step % self.config.train.checkpointing_steps == 0:
+                        self.save_checkpoint(epoch, self.global_step)
+
+                # 更新进度条
+                logs = {
+                    "loss": f"{running_loss:.3f}",
+                    "lr": f"{self.lr_scheduler.get_last_lr()[0]:.1e}",
+                }
+                progress_bar.set_postfix(**logs)
+
+                # 检查是否达到最大步数
+                if self.global_step >= self.config.train.max_train_steps:
+                    break
+
+        self.accelerator.wait_for_everyone()
+        self.accelerator.end_training()
+
+    def prepare_latents(
+        self,
+        image,
+        batch_size,
+        num_channels_latents,
+        height,
+        width,
+        dtype,
+        device,
+        generator=None,
+        latents=None,
+    ):
+        # VAE applies 8x compression on images but we must also account for packing which requires
+        # latent height and width to be divisible by 2.
+        height = 2 * (int(height) // (self.vae_scale_factor * 2))
+        width = 2 * (int(width) // (self.vae_scale_factor * 2))
+
+        shape = (batch_size, 1, num_channels_latents, height, width)
+
+        image_latents = None
+        if image is not None:
+            image = image.to(device=device, dtype=dtype)
+            if image.shape[1] != self.latent_channels:
+                image_latents = self._encode_vae_image(image=image, generator=generator)
+            else:
+                image_latents = image
+            if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
+                # expand init_latents for batch_size
+                additional_image_per_prompt = batch_size // image_latents.shape[0]
+                image_latents = torch.cat([image_latents] * additional_image_per_prompt, dim=0)
+            elif batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] != 0:
+                raise ValueError(
+                    f"Cannot duplicate `image` of batch size {image_latents.shape[0]} to {batch_size} text prompts."
+                )
+            else:
+                image_latents = torch.cat([image_latents], dim=0)
+
+            image_latent_height, image_latent_width = image_latents.shape[3:]
+            image_latents = self._pack_latents(
+                image_latents, batch_size, num_channels_latents, image_latent_height, image_latent_width
+            )
+
+        if isinstance(generator, list) and len(generator) != batch_size:
+            raise ValueError(
+                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+            )
+        if latents is None:
+            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
+        else:
+            latents = latents.to(device=device, dtype=dtype)
+
+        return latents, image_latents
+
+    def _encode_vae_image(self, image: torch.Tensor, generator: torch.Generator = None):
+        # generator is None by default
+        if isinstance(generator, list):
+            image_latents = [
+                retrieve_latents(self.vae.encode(image[i : i + 1]), generator=generator[i], sample_mode="argmax")
+                for i in range(image.shape[0])
+            ]
+            image_latents = torch.cat(image_latents, dim=0)
+        else:
+            image_latents = retrieve_latents(self.vae.encode(image), generator=generator, sample_mode="argmax")
+        latents_mean = (
+            torch.tensor(self.vae.config.latents_mean)
+            .view(1, self.latent_channels, 1, 1, 1)
+            .to(image_latents.device, image_latents.dtype)
+        )
+        latents_std = (
+            torch.tensor(self.vae.config.latents_std)
+            .view(1, self.latent_channels, 1, 1, 1)
+            .to(image_latents.device, image_latents.dtype)
+        )
+        image_latents = (image_latents - latents_mean) / latents_std
+
+        return image_latents
+
+    def setup_predict(self):
+        """设置预测模式"""
+        logger.info("Setting up prediction mode...")
+
+        # 加载模型
+        self.load_model()
+
+        # 加载LoRA权重（如果有）
+        if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
+            self.load_lora(self.config.model.lora.pretrained_weight)
+
+        # 设置评估模式
+        self.transformer.eval()
+        self.vae.eval()
+        self.qwen_vl.eval()
+
+        # 分配设备
+        self.set_model_devices(mode="predict")
+
+        # 量化（如果启用）
+        if self.quantize:
+            self.transformer = self.quantize_model(
+                self.transformer,
+                self.config.predict.devices.transformer
+            )
+
+    def predict(
+        self,
+        prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]],
+        prompt: Union[str, List[str]],
+        negative_prompt: Union[str, List[str]] = "",
+        num_inference_steps: int = 20,
+        true_cfg_scale: float = 4.0
+    ) -> Union[np.ndarray, List[np.ndarray]]:
+        """
+        预测方法 - 遵循原始QwenImageEditPipeline.__call__逻辑，支持批量处理
+
+        Args:
+            prompt_image: PIL.Image.Image 或 List[PIL.Image.Image], 输入的提示图片
+            prompt: str 或 List[str], 文本提示 (如果是列表，需与prompt_image长度相同)
+            negative_prompt: str 或 List[str], 负面文本提示，默认为空
+            num_inference_steps: int, 推理步数，默认20
+            true_cfg_scale: float, 真实CFG引导强度，默认4.0
+
+        Returns:
+            Union[np.ndarray, List[np.ndarray]]: 生成的图片，RGB格式
+        """
+        logger.info(f"Starting prediction with {num_inference_steps} steps, CFG scale: {true_cfg_scale}")
+        assert prompt_image is not None, "prompt_image is required"
+        assert prompt is not None, "prompt is required"
+        # 处理输入格式
+        if isinstance(prompt_image, PIL.Image.Image):
+            image = [prompt_image]
+            is_single = True
+        else:
+            image = prompt_image
+            is_single = False
+
+        # 1. 计算图像尺寸 (遵循原始pipeline逻辑)
+        image_size = image[0].size if isinstance(image, list) else image.size
+        calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, image_size[0] / image_size[1])
+        height = calculated_height
+        width = calculated_width
+
+        multiple_of = self.vae_scale_factor * 2
+        width = width // multiple_of * multiple_of
+        height = height // multiple_of * multiple_of
+
+        # 2. 定义批次参数 (遵循原始pipeline逻辑)
+
+        if isinstance(prompt, str):
+            batch_size = 1
+        elif isinstance(prompt, list):
+            batch_size = len(prompt)
+        else:
+            raise ValueError(f"Invalid prompt type: {type(prompt)}")
+
+        device_text_encoder = self.config.predict.devices.text_encoder
+        device_transformer = self.config.predict.devices.transformer
+        device_vae = self.config.predict.devices.vae
+
+        # 3. 预处理图像 (遵循原始pipeline逻辑)
+        if image is not None and not (isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels):
+            image = self.image_processor.resize(image, calculated_height, calculated_width)
+            prompt_image_processed = image
+            image = self.image_processor.preprocess(image, calculated_height, calculated_width)
+            image = image.unsqueeze(2)
+
+        has_neg_prompt = negative_prompt is not None and negative_prompt != ""
+        do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
+
+        # 4. encode prompt
+        self.text_encoder.to(device_text_encoder)
+        prompt_embeds, prompt_embeds_mask = self.encode_prompt(
+            image=prompt_image_processed,
+            prompt=prompt,
+            device=device_text_encoder,
+        )
+
+        if do_true_cfg:
+            negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
+                image=prompt_image_processed,
+                prompt=negative_prompt,
+                device=device_text_encoder,
+            )
+
+        # 5. Prepare latent variables
+        num_channels_latents = self.transformer.config.in_channels // 4
+        latents, image_latents = self.prepare_latents(
+            image,
+            batch_size,
+            num_channels_latents,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device_vae,
+            generator=None,
+            latents=None,
+        )
+
+        img_shapes = [
+            [
+                (1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2),
+                (1, calculated_height // self.vae_scale_factor // 2, calculated_width // self.vae_scale_factor // 2),
+            ]
+        ] * batch_size
+
+        # 6. 准备时间步 (遵循原始pipeline逻辑)
+        import numpy as np
+        from sub_modules.diffusers.src.diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import retrieve_timesteps
+
+        sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+        image_seq_len = latents.shape[1]
+        mu = calculate_shift(
+            image_seq_len,
+            self.scheduler.config.get("base_image_seq_len", 256),
+            self.scheduler.config.get("max_image_seq_len", 4096),
+            self.scheduler.config.get("base_shift", 0.5),
+            self.scheduler.config.get("max_shift", 1.15),
+        )
+        timesteps, num_inference_steps = retrieve_timesteps(
+            self.scheduler,
+            num_inference_steps,
+            device_transformer,
+            sigmas=sigmas,
+            mu=mu,
+        )
+
+        num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
+        self._num_timesteps = len(timesteps)
+
+        # 处理guidance
+        guidance_scale = 1.0
+        if self.transformer.config.guidance_embeds:
+            guidance = torch.full([1], guidance_scale, device=device_transformer, dtype=torch.float32)
+            guidance = guidance.expand(latents.shape[0])
+        else:
+            guidance = None
+
+        txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
+        negative_txt_seq_lens = (
+            negative_prompt_embeds_mask.sum(dim=1).tolist()
+            if do_true_cfg and negative_prompt_embeds_mask is not None
+            else None
+        )
+
+        # 7. 降噪循环 (遵循原始pipeline逻辑)
+        self.scheduler.set_begin_index(0)
+
+        with torch.inference_mode():
+            progress_bar = tqdm(enumerate(timesteps), total=num_inference_steps, desc="Generating")
+            for i, t in progress_bar:
+                progress_bar.set_postfix({'timestep': f'{t:.1f}'})
+                self._current_timestep = t
+
+                latent_model_input = latents
+                if image_latents is not None:
+                    latent_model_input = torch.cat([latents, image_latents], dim=1)
+
+                # broadcast to batch dimension
+                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+                # 使用cache_context (如果transformer支持)
+                with self.transformer.cache_context("cond"):
+                    noise_pred = self.transformer(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=guidance,
+                        encoder_hidden_states_mask=prompt_embeds_mask,
+                        encoder_hidden_states=prompt_embeds,
+                        img_shapes=img_shapes,
+                        txt_seq_lens=txt_seq_lens,
+                        attention_kwargs=self.attention_kwargs,
+                        return_dict=False,
+                    )[0]
+                    noise_pred = noise_pred[:, : latents.size(1)]
+
+                if do_true_cfg:
+                    with self.transformer.cache_context("uncond"):
+                        neg_noise_pred = self.transformer(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=guidance,
+                            encoder_hidden_states_mask=negative_prompt_embeds_mask,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            img_shapes=img_shapes,
+                            txt_seq_lens=negative_txt_seq_lens,
+                            attention_kwargs=self.attention_kwargs,
+                            return_dict=False,
+                        )[0]
+                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+                    comb_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
+
+                    cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
+                    noise_norm = torch.norm(comb_pred, dim=-1, keepdim=True)
+                    noise_pred = comb_pred * (cond_norm / noise_norm)
+
+                # compute the previous noisy sample x_t -> x_t-1
+                latents_dtype = latents.dtype
+                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+
+                if latents.dtype != latents_dtype:
+                    if torch.backends.mps.is_available():
+                        latents = latents.to(latents_dtype)
+                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                    progress_bar.update()
+
+        self._current_timestep = None
+        # 8. 解码最终图像 (遵循原始pipeline逻辑)
+        latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
+        latents = latents.to(self.vae.dtype)
+        latents = latents.to(device_vae)
+        latents_mean = (
+            torch.tensor(self.vae.config.latents_mean)
+            .view(1, self.vae.config.z_dim, 1, 1, 1)
+            .to(latents.device, latents.dtype)
+        )
+        latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
+            latents.device, latents.dtype
+        )
+        latents = latents / latents_std + latents_mean
+        final_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
+
+        # 后处理
+        final_image = self.image_processor.postprocess(final_image, output_type="np")
+        return final_image
+
+    def encode_prompt(
+        self,
+        prompt: Union[str, List[str]],
+        image: Optional[torch.Tensor] = None,
+        device: Optional[torch.device] = None,
+    ):
+        r"""
+        get the embedding of prompt and image via qwen_vl. Support batch inference. For batch inference,
+        will pad to largest length of prompt in batch.
+
+        Args:
+            prompt (`str` or `List[str]`, *optional*):
+                prompt to be encoded
+            image (`torch.Tensor`, *optional*):
+                image to be encoded
+            device: (`torch.device`):
+                torch device
+            num_images_per_prompt (`int`):
+                number of images that should be generated per prompt
+            prompt_embeds (`torch.Tensor`, *optional*):
+                Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
+                provided, text embeddings will be generated from `prompt` input argument.
+        """
+        num_images_per_prompt = 1 #
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        batch_size = len(prompt)
+        prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, image, device)
+        _, seq_len, _ = prompt_embeds.shape
+        prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
+        prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
+        prompt_embeds_mask = prompt_embeds_mask.repeat(1, num_images_per_prompt, 1)
+        prompt_embeds_mask = prompt_embeds_mask.view(batch_size * num_images_per_prompt, seq_len)
+        return prompt_embeds, prompt_embeds_mask
+
+    def _extract_masked_hidden(self, hidden_states: torch.Tensor, mask: torch.Tensor):
+        bool_mask = mask.bool()
+        valid_lengths = bool_mask.sum(dim=1)
+        selected = hidden_states[bool_mask]
+        split_result = torch.split(selected, valid_lengths.tolist(), dim=0)
+
+        return split_result
+
+    def _get_qwen_prompt_embeds(
+        self,
+        prompt: Union[str, List[str]] = None,
+        image: Optional[torch.Tensor] = None,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ):
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+
+        template = self.prompt_template_encode
+        drop_idx = self.prompt_template_encode_start_idx
+        txt = [template.format(e) for e in prompt]
+
+        model_inputs = self.processor(
+            text=txt,
+            images=image,
+            padding=True,
+            return_tensors="pt",
+        ).to(device)
+
+        outputs = self.text_encoder(
+            input_ids=model_inputs.input_ids,
+            attention_mask=model_inputs.attention_mask,
+            pixel_values=model_inputs.pixel_values,
+            image_grid_thw=model_inputs.image_grid_thw,
+            output_hidden_states=True,
+        )
+
+        hidden_states = outputs.hidden_states[-1]
+        split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
+        split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
+        attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
+        max_seq_len = max([e.size(0) for e in split_hidden_states])
+        prompt_embeds = torch.stack(
+            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
+        )
+        encoder_attention_mask = torch.stack(
+            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
+        )
+
+        prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+
+        return prompt_embeds, encoder_attention_mask
