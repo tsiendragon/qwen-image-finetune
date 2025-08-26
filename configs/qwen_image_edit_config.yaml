@@ -68,8 +68,8 @@ cache:
 
 predict:
   devices:
-    vae: cuda:1
-    text_encoder: cuda:2
-    transformer: cuda:3
+    vae: cuda:5
+    text_encoder: cuda:6
+    transformer: cuda:7
 # Additional training parameters that may be needed
 resume_from_checkpoint: "latest"

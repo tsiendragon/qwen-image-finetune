@@ -1,10 +1,11 @@
 import os
 import random
+import torch
 from torch.utils.data import Dataset, DataLoader
 import glob
 import cv2
 import importlib
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Any
 from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
 
 
@@ -249,6 +250,121 @@ class ImageDataset(Dataset):
         return None
 
 
+def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    自定义collate函数，用于处理不同长度的prompt_embed和prompt_embeds_mask的padding
+
+    Args:
+        batch: 批次数据列表，每个元素是__getitem__返回的字典
+
+    Returns:
+        处理后的批次数据字典，其中prompt_embed和prompt_embeds_mask已进行padding
+    """
+    # 分离cached和non-cached的数据
+    cached_items = [item for item in batch if item.get('cached', False)]
+    non_cached_items = [item for item in batch if not item.get('cached', False)]
+
+    # 如果batch中有cached数据，需要进行padding
+    if cached_items:
+        # 找到prompt_embed和prompt_embeds_mask的最大长度
+        max_prompt_len = 0
+        for item in cached_items:
+            if item['prompt_embed'] is not None:
+                prompt_len = item['prompt_embed'].shape[0]
+                max_prompt_len = max(max_prompt_len, prompt_len)
+
+        # 对所有cached items进行padding
+        for item in cached_items:
+            if item['prompt_embed'] is not None:
+                prompt_embed = item['prompt_embed']
+                prompt_embeds_mask = item['prompt_embeds_mask']
+
+                # 转换为torch tensor（如果还不是）
+                if not isinstance(prompt_embed, torch.Tensor):
+                    prompt_embed = torch.tensor(prompt_embed)
+                if not isinstance(prompt_embeds_mask, torch.Tensor):
+                    prompt_embeds_mask = torch.tensor(prompt_embeds_mask)
+
+                current_len = prompt_embed.shape[0]
+
+                if current_len < max_prompt_len:
+                    # 计算需要padding的长度
+                    pad_len = max_prompt_len - current_len
+
+                    # 对prompt_embed进行padding
+                    if len(prompt_embed.shape) == 1:
+                        # 1D tensor
+                        pad_embed = torch.zeros(pad_len, dtype=prompt_embed.dtype)
+                        item['prompt_embed'] = torch.cat([prompt_embed, pad_embed], dim=0)
+                    else:
+                        # 2D tensor [seq_len, hidden_dim]
+                        pad_embed = torch.zeros(pad_len, prompt_embed.shape[1], dtype=prompt_embed.dtype)
+                        item['prompt_embed'] = torch.cat([prompt_embed, pad_embed], dim=0)
+
+                    # 对prompt_embeds_mask进行padding
+                    if len(prompt_embeds_mask.shape) == 1:
+                        # 1D tensor
+                        pad_mask = torch.zeros(pad_len, dtype=prompt_embeds_mask.dtype)
+                        item['prompt_embeds_mask'] = torch.cat([prompt_embeds_mask, pad_mask], dim=0)
+                    else:
+                        # 2D tensor
+                        pad_mask = torch.zeros(pad_len, prompt_embeds_mask.shape[1], dtype=prompt_embeds_mask.dtype)
+                        item['prompt_embeds_mask'] = torch.cat([prompt_embeds_mask, pad_mask], dim=0)
+
+    # 重新组合批次数据
+    all_items = cached_items + non_cached_items
+
+    # 创建批次字典
+    batch_dict = {}
+
+    # 收集所有键
+    all_keys = set()
+    for item in all_items:
+        all_keys.update(item.keys())
+
+    # 对每个键进行批处理
+    for key in all_keys:
+        values = []
+        for item in all_items:
+            if key in item:
+                values.append(item[key])
+            else:
+                values.append(None)
+
+        # 如果所有值都是None，跳过
+        if all(v is None for v in values):
+            continue
+
+        # 如果是tensor类型的数据，尝试stack
+        if key in ['image', 'control', 'pixel_latent', 'control_latent', 'prompt_embed', 'prompt_embeds_mask']:
+            try:
+                # 过滤掉None值
+                non_none_values = [v for v in values if v is not None]
+                if non_none_values:
+                    # 转换为torch tensor
+                    tensor_values = []
+                    for v in non_none_values:
+                        if not isinstance(v, torch.Tensor):
+                            v = torch.tensor(v)
+                        tensor_values.append(v)
+
+                    # 尝试stack
+                    if len(tensor_values) > 0:
+                        batch_dict[key] = torch.stack(tensor_values, dim=0)
+                    else:
+                        batch_dict[key] = values
+                else:
+                    batch_dict[key] = values
+            except Exception:
+                # 如果stack失败，保持原始列表
+                batch_dict[key] = values
+        else:
+            # 非tensor数据保持列表形式
+            batch_dict[key] = values
+
+    return batch_dict
+
+
 def loader(
         class_path: str,
         init_args: dict,
@@ -284,7 +400,8 @@ def loader(
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=False,
+        collate_fn=collate_fn
     )
     setattr(dataloader, 'cache_manager', cache_manager)
     return dataloader
@@ -292,7 +409,6 @@ def loader(
 
 if __name__ == "__main__":
     from src.data.config import load_config_from_yaml
-    import torch
     config_file = 'configs/qwen_image_edit_config.yaml'
     config = load_config_from_yaml(config_file)
     data_config = config.data

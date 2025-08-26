@@ -39,6 +39,37 @@ def calculate_dimensions(target_area, ratio):
     return width, height, None
 
 
+def calculate_shift(
+    image_seq_len: int,
+    base_seq_len: int = 256,
+    max_seq_len: int = 4096,
+    base_shift: float = 0.5,
+    max_shift: float = 1.16,
+) -> float:
+    """
+        计算FlowMatchEulerDiscreteScheduler的mu参数值
+
+    Args:
+        image_seq_len: 当前图像的序列长度（token数量）
+        base_seq_len: 基准序列长度，默认256
+        max_seq_len: 最大序列长度，默认4096
+        base_shift: 基准偏移值，默认0.5
+                max_shift: 最大偏移值，默认1.16
+
+    Returns:
+        计算得到的mu值
+    """
+    # 线性插值计算mu值
+    m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+    b = base_shift - m * base_seq_len
+    mu = image_seq_len * m + b
+
+    # 确保mu在合理范围内
+    mu = max(base_shift, min(max_shift, mu))
+
+    return mu
+
+
 def get_lora_layers(model):
     """这个 get_lora_layers 函数的作用是遍历整个神经网络模型,找出并收集所有与LoRA相关的模块"""
     lora_layers = {}
@@ -804,25 +835,7 @@ class Trainer:
         del self.models["vae"]
         exit()
 
-    def predict(
-        self,
-        prompt_image: np.ndarray,
-        prompt: str,
-        num_inference_steps: int = 50,
-        guidance_scale: float = 7.5
-    ) -> np.ndarray:
-        """
-        对单张图片进行推理预测
-
-        Args:
-            prompt_image: numpy.ndarray RGB [H,W,C], 输入的提示图片
-            prompt: str, 文本提示
-            num_inference_steps: int, 推理步数，默认50
-            guidance_scale: float, 引导强度，默认7.5
-
-        Returns:
-            numpy.ndarray: 生成的图片，RGB格式 [H,W,C]
-        """
+    def setup_predict(self):
         # 确保模型处于评估模式
         self.setup_models()
         self.load_pretrain_lora(self.config.model.lora.pretrained_weight)
@@ -830,30 +843,54 @@ class Trainer:
         self.set_model_devices(cache_exist=False, use_cache=False, mode="predict")
         self.models['transformer'].eval()
         self.models['vae'].eval()
-        # allocate to correspoding device
-        self.models['transformer'] = self.quantize_model(
+        # allocate to corresponding device and quantize
+        if self.qunantize:
+            self.models['transformer'] = self.quantize_model(
                 self.models['transformer'],
                 self.config.predict.devices['transformer']
             )
-
-        self.models['transformer'].to(self.config.predict.devices['transformer'])
+            #has problem
+        else:
+            self.models['transformer'].to(self.config.predict.devices['transformer'])
         self.models['vae'].to(self.config.predict.devices['vae'])
         self.models['text_encoder'].to(self.config.predict.devices['text_encoder'])
 
-        # 8bit quantilization
+    def predict(
+        self,
+        prompt_image: np.ndarray,
+        prompt: str,
+        num_inference_steps: int = 20,
+        guidance_scale: float = 4.5
+    ) -> np.ndarray:
+        """
+        对单张图片进行推理预测
+
+        Args:
+            prompt_image: numpy.ndarray RGB [H,W,C], 输入的提示图片
+            prompt: str, 文本提示
+            num_inference_steps: int, 推理步数，默认20
+            guidance_scale: float, 引导强度，默认4.5
+
+        Returns:
+            numpy.ndarray: 生成的图片，RGB格式 [H,W,C]
+        """
 
         # 图像预处理：numpy -> torch tensor
         prompt_image_tensor = self._preprocess_image(prompt_image)
-
+        intermediate_images =[]
         # 文本和图像编码
         with torch.inference_mode():
-            with torch.autocast(device_type="cuda", dtype=self.weight_dtype, enabled=True):
+            # auto cast 会自动转化某些层为 float32
+            if True:
+                # with torch.autocast(device_type="cuda", dtype=self.weight_dtype, enabled=True):
                 # 编码提示图像
                 prompt_embeds, prompt_embeds_mask = self.encode_prompt(
                     prompt,
                     prompt_image_tensor,
                     self.config.predict.devices['text_encoder']
                 )
+                # [2204, 3584] prompt_embeds
+                # [2204] prompt_embeds_mask
 
                 # 编码控制图像 (使用相同的提示图像)
                 control_latents = self.encode_image(
@@ -861,11 +898,14 @@ class Trainer:
                     self.config.predict.devices['vae']
                 )
 
+                # control_latents: [16,1,88,128]
+                control_latents = control_latents.unsqueeze(0)
+                # [1,16,1,88,128]
                 # 重要：对编码后的latents进行维度调整和标准化
                 # 从 [B, C, T, H, W] 转换为 [B, T, C, H, W]
-                print("shape of control_latents", control_latents.shape)
 
                 control_latents = control_latents.permute(0, 2, 1, 3, 4)
+                # [1,1,16,88,128] [B, T, C, H, W]
 
                 # VAE latents标准化
 
@@ -874,12 +914,16 @@ class Trainer:
                     .view(1, 1, self.vae_z_dim, 1, 1)
                     .to(control_latents.device)
                 )
+                # [1, 1, 16, 1, 1]: [B, T, C, H, W]
                 latents_std = (
                     1.0 / torch.tensor(self.vae_latent_std, dtype=self.weight_dtype)
                     .view(1, 1, self.vae_z_dim, 1, 1)
                     .to(control_latents.device)
                 )
+                # [1, 1, 16, 1, 1]: [B,T,C,H,W]
+
                 control_latents = (control_latents - latents_mean) * latents_std
+                # [1, 1, 16, 88, 128]: [B,T,C,H,W]
 
                 # 生成随机噪声作为初始状态
                 latent_height = control_latents.shape[3]
@@ -889,15 +933,36 @@ class Trainer:
                     device=self.config.predict.devices['transformer'],
                     dtype=self.weight_dtype
                 )
+                # [1, 1, 16, 88, 128]: [B,T,C,H,W]
+
+                # 计算图像序列长度用于动态mu计算
+                # VAE编码后的latent尺寸需要除以2来得到实际的patch数量
+                image_seq_len = (latent_height // 2) * (latent_width // 2)
+                mu = calculate_shift(image_seq_len)
 
                 # 设置推理调度器
-                self.noise_scheduler.set_timesteps(num_inference_steps, device=self.config.predict.devices['transformer'])
+                self.noise_scheduler.set_timesteps(
+                    num_inference_steps,
+                    device=self.config.predict.devices['transformer'],
+                    mu=mu
+                )
                 timesteps = self.noise_scheduler.timesteps
+                # timesteps from 1000 to 0, length = num_inference_steps
+                intermediate_images.append(self.decode_image(control_latents))
+
 
                 # 降噪循环
-                for i, t in enumerate(timesteps):
+                from tqdm import tqdm
+                progress_bar = tqdm(enumerate(timesteps), total=len(timesteps), desc="Generating images")
+                for _, t in progress_bar:
+                    # 显示当前时间步
+                    progress_bar.set_postfix({'timestep': f'{t:.1f}'})
+
+                    intermediate_images.append(self.decode_image(latents))
+
                     # 扩展潜在向量以进行classifier-free guidance
                     latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
+                    # [2, 1, 16, 88, 128] # two latents for classifier-free guidance
 
                     # 打包潜在向量
                     packed_latents = QwenImagePipeline._pack_latents(
@@ -907,6 +972,7 @@ class Trainer:
                         latent_model_input.shape[3],
                         latent_model_input.shape[4],
                     )
+                    # [2, 2816, 64] shape of packed_latents
 
                     packed_control_latents = QwenImagePipeline._pack_latents(
                         control_latents.repeat(latent_model_input.shape[0], 1, 1, 1, 1),
@@ -915,43 +981,104 @@ class Trainer:
                         control_latents.shape[3],
                         control_latents.shape[4],
                     )
+                    # [2, 2816, 64] shape of packed control latents
+                    # convert to transformer device and ensure correct dtype
+                    packed_latents = packed_latents.to(
+                        device=self.config.predict.devices['transformer'],
+                        dtype=self.weight_dtype
+                    )
+                    packed_control_latents = packed_control_latents.to(
+                        device=self.config.predict.devices['transformer'],
+                        dtype=self.weight_dtype
+                    )
 
                     # 准备输入
                     packed_input = torch.cat([packed_latents, packed_control_latents], dim=1)
-
+                    # [2, 5632, 64] shape of packed_input, by concatenating packed_latents and packed_control_latents
                     # 准备图像形状信息
                     img_shapes = [[
                         (1, latents.shape[3] // 2, latents.shape[4] // 2),
                         (1, control_latents.shape[3] // 2, control_latents.shape[4] // 2),
                     ]] * latent_model_input.shape[0]
-
+                    # [[(1, 44, 64), (1, 44, 64)], [(1, 44, 64), (1, 44, 64)]]
                     # 准备文本序列长度
                     txt_seq_lens = prompt_embeds_mask.sum(dim=0).item()
                     txt_seq_lens = [txt_seq_lens] * latent_model_input.shape[0]
-
+                    # [2204, 2204]
                     # 准备提示嵌入
                     if guidance_scale > 1.0:
                         # 创建空提示用于classifier-free guidance
                         empty_prompt_embeds, empty_prompt_embeds_mask = self.encode_empty_prompt(
                             prompt_image_tensor, self.config.predict.devices['text_encoder']
                         )
+                        # pad empty prompt embeds to the same size of prompt_embeds
+                        max_len = max(prompt_embeds.shape[0], empty_prompt_embeds.shape[0])
+
+                        # pad prompt_embeds if needed
+                        if prompt_embeds.shape[0] < max_len:
+                            pad_len = max_len - prompt_embeds.shape[0]
+                            pad_embeds = torch.zeros(
+                                pad_len, prompt_embeds.shape[1],
+                                dtype=prompt_embeds.dtype, device=prompt_embeds.device
+                            )
+                            prompt_embeds = torch.cat([prompt_embeds, pad_embeds], dim=0)
+                            pad_mask = torch.zeros(
+                                pad_len, dtype=prompt_embeds_mask.dtype,
+                                device=prompt_embeds_mask.device
+                            )
+                            prompt_embeds_mask = torch.cat([prompt_embeds_mask, pad_mask], dim=0)
+
+                        # pad empty_prompt_embeds if needed
+                        if empty_prompt_embeds.shape[0] < max_len:
+                            pad_len = max_len - empty_prompt_embeds.shape[0]
+                            pad_embeds = torch.zeros(
+                                pad_len, empty_prompt_embeds.shape[1],
+                                dtype=empty_prompt_embeds.dtype, device=empty_prompt_embeds.device
+                            )
+                            empty_prompt_embeds = torch.cat([empty_prompt_embeds, pad_embeds], dim=0)
+                            pad_mask = torch.zeros(
+                                pad_len, dtype=empty_prompt_embeds_mask.dtype,
+                                device=empty_prompt_embeds_mask.device
+                            )
+                            empty_prompt_embeds_mask = torch.cat([empty_prompt_embeds_mask, pad_mask], dim=0)
+
                         combined_prompt_embeds = torch.cat([
                             empty_prompt_embeds.unsqueeze(0),
                             prompt_embeds.unsqueeze(0)
-                        ], dim=0)
+                        ], dim=0).to(device=self.config.predict.devices['transformer'], dtype=self.weight_dtype)
+                        # [2, 2204, 3584] [2, max_len, 3584]
                         combined_prompt_embeds_mask = torch.cat([
                             empty_prompt_embeds_mask.unsqueeze(0),
                             prompt_embeds_mask.unsqueeze(0)
-                        ], dim=0)
+                        ], dim=0).to(device=self.config.predict.devices['transformer'])
+                        # [2, 2204] [2, max_len]
                     else:
-                        combined_prompt_embeds = prompt_embeds.unsqueeze(0)
-                        combined_prompt_embeds_mask = prompt_embeds_mask.unsqueeze(0)
-
+                        combined_prompt_embeds = prompt_embeds.unsqueeze(0).to(
+                            device=self.config.predict.devices['transformer'], dtype=self.weight_dtype
+                        )
+                        combined_prompt_embeds_mask = prompt_embeds_mask.unsqueeze(0).to(
+                            device=self.config.predict.devices['transformer']
+                        )
+                        # [1, seq_len, 3584] combined_prompt_embeds
+                        # [1, seq_len] combined_prompt_embeds_mask
                     # Transformer前向传播
+                    packed_input = packed_input.to(
+                        device=self.config.predict.devices['transformer'],
+                        dtype=self.weight_dtype)
+                    # mask应该保持原数据类型（布尔或整数），不转换为weight_dtype
+                    combined_prompt_embeds_mask = combined_prompt_embeds_mask.to(
+                        device=self.config.predict.devices['transformer'],
+                        dtype=torch.bool)
+                    #  got this error:fp8_marlin_gemm only supports bfloat16 and float16
+                    combined_prompt_embeds = combined_prompt_embeds.to(
+                        device=self.config.predict.devices['transformer'],
+                        dtype=self.weight_dtype
+                    )
+
                     noise_pred = self.models["transformer"](
                         hidden_states=packed_input,
                         timestep=(
-                            torch.tensor([t / 1000])
+                            torch.tensor([t / 1000], dtype=self.weight_dtype)
                             .repeat(latent_model_input.shape[0])
                             .to(self.config.predict.devices['transformer'])
                         ),
@@ -962,6 +1089,7 @@ class Trainer:
                         txt_seq_lens=txt_seq_lens,
                         return_dict=False,
                     )[0]
+                    # [2, 5632, 64] : [B,T,C]
 
                     # 提取预测的噪声
                     noise_pred = noise_pred[:, :packed_latents.size(1)]
@@ -971,41 +1099,51 @@ class Trainer:
                         width=latents.shape[4] * self.vae_scale_factor,
                         vae_scale_factor=self.vae_scale_factor,
                     )
+                    # [2, 16, 1, 88, 128]: [B,C,T,H,W]
 
                     # Classifier-free guidance
                     if guidance_scale > 1.0:
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
+                        # [1, 16, 1, 88, 128] : [B,C,T,H,W]
                     # 更新潜在向量
+                    # latent: [B,T,C,H,W]， noise pred: [B,T,C,H,W]
+                    noise_pred = noise_pred.permute(0, 2, 1, 3, 4)
+                    # [1, 1, 16, 88, 128] : [B,T,C,H,W]
                     latents = self.noise_scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                    # [1, 16, 16, 88, 128]
 
-                # VAE解码
-                # 反标准化潜在向量 (逆转训练时的标准化操作)
-                latents_mean = (
-                    torch.tensor(self.vae_latent_mean, dtype=self.weight_dtype)
-                    .view(1, 1, self.vae_z_dim, 1, 1)
-                    .to(latents.device)
-                )
-                latents_std = (
-                    torch.tensor(self.vae_latent_std, dtype=self.weight_dtype)
-                    .view(1, 1, self.vae_z_dim, 1, 1)
-                    .to(latents.device)
-                )
-                # 逆转标准化：(latents / latents_std) + latents_mean
-                latents = latents / latents_std + latents_mean
 
-                # 转换回VAE期望的维度格式 [B, T, C, H, W] -> [B, C, T, H, W]
-                latents = latents.permute(0, 2, 1, 3, 4)
 
-                latents = latents.to(self.config.predict.devices['vae'])
+                image = self.decode_image(latents)
 
-                # 解码图像
-                image = self.models["vae"].decode(latents).sample
+        return image, intermediate_images
 
-                # 后处理：tensor -> numpy
-                image = self._postprocess_image(image)
+    def decode_image(self, latents):
+        latents = latents.to(self.config.predict.devices['vae'], dtype=self.weight_dtype)
+        latents_mean = (
+            torch.tensor(self.vae_latent_mean, dtype=self.weight_dtype)
+            .view(1, 1, self.vae_z_dim, 1, 1)
+            .to(latents.device)
+        )
+        latents_std = (
+            torch.tensor(self.vae_latent_std, dtype=self.weight_dtype)
+            .view(1, 1, self.vae_z_dim, 1, 1)
+            .to(latents.device)
+        )
+        # 逆转标准化：(latents / latents_std) + latents_mean
+        latents = latents / latents_std + latents_mean
+        # [1, 1, 16, 88, 128]
+        # 转换回VAE期望的维度格式 [B, T, C, H, W] -> [B, C, T, H, W]
+        latents = latents.permute(0, 2, 1, 3, 4)
+        # [1, 16, 1, 88, 128]
 
+        # 解码图像
+        image = self.models["vae"].decode(latents).sample
+        # [1, 3, 1, 704, 1024] after decode
+
+        # 后处理：tensor -> numpy
+        image = self._postprocess_image(image)
         return image
 
     def _preprocess_image(self, image: np.ndarray) -> torch.Tensor:
@@ -1042,9 +1180,10 @@ class Trainer:
         """
         # 确保张量在CPU上
         image = image_tensor.cpu()
+        image = image.float()
 
         # 移除批次维度并调整范围
-        image = image.squeeze(0)  # [C,H,W]
+        image = image.squeeze(2).squeeze(0)  # [C,H,W]
         image = (image / 2 + 0.5).clamp(0, 1)  # 从[-1,1]转换到[0,1]
 
         # 转换为numpy并调整维度顺序
