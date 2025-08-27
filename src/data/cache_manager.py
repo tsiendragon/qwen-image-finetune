@@ -76,7 +76,9 @@ class EmbeddingCacheManager:
             data: 要缓存的张量数据
         """
         cache_path = self._get_cache_path(cache_type, file_hash)
-        torch.save(data.cpu().to(torch.float16), cache_path)
+        # 确保tensor没有梯度信息，避免多进程序列化问题
+        data_to_save = data.detach().cpu().to(torch.float16)
+        torch.save(data_to_save, cache_path)
 
     def load_cache(self, cache_type: str, file_hash: str) -> Optional[torch.Tensor]:
         """
@@ -89,7 +91,9 @@ class EmbeddingCacheManager:
         """
         cache_path = self._get_cache_path(cache_type, file_hash)
         if cache_path.exists():
-            return torch.load(cache_path, map_location='cpu')
+            loaded_data = torch.load(cache_path, map_location='cpu', weights_only=False)
+            # 确保加载的数据没有梯度信息
+            return loaded_data.detach() if loaded_data is not None else None
         return None
 
     def cache_exists(self, cache_type: str, file_hash: str) -> bool:

@@ -38,7 +38,6 @@ def get_lora_layers(model):
     def fn_recursive_find_lora_layer(name: str, module: torch.nn.Module, processors):
         if "lora" in name:
             lora_layers[name] = module
-            print(name)
         for sub_name, child in module.named_children():
             fn_recursive_find_lora_layer(f"{name}.{sub_name}", child, lora_layers)
         return lora_layers
@@ -174,7 +173,7 @@ class QwenImageEditTrainer:
         ):
             os.makedirs(self.config.logging.output_dir, exist_ok=True)
 
-        logger.info(f"Mixed precision: {self.accelerator.mixed_precision}")
+        logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
     def quantize_model(self, model, device):
         """FP8 quantize model"""
@@ -219,7 +218,11 @@ class QwenImageEditTrainer:
         self.transformer.add_adapter(lora_config)
         self.transformer.requires_grad_(False)
         self.transformer.train()
-        self.transformer.enable_gradient_checkpointing()
+
+        # 根据配置决定是否启用梯度检查点
+        if self.config.train.gradient_checkpointing:
+            self.transformer.enable_gradient_checkpointing()
+            logging.info("梯度检查点已启用，将节省显存但可能增加计算时间")
 
         # Train only LoRA parameters
         trainable_params = 0
@@ -378,9 +381,11 @@ class QwenImageEditTrainer:
         control_latents = batch["control_latent"].to(self.accelerator.device, dtype=self.weight_dtype)
         prompt_embeds = batch["prompt_embed"].to(self.accelerator.device)
         prompt_embeds_mask = batch["prompt_embeds_mask"].to(self.accelerator.device)
+        prompt_embeds_mask = prompt_embeds_mask.to(torch.int64)  # original is int64 dtype
+
 
         image = batch['image']  # torch.tensor: B,C,H,W
-        image = image[0].numpy()
+        image = image[0].cpu().numpy()
         image = image.transpose(1, 2, 0)
         image = Image.fromarray(image)
         image = [image]
@@ -388,8 +393,13 @@ class QwenImageEditTrainer:
         _, _, height, width = self.adjust_image_size(image)
 
         return self._compute_loss(
-            pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask,
-                                  height, width)
+                pixel_latents,
+                control_latents,
+                prompt_embeds,
+                prompt_embeds_mask,
+                height,
+                width
+            )
 
     def _training_step_compute(self, batch):
         """Training step with embedding computation (no cache)"""
@@ -462,9 +472,15 @@ class QwenImageEditTrainer:
 
             packed_input = torch.cat([noisy_model_input, control_latents], dim=1)
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
-            prompt_embeds = prompt_embeds.repeat(batch_size, 1, 1)
+            # prompt_embeds = prompt_embeds.repeat(batch_size, 1, 1)
 
-        # Forward pass
+
+        # timesteps tensor([374., 749.], device='cuda:0')                                                                                                                                         packedinput shape torch.Size([2, 8208, 64])
+        # prompt_embeds shape torch.Size([4, 1071, 3584])
+        # prompt_embeds_mask shape torch.Size([2, 1071])
+        # img_shapes [[(1, 54, 76), (1, 54, 76)], [(1, 54, 76), (1, 54, 76)]]
+        # txt_seq_lens [814, 1071]
+
         model_pred = self.transformer(
             hidden_states=packed_input,
             timestep=timesteps / 1000,
@@ -481,7 +497,8 @@ class QwenImageEditTrainer:
         # Calculate loss
         weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
         target = noise - pixel_latents
-        target = target.permute(0, 2, 1, 3, 4)
+        # pred shape [2, 4104, 64], target shape [2, 4104, 64]
+        # target = target.permute(0, 2, 1, 3, 4)
 
         loss = torch.mean(
             (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(
@@ -490,7 +507,6 @@ class QwenImageEditTrainer:
             1,
         )
         loss = loss.mean()
-
         return loss
 
     def _get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
@@ -529,7 +545,10 @@ class QwenImageEditTrainer:
     def accelerator_prepare(self, train_dataloader):
         """Prepare accelerator"""
         lora_layers_model = AttnProcsLayers(get_lora_layers(self.transformer))
-        self.transformer.enable_gradient_checkpointing()
+
+        # 根据配置决定是否启用梯度检查点
+        if self.config.train.gradient_checkpointing:
+            self.transformer.enable_gradient_checkpointing()
 
         lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
             lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
@@ -705,7 +724,7 @@ class QwenImageEditTrainer:
 
     def fit(self, train_dataloader):
         """Main training loop"""
-        logger.info("Starting training process...")
+        logging.info("Starting training process...")
 
         # Setup components
         self.setup_accelerator()
@@ -715,10 +734,10 @@ class QwenImageEditTrainer:
         self.set_model_devices(mode="train")
         train_dataloader = self.accelerator_prepare(train_dataloader)
 
-        logger.info("***** Running training *****")
-        logger.info(f"  Instantaneous batch size per device = {self.batch_size}")
-        logger.info(f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}")
-        logger.info(f"  Use cache: {self.use_cache}, Cache exists: {self.cache_exist}")
+        logging.info("***** Running training *****")
+        logging.info(f"  Instantaneous batch size per device = {self.batch_size}")
+        logging.info(f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}")
+        logging.info(f"  Use cache: {self.use_cache}, Cache exists: {self.cache_exist}")
 
         # Progress bar
         progress_bar = tqdm(
@@ -1073,6 +1092,8 @@ class QwenImageEditTrainer:
             progress_bar = tqdm(enumerate(timesteps), total=num_inference_steps, desc="Generating")
             for i, t in progress_bar:
                 progress_bar.set_postfix({'timestep': f'{t:.1f}'})
+                progress_bar.update()
+
                 self._current_timestep = t
                 latents = latents.to(device_transformer, dtype=self.weight_dtype)
 
@@ -1135,8 +1156,6 @@ class QwenImageEditTrainer:
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
                         latents = latents.to(latents_dtype)
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
-                    progress_bar.update()
 
         self._current_timestep = None
         # 8. decode final latents

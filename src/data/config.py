@@ -272,6 +272,7 @@ class TrainConfig:
     checkpoints_total_limit: Optional[int] = None
     max_grad_norm: float = 1.0
     mixed_precision: str = "bf16"  # fp16, bf16, no
+    gradient_checkpointing: bool = True  # 启用梯度检查点以节省显存
 
     def __post_init__(self):
         """验证训练配置"""
@@ -310,6 +311,12 @@ class TrainConfig:
         if self.mixed_precision not in ["fp16", "bf16", "no"]:
             raise ValueError(
                 f"mixed_precision must be one of ['fp16', 'bf16', 'no'], got {self.mixed_precision}"
+            )
+
+        # 验证梯度检查点
+        if not isinstance(self.gradient_checkpointing, bool):
+            raise ValueError(
+                f"gradient_checkpointing must be a boolean, got {self.gradient_checkpointing}"
             )
 
 
@@ -389,6 +396,7 @@ class Config:
                 "checkpoints_total_limit": self.train.checkpoints_total_limit,
                 "max_grad_norm": self.train.max_grad_norm,
                 "mixed_precision": self.train.mixed_precision,
+                "gradient_checkpointing": self.train.gradient_checkpointing,
             }
         )
 

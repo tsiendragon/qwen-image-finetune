@@ -19,3 +19,4 @@ psutil
 ipykernel
 # optimum
 optimum-quanto
+bitsandbytes

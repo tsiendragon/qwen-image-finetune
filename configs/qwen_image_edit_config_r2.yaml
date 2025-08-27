@@ -1,7 +1,9 @@
 model:
   pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
+  # pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"  # 4bit
+  # pretrained_model_name_or_path: "patientxtr/qwen-image-edit-fp8-e5m2"
   rank: 16
-  quantize: false
+  quantize: False
   lora:
     r: 16
     lora_alpha: 16
@@ -19,7 +21,7 @@ data:
     prompt_image_dropout_rate: 0.1
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
-  batch_size: 2
+  batch_size: 4
   num_workers: 2
   shuffle: true
 
@@ -52,10 +54,11 @@ train:
   gradient_accumulation_steps: 1
   max_train_steps: 3000
   num_epochs: 3
-  checkpointing_steps: 250
-  checkpoints_total_limit: 10
+  checkpointing_steps: 5
+  checkpoints_total_limit: 50
   max_grad_norm: 1.0
   mixed_precision: "bf16"
+  gradient_checkpointing: True  # 启用梯度检查点以节省显存
 
 cache:
   vae_encoder_device: cuda:0

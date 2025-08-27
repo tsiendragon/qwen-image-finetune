@@ -181,7 +181,49 @@ quantize_model(model, device)  # FP8量化
 
 沿用现有trainer.py的FP8量化实现，支持完整的LoRA训练流程。
 
-### 7. 静态方法
+### 7. 梯度检查点功能
+
+#### 配置选项
+```python
+# 在配置文件中控制梯度检查点
+train:
+  gradient_checkpointing: true   # 启用梯度检查点以节省显存
+  gradient_checkpointing: false  # 禁用梯度检查点以提高计算效率
+```
+
+#### 功能特性
+- **显存优化**: 启用时可节省20-50%的显存使用
+- **性能权衡**: 禁用时可提高20-30%的计算速度
+- **自动控制**: 根据配置自动启用/禁用梯度检查点
+- **智能选择**: 显存充足时建议禁用以获得最佳性能
+
+#### 使用建议
+```python
+# 显存充足的情况
+gradient_checkpointing: false  # 获得最快训练速度
+
+# 显存紧张的情况
+gradient_checkpointing: true   # 避免OOM错误
+
+# 想要增大batch_size时
+gradient_checkpointing: true   # 节省显存支持更大批次
+```
+
+#### 实现机制
+```python
+def set_lora(self):
+    # 根据配置决定是否启用梯度检查点
+    if self.config.train.gradient_checkpointing:
+        self.transformer.enable_gradient_checkpointing()
+        logging.info("梯度检查点已启用，将节省显存但可能增加计算时间")
+```
+
+梯度检查点本质上是**显存与速度的权衡工具**：
+- **工作原理**: 前向传播时丢弃部分中间激活值，反向传播时重新计算
+- **适用场景**: 显存不足或需要训练更大模型时
+- **性能考量**: 时间换空间的策略选择
+
+### 8. 静态方法
 
 ```python
 # 直接引用QwenImageEditPipeline的方法
@@ -253,7 +295,7 @@ Input Image + Prompt -> Encoders -> Embeddings -> Transformer -> Latents -> VAE 
 ### 完整配置支持
 - ✅ **model**: 模型路径、LoRA配置、量化设置
 - ✅ **data**: 数据集配置、批大小、dropout率
-- ✅ **train**: 训练参数、梯度累积、检查点
+- ✅ **train**: 训练参数、梯度累积、检查点、梯度检查点
 - ✅ **cache**: 缓存设备、缓存目录
 - ✅ **predict**: 预测设备分配
 - ✅ **optimizer**: 优化器配置
@@ -265,6 +307,11 @@ Input Image + Prompt -> Encoders -> Embeddings -> Transformer -> Latents -> VAE 
 基于提供的`qwen_image_edit_config.yaml`：
 
 ```yaml
+train:
+  gradient_checkpointing: true    # 梯度检查点配置
+  mixed_precision: "bf16"         # 混合精度训练
+  max_grad_norm: 1.0              # 梯度裁剪
+
 cache:
   vae_encoder_device: cuda:1      # VAE编码器设备
   text_encoder_device: cuda:2     # 文本编码器设备
