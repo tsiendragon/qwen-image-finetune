@@ -3,7 +3,6 @@ import transformers
 from src.data.dataset import loader
 from src.utils.options import parse_args
 from src.utils.logger import get_logger
-from src.trainer import Trainer
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -22,7 +21,9 @@ def main():
         diffusers.utils.logging.set_verbosity_error()
 
     # 创建训练器
-    trainer = Trainer(config)
+    from src.qwen_image_edit_trainer import QwenImageEditTrainer
+
+    trainer = QwenImageEditTrainer(config)
 
     # 加载数据
     train_dataloader = loader(

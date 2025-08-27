@@ -58,8 +58,8 @@ train:
   mixed_precision: "bf16"
 
 cache:
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:2
+  vae_encoder_device: cuda:0
+  text_encoder_device: cuda:1
   # cache_dir: "/mnt/dgx3-raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/cache"
   cache_dir: "/raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/cache"
   use_cache: true

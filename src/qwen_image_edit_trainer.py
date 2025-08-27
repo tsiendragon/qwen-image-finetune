@@ -6,10 +6,9 @@ import random
 import PIL
 import gc
 import numpy as np
-from typing import Optional, Union, List, Dict, Any
+from typing import Optional, Union, List, Tuple
 from PIL import Image
 from tqdm.auto import tqdm
-from typing import Union, List
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from diffusers.loaders import AttnProcsLayers
@@ -24,7 +23,7 @@ from peft.utils import get_peft_model_state_dict
 from peft import LoraConfig
 
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
-    QwenImageEditPipeline, calculate_shift, calculate_dimensions, retrieve_latents,randn_tensor
+    QwenImageEditPipeline, calculate_shift, calculate_dimensions, retrieve_latents, randn_tensor
 )
 from src.utils.logger import get_logger
 from src.data.cache_manager import check_cache_exists
@@ -137,7 +136,7 @@ class QwenImageEditTrainer:
         self.prompt_template_encode_start_idx = pipe.prompt_template_encode_start_idx
 
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
-
+        self.num_channels_latents = self.transformer.config.in_channels // 4
 
         # 设置模型为训练/评估模式
         self.vae.requires_grad_(False)
@@ -286,6 +285,8 @@ class QwenImageEditTrainer:
 
         elif mode == "cache":
             # 缓存模式：需要编码器，不需要transformer
+            self.vae = self.vae.to(self.config.cache.vae_encoder_device)
+            self.text_encoder = self.text_encoder.to(self.config.cache.text_encoder_device)
             self.transformer.cpu()
             torch.cuda.empty_cache()
             del self.transformer
@@ -300,18 +301,6 @@ class QwenImageEditTrainer:
             self.vae.to(devices['vae'])
             self.text_encoder.to(devices['text_encoder'])
             self.transformer.to(devices['transformer'])
-
-    def encode_image_embedding(self, image: torch.Tensor, device):
-        """编码图像为embedding"""
-        image = self._preprocess_image_for_cache(image, adaptive_resolution=False)
-        pixel_values = self._vae_image_standardization(image)
-
-        with torch.inference_mode():
-            with torch.autocast(device_type="cuda", dtype=self.weight_dtype, enabled=True):
-                pixel_values = pixel_values.to(dtype=self.weight_dtype, device=device, non_blocking=True)
-                pixel_latents = self.vae.encode(pixel_values).latent_dist.sample()
-
-        return pixel_latents[0]
 
     def decode_vae_latent(self, latents):
         """解码VAE潜在向量为RGB图像"""
@@ -600,57 +589,110 @@ class QwenImageEditTrainer:
         # 保存 LoRA 权重
         self.save_lora(save_path)
 
-    def cache_step(self, batch, vae_encoder_device, text_encoder_device):
-        """缓存步骤 - 基于现有trainer.py的实现"""
-        image, control, prompt = batch["image"], batch["control"], batch["prompt"]
-        file_hashes = batch["file_hashes"]
+    def adjust_image_size(self, image: Union[Image.Image, List[Image.Image]]) -> Tuple[torch.Tensor, Image.Image]:
+        image_size = image[0].size if isinstance(image, list) else image.size
+
+        calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, image_size[0] / image_size[1])
+        height = calculated_height
+        width = calculated_width
+
+        multiple_of = self.vae_scale_factor * 2
+        width = width // multiple_of * multiple_of
+        height = height // multiple_of * multiple_of
+        image = self.image_processor.resize(image, calculated_height, calculated_width)
+        prompt_image_processed = image
+        image = self.image_processor.preprocess(image, calculated_height, calculated_width)
+        image = image.unsqueeze(2)
+        return image, prompt_image_processed, height, width
+
+    def cache_step(self, data: dict, vae_encoder_device: str, text_encoder_device: str):
+        """cache vae latent and prompt embedding, including empty prompt"""
+        image, control, prompt = data["image"], data["control"], data["prompt"]
+        # image from dataset is the RGB numpy image, in format C,H,W
+        # convert to PIL image first such that it can utilize the method from pipeline
+        image = image.transpose(1, 2, 0)
+        control = control.transpose(1, 2, 0)
+
+        image = Image.fromarray(image)
+        control = Image.fromarray(control)
+        image = [image]
+        control = [control]
+        prompt = [prompt]
+
+        control_tensor, prompt_image_processed, height_control, width_control = self.adjust_image_size(control)
+        image_tensor, _, height_image, width_image = self.adjust_image_size(image)
+
+        file_hashes = data["file_hashes"]
         image_hash = file_hashes["image_hash"]
         control_hash = file_hashes["control_hash"]
         prompt_hash = file_hashes["prompt_hash"]
         empty_prompt_hash = file_hashes["empty_prompt_hash"]
-        n_samples = image.shape[0]
 
-        for i in range(n_samples):
-            prompt_i = prompt[i]
-            image_i = image[i]
-            control_i = control[i]
+        # calculate prompt embedding
+        prompt_embeds, prompt_embeds_mask = self.encode_prompt(
+            image=prompt_image_processed,
+            prompt=prompt,
+            device=text_encoder_device,
+        )
 
-            # 编码图像
-            pixel_latent = self.encode_image_embedding(image_i, vae_encoder_device)
-            control_latent = self.encode_image_embedding(control_i, vae_encoder_device)
+        empty_prompt_embed, empty_prompt_embeds_mask = self.encode_prompt(
+            image=prompt_image_processed,
+            prompt=[""],
+            device=text_encoder_device,
+        )
 
-            # 编码提示
-            prompt_embed, prompt_embeds_mask = self.encode_prompt_image_embedding(
-                prompt_i, control_i, text_encoder_device
-            )
-            empty_prompt_embed, empty_prompt_embeds_mask = self._encode_empty_prompt(
-                control_i, text_encoder_device
-            )
+        # calculate latents of vae encoder for image and control
 
-            # 保存到缓存
-            self.cache_manager.save_cache("pixel_latent", image_hash[i], pixel_latent)
-            self.cache_manager.save_cache("control_latent", control_hash[i], control_latent)
-            self.cache_manager.save_cache("prompt_embed", prompt_hash[i], prompt_embed)
-            self.cache_manager.save_cache("prompt_embeds_mask", prompt_hash[i], prompt_embeds_mask)
-            self.cache_manager.save_cache("empty_prompt_embed", empty_prompt_hash[i], empty_prompt_embed)
-            self.cache_manager.save_cache("empty_prompt_embeds_mask", empty_prompt_hash[i], empty_prompt_embeds_mask)
+        _, image_latents = self.prepare_latents(
+            image_tensor,
+            1,
+            self.num_channels_latents,
+            height_image,
+            width_image,
+            torch.bfloat16,
+            vae_encoder_device,
+            generator=None,
+            latents=None,
+        )
+        # first output of the latent is the noise that used in denoising steps, we dont need
 
-    def _encode_empty_prompt(self, prompt_image: torch.Tensor, device: str):
-        """编码空提示"""
-        prompt_image = self._preprocess_image_for_cache(prompt_image, adaptive_resolution=True)
+        _, control_latents = self.prepare_latents(
+            control_tensor,
+            1,
+            self.num_channels_latents,
+            height_control,
+            width_control,
+            torch.bfloat16,
+            vae_encoder_device,
+            generator=None,
+            latents=None,
+        )
 
-        with torch.inference_mode():
-            with torch.autocast(device_type="cuda", dtype=self.weight_dtype, enabled=True):
-                prompt_embeds, prompt_embeds_mask = self.qwen_vl.encode_prompt(
-                    image=prompt_image,
-                    prompt=[""],
-                    device=device,
-                    num_images_per_prompt=1,
-                    max_sequence_length=1024,
-                )
-        return prompt_embeds[0], prompt_embeds_mask[0]
+        """shape for different embeddings/latents with some real examples
+        shape of prompt_embeds torch.Size([1, 900, 3584])
+        shape of prompt_embeds_mask torch.Size([1, 900])
+        shape of empty_prompt_embed torch.Size([1, 637, 3584])
+        shape of empty_prompt_embeds_mask torch.Size([1, 637])
+        shape of image_latents torch.Size([1, 4104, 64])
+        shape of control_latents torch.Size([1, 4104, 64])
+        """
 
-    def cache_embeddings(self, train_dataloader):
+        # unload from gpu and remove batch dimension
+        image_latents = image_latents[0].cpu()
+        control_latents = control_latents[0].cpu()
+        prompt_embeds = prompt_embeds[0].cpu()
+        prompt_embeds_mask = prompt_embeds_mask[0].cpu()
+        empty_prompt_embed = empty_prompt_embed[0].cpu()
+        empty_prompt_embeds_mask = empty_prompt_embeds_mask[0].cpu()
+
+        self.cache_manager.save_cache("pixel_latent", image_hash, image_latents)
+        self.cache_manager.save_cache("control_latent", control_hash, control_latents)
+        self.cache_manager.save_cache("prompt_embed", prompt_hash, prompt_embeds)
+        self.cache_manager.save_cache("prompt_embeds_mask", prompt_hash, prompt_embeds_mask)
+        self.cache_manager.save_cache("empty_prompt_embed", empty_prompt_hash, empty_prompt_embed)
+        self.cache_manager.save_cache("empty_prompt_embeds_mask", empty_prompt_hash, empty_prompt_embeds_mask)
+
+    def cache(self, train_dataloader):
         """预计算并缓存embeddings"""
         from tqdm import tqdm
 
@@ -660,25 +702,21 @@ class QwenImageEditTrainer:
 
         logging.info("Starting embedding caching process...")
 
-        # 加载模型
+        # load models
         self.load_model()
         self.set_model_devices(mode="cache")
 
-        # 设置设备
-        self.qwen_vl.to(text_encoder_device)
-        self.vae.to(vae_encoder_device, dtype=self.weight_dtype)
-        self.vae.decoder.to("cpu")
-
-        # 批量处理
-        for _, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
-            self.cache_step(batch, vae_encoder_device, text_encoder_device)
+        # cache for each item
+        dataset = train_dataloader.dataset
+        for data in tqdm(dataset, total=len(dataset), desc="cache_embeddings"):
+            self.cache_step(data, vae_encoder_device, text_encoder_device)
 
         logging.info("Cache completed")
 
         # 清理模型
-        self.qwen_vl.cpu()
+        self.text_encoder.cpu()
         self.vae.cpu()
-        del self.qwen_vl
+        del self.text_encoder
         del self.vae
 
     def fit(self, train_dataloader):
@@ -819,7 +857,7 @@ class QwenImageEditTrainer:
         # generator is None by default
         if isinstance(generator, list):
             image_latents = [
-                retrieve_latents(self.vae.encode(image[i : i + 1]), generator=generator[i], sample_mode="argmax")
+                retrieve_latents(self.vae.encode(image[i:i + 1]), generator=generator[i], sample_mode="argmax")
                 for i in range(image.shape[0])
             ]
             image_latents = torch.cat(image_latents, dim=0)
@@ -855,7 +893,7 @@ class QwenImageEditTrainer:
         # 分配设备
         self.set_model_devices(mode="predict")
 
-        #量化（如果启用）
+        # 量化（如果启用）
         if self.quantize:
             self.transformer = self.quantize_model(
                 self.transformer,
@@ -890,10 +928,8 @@ class QwenImageEditTrainer:
         # 处理输入格式
         if isinstance(prompt_image, PIL.Image.Image):
             image = [prompt_image]
-            is_single = True
         else:
             image = prompt_image
-            is_single = False
 
         # 1. 计算图像尺寸 (遵循原始pipeline逻辑)
         image_size = image[0].size if isinstance(image, list) else image.size
@@ -1014,7 +1050,9 @@ class QwenImageEditTrainer:
             negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer)
             negative_prompt_embeds = negative_prompt_embeds.to(device_transformer)
 
-
+        print('timesteps', timesteps)
+        print('num_inference_steps', num_inference_steps)
+        print('sigmas', sigmas)
         with torch.inference_mode():
             progress_bar = tqdm(enumerate(timesteps), total=num_inference_steps, desc="Generating")
             for i, t in progress_bar:
@@ -1026,7 +1064,6 @@ class QwenImageEditTrainer:
                 if image_latents is not None:
                     image_latents = image_latents.to(device_transformer)
                     latent_model_input = torch.cat([latents, image_latents], dim=1)
-
 
                 # broadcast to batch dimension
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
@@ -1119,7 +1156,7 @@ class QwenImageEditTrainer:
                 Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
                 provided, text embeddings will be generated from `prompt` input argument.
         """
-        num_images_per_prompt = 1 #
+        num_images_per_prompt = 1  # 固定为1，支持单图像生成
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
         prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, image, device)
