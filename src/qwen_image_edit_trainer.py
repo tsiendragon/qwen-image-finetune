@@ -894,6 +894,7 @@ class QwenImageEditTrainer:
         image_latents: torch.Tensor = None,
         prompt_embeds: torch.Tensor = None,
         prompt_embeds_mask: torch.Tensor = None,
+        weight_dtype=torch.bfloat16,
     ) -> Union[np.ndarray, List[np.ndarray]]:
         """
         Prediction method - follows original QwenImageEditPipeline.__call__ logic, supports batch processing
@@ -917,6 +918,7 @@ class QwenImageEditTrainer:
             image = [prompt_image]
         else:
             image = prompt_image
+        self.weight_dtype = weight_dtype
 
         # 1. Calculate image dimensions (follows original pipeline logic)
         image_size = image[0].size if isinstance(image, list) else image.size
@@ -953,9 +955,9 @@ class QwenImageEditTrainer:
 
         # 4. encode prompt
         self.text_encoder.to(device_text_encoder)
-        if prompt_image_processed is not None:
+        if prompt_embeds is not None:
             prompt_embeds = prompt_embeds.unsqueeze(0)
-            prompt_embeds_mask = prompt_embeds_mask.unsqueeze(0)
+            prompt_embeds_mask = prompt_embeds_mask.unsqueeze(0).to(torch.int64)
 
         else:
             prompt_embeds, prompt_embeds_mask = self.encode_prompt(
@@ -963,6 +965,7 @@ class QwenImageEditTrainer:
                 prompt=prompt,
                 device=device_text_encoder,
             )
+            print('prompt_embeds_mask', prompt_embeds_mask.dtype)
 
         if do_true_cfg:
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
@@ -975,9 +978,12 @@ class QwenImageEditTrainer:
         num_channels_latents = self.transformer.config.in_channels // 4
         if image_latents is not None:
             image_latents = image_latents.unsqueeze(0)
-            shape = (batch_size, 1, num_channels_latents, height, width)
+            height_latent = 2 * (int(height) // (self.vae_scale_factor * 2))
+            width_latent = 2 * (int(width) // (self.vae_scale_factor * 2))
+
+            shape = (batch_size, 1, num_channels_latents, height_latent, width_latent)
             latents = randn_tensor(shape, generator=None, device=device_transformer, dtype=prompt_embeds.dtype)
-            latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
+            latents = self._pack_latents(latents, batch_size, num_channels_latents, height_latent, width_latent)
             latents = latents.to(device=device_transformer, dtype=prompt_embeds.dtype)
         else:
             latents, image_latents = self.prepare_latents(
@@ -1054,11 +1060,11 @@ class QwenImageEditTrainer:
         self.attention_kwargs = {}
 
         # set to proper device
-        prompt_embeds_mask = prompt_embeds_mask.to(device_transformer)
-        prompt_embeds = prompt_embeds.to(device_transformer)
+        prompt_embeds_mask = prompt_embeds_mask.to(device_transformer, dtype=self.weight_dtype)
+        prompt_embeds = prompt_embeds.to(device_transformer, dtype=self.weight_dtype)
         if do_true_cfg:
-            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer)
-            negative_prompt_embeds = negative_prompt_embeds.to(device_transformer)
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer, dtype=self.weight_dtype)
+            negative_prompt_embeds = negative_prompt_embeds.to(device_transformer, dtype=self.weight_dtype)
 
         print('timesteps', timesteps)
         print('num_inference_steps', num_inference_steps)
@@ -1068,17 +1074,26 @@ class QwenImageEditTrainer:
             for i, t in progress_bar:
                 progress_bar.set_postfix({'timestep': f'{t:.1f}'})
                 self._current_timestep = t
-                latents = latents.to(device_transformer)
+                latents = latents.to(device_transformer, dtype=self.weight_dtype)
 
                 latent_model_input = latents
                 if image_latents is not None:
-                    image_latents = image_latents.to(device_transformer)
+                    image_latents = image_latents.to(device_transformer, dtype=self.weight_dtype)
                     latent_model_input = torch.cat([latents, image_latents], dim=1)
 
                 # broadcast to batch dimension
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
                 # Usecache_context (如果transformer支持)
+                if i == 0:
+                    print('latent_model_input', latent_model_input.shape)
+                    print('timestep', timestep)
+                    print('guidance', guidance)
+                    print('prompt_embeds_mask', prompt_embeds_mask.shape)
+                    print('prompt_embeds', prompt_embeds.shape)
+                    print('img_shapes', img_shapes)
+                    print('txt_seq_lens', txt_seq_lens)
+                    print('attention_kwargs', self.attention_kwargs)
                 with self.transformer.cache_context("cond"):
                     noise_pred = self.transformer(
                         hidden_states=latent_model_input,
