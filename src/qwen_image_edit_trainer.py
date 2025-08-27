@@ -855,7 +855,7 @@ class QwenImageEditTrainer:
         # 分配设备
         self.set_model_devices(mode="predict")
 
-        # 量化（如果启用）
+        #量化（如果启用）
         if self.quantize:
             self.transformer = self.quantize_model(
                 self.transformer,
@@ -966,7 +966,7 @@ class QwenImageEditTrainer:
 
         # 6. 准备时间步 (遵循原始pipeline逻辑)
         import numpy as np
-        from sub_modules.diffusers.src.diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import retrieve_timesteps
+        from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import retrieve_timesteps
 
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         image_seq_len = latents.shape[1]

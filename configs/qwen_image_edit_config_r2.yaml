@@ -1,7 +1,7 @@
 model:
   pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
   rank: 16
-  quantize: true
+  quantize: false
   lora:
     r: 16
     lora_alpha: 16
@@ -68,7 +68,7 @@ predict:
   devices:
     vae: cuda:0
     text_encoder: cuda:1
-    transformer: cuda:2
+    transformer: cuda:1
 
 # Additional training parameters that may be needed
 resume_from_checkpoint: "latest"
