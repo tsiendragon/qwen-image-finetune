@@ -28,7 +28,7 @@ from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
 )
 from src.utils.logger import get_logger
 from src.data.cache_manager import check_cache_exists
-
+import logging
 logger = get_logger(__name__, log_level="INFO")
 
 
@@ -86,7 +86,7 @@ class QwenImageEditTrainer:
 
     def load_model(self):
         """从QwenImageEditPipeline加载并分离组件"""
-        logger.info("Loading QwenImageEditPipeline and separating components...")
+        logging.info("Loading QwenImageEditPipeline and separating components...")
 
         # 使用pipeline加载完整模型
         pipe = QwenImageEditPipeline.from_pretrained(
@@ -120,7 +120,6 @@ class QwenImageEditTrainer:
         self.scheduler: FlowMatchEulerDiscreteScheduler = pipe.scheduler
         # 初始化图像处理器（用于predict方法）
         from diffusers.image_processor import VaeImageProcessor
-        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
 
         # 设置VAE相关参数
         self.vae_scale_factor = 2 ** len(self.vae.temperal_downsample)
@@ -137,12 +136,15 @@ class QwenImageEditTrainer:
         self.prompt_template_encode = pipe.prompt_template_encode
         self.prompt_template_encode_start_idx = pipe.prompt_template_encode_start_idx
 
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
+
 
         # 设置模型为训练/评估模式
         self.vae.requires_grad_(False)
         self.transformer.requires_grad_(False)
+        torch.cuda.empty_cache()
 
-        logger.info(f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}")
+        logging.info(f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}")
 
     def setup_accelerator(self):
         """初始化加速器和日志配置"""
@@ -179,16 +181,20 @@ class QwenImageEditTrainer:
         """FP8量化模型"""
         from optimum.quanto import quantize, qfloat8, freeze
 
+        model = model.to('cpu')
+        torch.cuda.empty_cache()  # save memory
+
         torch_dtype = self.weight_dtype
         all_blocks = list(model.transformer_blocks)
         for block in tqdm(all_blocks):
-            block.to(device, dtype=torch_dtype)
+            block.to('cpu', dtype=torch_dtype)
             quantize(block, weights=qfloat8)
             freeze(block)
-            block.to("cpu")
-        model.to(device, dtype=torch_dtype)
+            # block.to("cpu")
+        model.to('cpu', dtype=torch_dtype)
         quantize(model, weights=qfloat8)
         freeze(model)
+        model.to(device)
         return model
 
     def set_lora(self):
@@ -225,13 +231,13 @@ class QwenImageEditTrainer:
             else:
                 param.requires_grad = False
 
-        logger.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
+        logging.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
     def load_lora(self, pretrained_weight):
         """加载预训练的LoRA权重"""
         if pretrained_weight is not None:
             self.transformer.load_adapter(pretrained_weight)
-            logger.info(f"Loaded LoRA weights from {pretrained_weight}")
+            logging.info(f"Loaded LoRA weights from {pretrained_weight}")
 
     def save_lora(self, save_path):
         """保存LoRA权重"""
@@ -246,12 +252,12 @@ class QwenImageEditTrainer:
         QwenImageEditPipeline.save_lora_weights(
             save_path, lora_state_dict, safe_serialization=True
         )
-        logger.info(f"Saved LoRA weights to {save_path}")
+        logging.info(f"Saved LoRA weights to {save_path}")
 
     def merge_lora(self):
         """合并LoRA权重到主模型"""
         self.transformer.merge_adapter()
-        logger.info("Merged LoRA weights into base model")
+        logging.info("Merged LoRA weights into base model")
 
     def set_model_devices(self, mode="train"):
         """根据不同模式设置模型设备分配"""
@@ -291,9 +297,9 @@ class QwenImageEditTrainer:
         elif mode == "predict":
             # 预测模式：按配置分配到不同GPU
             devices = self.config.predict.devices
-            self.vae.to(devices.vae)
-            self.text_encoder.to(devices.text_encoder)
-            self.transformer.to(devices.transformer)
+            self.vae.to(devices['vae'])
+            self.text_encoder.to(devices['text_encoder'])
+            self.transformer.to(devices['transformer'])
 
     def encode_image_embedding(self, image: torch.Tensor, device):
         """编码图像为embedding"""
@@ -652,7 +658,7 @@ class QwenImageEditTrainer:
         vae_encoder_device = self.config.cache.vae_encoder_device
         text_encoder_device = self.config.cache.text_encoder_device
 
-        logger.info("Starting embedding caching process...")
+        logging.info("Starting embedding caching process...")
 
         # 加载模型
         self.load_model()
@@ -667,7 +673,7 @@ class QwenImageEditTrainer:
         for _, batch in tqdm(enumerate(train_dataloader), total=len(train_dataloader)):
             self.cache_step(batch, vae_encoder_device, text_encoder_device)
 
-        logger.info("Cache completed")
+        logging.info("Cache completed")
 
         # 清理模型
         self.qwen_vl.cpu()
@@ -835,9 +841,6 @@ class QwenImageEditTrainer:
 
     def setup_predict(self):
         """设置预测模式"""
-        logger.info("Setting up prediction mode...")
-
-        # 加载模型
         self.load_model()
 
         # 加载LoRA权重（如果有）
@@ -847,7 +850,7 @@ class QwenImageEditTrainer:
         # 设置评估模式
         self.transformer.eval()
         self.vae.eval()
-        self.qwen_vl.eval()
+        self.text_encoder.eval()
 
         # 分配设备
         self.set_model_devices(mode="predict")
@@ -856,7 +859,7 @@ class QwenImageEditTrainer:
         if self.quantize:
             self.transformer = self.quantize_model(
                 self.transformer,
-                self.config.predict.devices.transformer
+                self.config.predict.devices['transformer']
             )
 
     def predict(
@@ -880,7 +883,8 @@ class QwenImageEditTrainer:
         Returns:
             Union[np.ndarray, List[np.ndarray]]: 生成的图片，RGB格式
         """
-        logger.info(f"Starting prediction with {num_inference_steps} steps, CFG scale: {true_cfg_scale}")
+        import logging
+        logging.info(f"Starting prediction with {num_inference_steps} steps, CFG scale: {true_cfg_scale}")
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
         # 处理输入格式
@@ -910,9 +914,9 @@ class QwenImageEditTrainer:
         else:
             raise ValueError(f"Invalid prompt type: {type(prompt)}")
 
-        device_text_encoder = self.config.predict.devices.text_encoder
-        device_transformer = self.config.predict.devices.transformer
-        device_vae = self.config.predict.devices.vae
+        device_text_encoder = self.config.predict.devices['text_encoder']
+        device_transformer = self.config.predict.devices['transformer']
+        device_vae = self.config.predict.devices['vae']
 
         # 3. 预处理图像 (遵循原始pipeline逻辑)
         if image is not None and not (isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels):
@@ -1001,16 +1005,28 @@ class QwenImageEditTrainer:
 
         # 7. 降噪循环 (遵循原始pipeline逻辑)
         self.scheduler.set_begin_index(0)
+        self.attention_kwargs = {}
+
+        # set to proper device
+        prompt_embeds_mask = prompt_embeds_mask.to(device_transformer)
+        prompt_embeds = prompt_embeds.to(device_transformer)
+        if do_true_cfg:
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer)
+            negative_prompt_embeds = negative_prompt_embeds.to(device_transformer)
+
 
         with torch.inference_mode():
             progress_bar = tqdm(enumerate(timesteps), total=num_inference_steps, desc="Generating")
             for i, t in progress_bar:
                 progress_bar.set_postfix({'timestep': f'{t:.1f}'})
                 self._current_timestep = t
+                latents = latents.to(device_transformer)
 
                 latent_model_input = latents
                 if image_latents is not None:
+                    image_latents = image_latents.to(device_transformer)
                     latent_model_input = torch.cat([latents, image_latents], dim=1)
+
 
                 # broadcast to batch dimension
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
@@ -1061,7 +1077,7 @@ class QwenImageEditTrainer:
                     progress_bar.update()
 
         self._current_timestep = None
-        # 8. 解码最终图像 (遵循原始pipeline逻辑)
+        # 8. decode final latents
         latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
         latents = latents.to(self.vae.dtype)
         latents = latents.to(device_vae)

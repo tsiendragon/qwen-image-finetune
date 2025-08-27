@@ -68,7 +68,7 @@ cache:
 
 predict:
   devices:
-    vae: cuda:5
+    vae: cuda:6
     text_encoder: cuda:6
     transformer: cuda:7
 # Additional training parameters that may be needed
