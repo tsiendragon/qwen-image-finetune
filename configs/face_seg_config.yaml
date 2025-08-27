@@ -1,0 +1,82 @@
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
+  # pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"  # 4bit版本
+  # pretrained_model_name_or_path: "patientxtr/qwen-image-edit-fp8-e5m2"
+  rank: 16
+  quantize: False
+  lora:
+    r: 16  # LoRA rank，可以根据需要调整(8, 16, 32)
+    lora_alpha: 16  # LoRA alpha，通常等于r
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+
+data:
+  class_path: "src.data.dataset.ImageDataset"
+  init_args:
+    dataset_path: "/mnt/nas/public2/lilong/repos/qwen-image-finetune/data/face_seg"
+    image_size: null  # 人脸分割通常使用512x512
+    caption_dropout_rate: 0.05  # 降低caption dropout，因为任务比较专一
+    prompt_image_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    cache_drop_rate: 0.1  # 10%的概率使用空prompt进行训练
+  batch_size: 2  # 根据显存调整，可以设置为 1, 2, 4
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora"
+  logging_dir: "logs"
+  report_to: "tensorboard"
+  tracker_project_name: "face_segmentation_lora"
+
+optimizer:
+  class_path: bnb.optim.Adam8bit  # 8bit Adam优化器节省显存
+  init_args:
+    lr: 0.0001  # 人脸分割任务使用较小的学习率
+    betas: [0.9, 0.999]
+  # 如果显存充足，也可以使用标准AdamW：
+  # class_path: "torch.optim.AdamW"
+  # init_args:
+  #   lr: 0.0001
+  #   weight_decay: 0.01
+  #   betas: [0.9, 0.999]
+  #   eps: 1e-8
+
+lr_scheduler:
+  scheduler_type: "cosine"  # 余弦调度器，对细粒度任务效果更好
+  warmup_steps: 50  # 增加warmup步数
+  num_cycles: 0.5
+  power: 1.0
+
+train:
+  gradient_accumulation_steps: 4  # 增加梯度累积以模拟更大batch size
+  max_train_steps: 2000  # 人脸分割数据量较小，减少训练步数
+  num_epochs: 10  # 增加epoch数量
+  checkpointing_steps: 100  # 更频繁的保存检查点
+  checkpoints_total_limit: 20
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: True  # 启用梯度检查点以节省显存
+
+cache:
+  vae_encoder_device: cuda:0
+  text_encoder_device: cuda:0  # 如果只有一张卡，都放在cuda:0
+  cache_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora/cache"
+  use_cache: true
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    transformer: cuda:0
+
+# 训练恢复设置
+resume_from_checkpoint: "latest"
+
+# 验证设置（可选）
+validation:
+  enabled: false  # 如果有验证集可以启用
+  validation_steps: 200
+  num_validation_samples: 4
