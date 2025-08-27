@@ -61,16 +61,16 @@ class ImageDataset(Dataset):
         # 扫描所有图像文件
         self.image_files = self._scan_image_files()
         # 图像预处理变换 - 将[img_w, img_h] 转换为transforms.Resize期望的 (height, width) 格式
-        if isinstance(self.image_size, (tuple, list)) and len(self.image_size) == 2:
-            # 将[img_w, img_h]转换为(img_h, img_w)供PyTorch使用
-            self.resize_size = (self.image_size[1], self.image_size[0])  # (height, width)
+        if isinstance(self.image_size, (tuple, list)):
+            self.resize_size = (self.image_size[0], self.image_size[1])  # (width, height)
         else:
             self.resize_size = self.image_size
 
     def preprocess(self, image_path):
         img = cv2.imread(image_path)
         img = img[:, :, ::-1]
-        img = cv2.resize(img, self.resize_size)
+        if self.resize_size is not None:
+            img = cv2.resize(img, self.resize_size)
         img = img.transpose(2, 0, 1)
         return img
 

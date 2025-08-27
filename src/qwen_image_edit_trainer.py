@@ -32,7 +32,7 @@ logger = get_logger(__name__, log_level="INFO")
 
 
 def get_lora_layers(model):
-    """遍历模型找出所有LoRA相关模块"""
+    """Traverse the model to find all LoRA-related modules"""
     lora_layers = {}
 
     def fn_recursive_find_lora_layer(name: str, module: torch.nn.Module, processors):
@@ -50,7 +50,7 @@ def get_lora_layers(model):
 
 
 class QwenImageEditTrainer:
-    """基于QwenImageEditPipeline的训练器类"""
+    """Trainer class based on QwenImageEditPipeline"""
 
     def __init__(self, config):
         self.config = config
@@ -59,41 +59,41 @@ class QwenImageEditTrainer:
         self.lr_scheduler = None
         self.global_step = 0
 
-        # 新增的组件属性
+        # Component attributes
         self.vae = None                   # AutoencoderKLQwenImage
         self.text_encoder = None          # Qwen2_5_VLForConditionalGeneration (text_encoder)
         self.transformer = None           # QwenImageTransformer2DModel
         self.tokenizer = None             # Qwen2Tokenizer
         self.scheduler = None             # FlowMatchEulerDiscreteScheduler
 
-        # 缓存相关属性
+        # Cache-related attributes
         self.use_cache = config.cache.use_cache
         self.cache_exist = check_cache_exists(config.cache.cache_dir)
         self.cache_dir = config.cache.cache_dir
 
-        # 其他配置
+        # Other configurations
         self.quantize = config.model.quantize
         self.weight_dtype = torch.bfloat16
         self.batch_size = config.data.batch_size
         self.prompt_image_dropout_rate = config.data.init_args.get('prompt_image_dropout_rate', 0.1)
 
-        # 从VAE配置中获取的参数
+        # Parameters obtained from VAE configuration
         self.vae_scale_factor = None
         self.vae_latent_mean = None
         self.vae_latent_std = None
         self.vae_z_dim = None
 
     def load_model(self):
-        """从QwenImageEditPipeline加载并分离组件"""
+        """Load and separate components from QwenImageEditPipeline"""
         logging.info("Loading QwenImageEditPipeline and separating components...")
 
-        # 使用pipeline加载完整模型
+        # Load complete model using pipeline
         pipe = QwenImageEditPipeline.from_pretrained(
             self.config.model.pretrained_model_name_or_path,
             torch_dtype=self.weight_dtype
         )
 
-        # 分离各个组件
+        # Separate individual components
 
         from src.models.load_model import load_vae
         self.vae = load_vae(
@@ -101,7 +101,7 @@ class QwenImageEditTrainer:
             weight_dtype=self.weight_dtype
         )
         # same to model constructed from vae self.vae = pipe.vae
-        self.text_encoder = pipe.text_encoder  # text_encoder实际是qwen_vl
+        self.text_encoder = pipe.text_encoder  # text_encoder is actually qwen_vl
         # self.transformer = pipe.transformer this is same as the following, verified
         from src.models.load_model import load_transformer
         self.transformer = load_transformer(
@@ -117,16 +117,16 @@ class QwenImageEditTrainer:
         self.processor: Qwen2VLProcessor = pipe.processor
         self.tokenizer: Qwen2Tokenizer = pipe.tokenizer
         self.scheduler: FlowMatchEulerDiscreteScheduler = pipe.scheduler
-        # 初始化图像处理器（用于predict方法）
+        # Initialize image processor (for predict method)
         from diffusers.image_processor import VaeImageProcessor
 
-        # 设置VAE相关参数
+        # Set VAE-related parameters
         self.vae_scale_factor = 2 ** len(self.vae.temperal_downsample)
         self.vae_latent_mean = self.vae.config.latents_mean
         self.vae_latent_std = self.vae.config.latents_std
         self.vae_z_dim = self.vae.config.z_dim
 
-        # 从原始pipeline复制的属性
+        # Attributes copied from original pipeline
         self.latent_channels = self.vae.config.z_dim
         self._guidance_scale = 1.0
         self._attention_kwargs = None
@@ -138,7 +138,7 @@ class QwenImageEditTrainer:
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
         self.num_channels_latents = self.transformer.config.in_channels // 4
 
-        # 设置模型为训练/评估模式
+        # Set models to training/evaluation mode
         self.vae.requires_grad_(False)
         self.transformer.requires_grad_(False)
         torch.cuda.empty_cache()
@@ -146,7 +146,7 @@ class QwenImageEditTrainer:
         logging.info(f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}")
 
     def setup_accelerator(self):
-        """初始化加速器和日志配置"""
+        """Initialize accelerator and logging configuration"""
         logging_dir = os.path.join(
             self.config.logging.output_dir, self.config.logging.logging_dir
         )
@@ -161,13 +161,13 @@ class QwenImageEditTrainer:
             project_config=accelerator_project_config,
         )
 
-        # 设置权重数据类型
+        # Set weight data type
         if self.accelerator.mixed_precision == "fp16":
             self.weight_dtype = torch.float16
         elif self.accelerator.mixed_precision == "bf16":
             self.weight_dtype = torch.bfloat16
 
-        # 创建输出目录
+        # Create output directory
         if (
             self.accelerator.is_main_process
             and self.config.logging.output_dir is not None
@@ -177,7 +177,7 @@ class QwenImageEditTrainer:
         logger.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
     def quantize_model(self, model, device):
-        """FP8量化模型"""
+        """FP8 quantize model"""
         from optimum.quanto import quantize, qfloat8, freeze
 
         model = model.to('cpu')
@@ -197,7 +197,7 @@ class QwenImageEditTrainer:
         return model
 
     def set_lora(self):
-        """设置LoRA配置"""
+        """Set LoRA configuration"""
         if self.quantize:
             self.transformer = self.quantize_model(self.transformer, self.accelerator.device)
         else:
@@ -210,7 +210,7 @@ class QwenImageEditTrainer:
             target_modules=self.config.model.lora.target_modules,
         )
 
-        # 配置模型
+        # Configure model
         if self.quantize:
             self.transformer.to(self.accelerator.device)
         else:
@@ -221,7 +221,7 @@ class QwenImageEditTrainer:
         self.transformer.train()
         self.transformer.enable_gradient_checkpointing()
 
-        # 只训练 LoRA 参数
+        # Train only LoRA parameters
         trainable_params = 0
         for name, param in self.transformer.named_parameters():
             if "lora" in name:
@@ -233,13 +233,13 @@ class QwenImageEditTrainer:
         logging.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
     def load_lora(self, pretrained_weight):
-        """加载预训练的LoRA权重"""
+        """Load pretrained LoRA weights"""
         if pretrained_weight is not None:
             self.transformer.load_adapter(pretrained_weight)
             logging.info(f"Loaded LoRA weights from {pretrained_weight}")
 
     def save_lora(self, save_path):
-        """保存LoRA权重"""
+        """Save LoRA weights"""
         unwrapped_transformer = self.accelerator.unwrap_model(self.transformer)
         if is_compiled_module(unwrapped_transformer):
             unwrapped_transformer = unwrapped_transformer._orig_mod
@@ -254,17 +254,17 @@ class QwenImageEditTrainer:
         logging.info(f"Saved LoRA weights to {save_path}")
 
     def merge_lora(self):
-        """合并LoRA权重到主模型"""
+        """Merge LoRA weights into base model"""
         self.transformer.merge_adapter()
         logging.info("Merged LoRA weights into base model")
 
     def set_model_devices(self, mode="train"):
-        """根据不同模式设置模型设备分配"""
+        """Set model device allocation based on different modes"""
         if mode == "train":
             assert hasattr(self, "accelerator"), "accelerator must be set before setting model devices"
 
         if self.cache_exist and self.use_cache and mode == "train":
-            # 缓存模式：只需要transformer
+            # Cache mode: only need transformer
             self.text_encoder.cpu()
             torch.cuda.empty_cache()
             self.vae.cpu()
@@ -275,7 +275,7 @@ class QwenImageEditTrainer:
             self.transformer.to(self.accelerator.device)
 
         elif not self.use_cache and mode == "train":
-            # 非缓存模式：需要编码器
+            # Non-cache mode: need encoders
             self.vae.decoder.cpu()
             torch.cuda.empty_cache()
             gc.collect()
@@ -284,7 +284,7 @@ class QwenImageEditTrainer:
             self.transformer.to(self.accelerator.device)
 
         elif mode == "cache":
-            # 缓存模式：需要编码器，不需要transformer
+            # Cache mode: need encoders, don't need transformer
             self.vae = self.vae.to(self.config.cache.vae_encoder_device)
             self.text_encoder = self.text_encoder.to(self.config.cache.text_encoder_device)
             self.transformer.cpu()
@@ -296,17 +296,17 @@ class QwenImageEditTrainer:
             gc.collect()
 
         elif mode == "predict":
-            # 预测模式：按配置分配到不同GPU
+            # Predict mode: allocate to different GPUs according to configuration
             devices = self.config.predict.devices
             self.vae.to(devices['vae'])
             self.text_encoder.to(devices['text_encoder'])
             self.transformer.to(devices['transformer'])
 
     def decode_vae_latent(self, latents):
-        """解码VAE潜在向量为RGB图像"""
+        """Decode VAE latent vectors to RGB images"""
         latents = latents.to(self.vae.device, dtype=self.weight_dtype)
 
-        # 逆转标准化
+        # Reverse normalization
         latents_mean = (
             torch.tensor(self.vae_latent_mean, dtype=self.weight_dtype)
             .view(1, 1, self.vae_z_dim, 1, 1)
@@ -319,34 +319,34 @@ class QwenImageEditTrainer:
         )
         latents = latents * latents_std + latents_mean
 
-        # 转换维度格式
+        # Convert dimension format
         latents = latents.permute(0, 2, 1, 3, 4)
 
-        # 解码图像
+        # Decode image
         image = self.vae.decode(latents).sample
 
-        # 后处理
+        # Post-processing
         image = self._postprocess_image(image)
         return image
 
-    # 静态方法：直接引用QwenImageEditPipeline的方法
+    # Static methods: directly reference QwenImageEditPipeline methods
     _pack_latents = staticmethod(QwenImageEditPipeline._pack_latents)
     _unpack_latents = staticmethod(QwenImageEditPipeline._unpack_latents)
 
     def _preprocess_image_for_cache(self, image: torch.Tensor, adaptive_resolution=True):
-        """预处理图像用于缓存"""
-        # 转换为PIL图像
+        """Preprocess images for caching"""
+        # Convert to PIL image
         image = Image.fromarray(image.permute(1, 2, 0).cpu().numpy().astype("uint8"))
         if adaptive_resolution:
             calculated_width, calculated_height, _ = calculate_dimensions(
                 1024 * 1024, image.size[0] / image.size[1]
             )
-            # 使用processor的resize方法
+            # Use processor's resize method
             image = self.processor.image_processor.resize(image, calculated_height, calculated_width)
         return image
 
     def _vae_image_standardization(self, image: PIL.Image):
-        """VAE图像标准化"""
+        """VAE image standardization"""
         image = np.array(image).astype("float32")
         image = (image / 127.5) - 1
         image = torch.from_numpy(image)
@@ -356,47 +356,57 @@ class QwenImageEditTrainer:
         return pixel_values
 
     def _postprocess_image(self, image_tensor: torch.Tensor) -> np.ndarray:
-        """后处理输出图像"""
+        """Post-process output images"""
         image = image_tensor.cpu().float()
         image = image.squeeze(2).squeeze(0)  # [C,H,W]
-        image = (image / 2 + 0.5).clamp(0, 1)  # 从[-1,1]转换到[0,1]
+        image = (image / 2 + 0.5).clamp(0, 1)  # Convert from [-1,1] to [0,1]
         image = image.permute(1, 2, 0).numpy()  # [H,W,C]
         image = (image * 255).astype(np.uint8)
         return image
 
     def training_step(self, batch):
-        """执行单个训练步骤"""
-        # 检查是否有缓存数据
+        """Execute a single training step"""
+        # Check if cached data is available
         if 'prompt_embed' in batch and 'pixel_latent' in batch and 'control_latent' in batch:
             return self._training_step_cached(batch)
         else:
             return self._training_step_compute(batch)
 
     def _training_step_cached(self, batch):
-        """使用缓存嵌入的训练步骤"""
+        """Training step using cached embeddings"""
         pixel_latents = batch["pixel_latent"].to(self.accelerator.device, dtype=self.weight_dtype)
         control_latents = batch["control_latent"].to(self.accelerator.device, dtype=self.weight_dtype)
         prompt_embeds = batch["prompt_embed"].to(self.accelerator.device)
         prompt_embeds_mask = batch["prompt_embeds_mask"].to(self.accelerator.device)
 
-        return self._compute_loss(pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask)
+        image = batch['image']  # torch.tensor: B,C,H,W
+        image = image[0].numpy()
+        image = image.transpose(1, 2, 0)
+        image = Image.fromarray(image)
+        image = [image]
+
+        _, _, height, width = self.adjust_image_size(image)
+
+        return self._compute_loss(
+            pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask,
+                                  height, width)
 
     def _training_step_compute(self, batch):
-        """计算嵌入的训练步骤（无缓存）"""
+        """Training step with embedding computation (no cache)"""
         image, control, prompt = batch["image"], batch["control"], batch["prompt"]
 
-        # 编码图像和控制图像
+        # Encode image and control image
         pixel_latents = self.encode_image_embedding(image, self.accelerator.device)
         control_latents = self.encode_image_embedding(control, self.accelerator.device)
 
-        # 编码提示
+        # Encode prompt
         if random.random() < self.config.data.init_args.get('caption_dropout_rate', 0.1):
             prompt = ""
         prompt_embeds, prompt_embeds_mask = self.encode_prompt_image_embedding(
             prompt, control, self.accelerator.device
         )
 
-        # 标准化潜在向量
+        # Normalize latent vectors
         with torch.inference_mode():
             latents_mean = (
                 torch.tensor(self.vae_latent_mean, dtype=self.weight_dtype)
@@ -413,34 +423,25 @@ class QwenImageEditTrainer:
 
         return self._compute_loss(pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask)
 
-    def _compute_loss(self, pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask):
-        """计算损失的通用方法"""
-        # 维度转换
-        pixel_latents = pixel_latents.permute(0, 2, 1, 3, 4)
-        control_latents = control_latents.permute(0, 2, 1, 3, 4)
-
-        # 标准化
-        latents_mean = (
-            torch.tensor(self.vae_latent_mean)
-            .view(1, 1, self.vae_z_dim, 1, 1)
-            .to(pixel_latents.device, pixel_latents.dtype)
-        )
-        latents_std = 1.0 / torch.tensor(self.vae_latent_std).view(1, 1, self.vae_z_dim, 1, 1).to(
-            pixel_latents.device, pixel_latents.dtype
-        )
-        pixel_latents = (pixel_latents - latents_mean) * latents_std
-        control_latents = (control_latents - latents_mean) * latents_std
+    def _compute_loss(self, pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask, height, width):
+        """calculate the flowmatching loss
+        pixel_latents: is the packed latent, shape is
+          [batch_size, (height // 2) * (width // 2), num_channels_latents * 4]
+        will ignore the pack latent operation in the loss calculation
+        prompt_mask is int64 tensor, shape is [batch_size, max_length]
+        prompt_embeds is bfloat16 tensor, shape is [batch_size, max_length, hidden_size]
+        """
 
         with torch.no_grad():
-            bsz = pixel_latents.shape[0]
+            batch_size = pixel_latents.shape[0]
             noise = torch.randn_like(
                 pixel_latents, device=self.accelerator.device, dtype=self.weight_dtype
             )
 
-            # 采样时间步
+            # Sample timesteps
             u = compute_density_for_timestep_sampling(
                 weighting_scheme="none",
-                batch_size=bsz,
+                batch_size=batch_size,
                 logit_mean=0.0,
                 logit_std=1.0,
                 mode_scale=1.29,
@@ -451,30 +452,19 @@ class QwenImageEditTrainer:
             sigmas = self._get_sigmas(timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype)
             noisy_model_input = (1.0 - sigmas) * pixel_latents + sigmas * noise
 
-            # 打包潜在向量
-            packed_noisy_model_input = self._pack_latents(
-                noisy_model_input, bsz, noisy_model_input.shape[2],
-                noisy_model_input.shape[3], noisy_model_input.shape[4]
-            )
-
-            packed_control_latents = self._pack_latents(
-                control_latents, bsz, control_latents.shape[2],
-                control_latents.shape[3], control_latents.shape[4]
-            )
-
-            # 准备输入
+            # image shape
             img_shapes = [
                 [
-                    (1, noisy_model_input.shape[3] // 2, noisy_model_input.shape[4] // 2),
-                    (1, control_latents.shape[3] // 2, control_latents.shape[4] // 2),
+                    (1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2),
+                    (1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2),
                 ]
-            ] * bsz
+            ] * batch_size
 
-            packed_input = torch.cat([packed_noisy_model_input, packed_control_latents], dim=1)
+            packed_input = torch.cat([noisy_model_input, control_latents], dim=1)
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
-            prompt_embeds = prompt_embeds.repeat(bsz, 1, 1)
+            prompt_embeds = prompt_embeds.repeat(batch_size, 1, 1)
 
-        # 前向传播
+        # Forward pass
         model_pred = self.transformer(
             hidden_states=packed_input,
             timestep=timesteps / 1000,
@@ -486,15 +476,9 @@ class QwenImageEditTrainer:
             return_dict=False,
         )[0]
 
-        model_pred = model_pred[:, :packed_noisy_model_input.size(1)]
-        model_pred = self._unpack_latents(
-            model_pred,
-            height=noisy_model_input.shape[3] * self.vae_scale_factor,
-            width=noisy_model_input.shape[4] * self.vae_scale_factor,
-            vae_scale_factor=self.vae_scale_factor,
-        )
+        model_pred = model_pred[:, :pixel_latents.size(1)]
 
-        # 计算损失
+        # Calculate loss
         weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
         target = noise - pixel_latents
         target = target.permute(0, 2, 1, 3, 4)
@@ -510,7 +494,7 @@ class QwenImageEditTrainer:
         return loss
 
     def _get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
-        """计算噪声调度器的sigma值"""
+        """Calculate sigma values for noise scheduler"""
         noise_scheduler_copy = copy.deepcopy(self.scheduler)
         sigmas = noise_scheduler_copy.sigmas.to(device=self.accelerator.device, dtype=dtype)
         schedule_timesteps = noise_scheduler_copy.timesteps.to(self.accelerator.device)
@@ -522,10 +506,10 @@ class QwenImageEditTrainer:
         return sigma
 
     def configure_optimizers(self):
-        """配置优化器和学习率调度器"""
+        """Configure optimizer and learning rate scheduler"""
         lora_layers = filter(lambda p: p.requires_grad, self.transformer.parameters())
 
-        # 使用配置中的优化器参数
+        # Use optimizer parameters from configuration
         optimizer_config = self.config.optimizer.init_args
         self.optimizer = torch.optim.AdamW(
             lora_layers,
@@ -543,7 +527,7 @@ class QwenImageEditTrainer:
         )
 
     def accelerator_prepare(self, train_dataloader):
-        """准备加速器"""
+        """Prepare accelerator"""
         lora_layers_model = AttnProcsLayers(get_lora_layers(self.transformer))
         self.transformer.enable_gradient_checkpointing()
 
@@ -553,7 +537,7 @@ class QwenImageEditTrainer:
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
 
-        # 初始化追踪器
+        # Initialize trackers
         if self.accelerator.is_main_process:
             self.accelerator.init_trackers(
                 self.config.logging.tracker_project_name, {"test": None}
@@ -561,11 +545,11 @@ class QwenImageEditTrainer:
         return train_dataloader
 
     def save_checkpoint(self, epoch, global_step):
-        """保存检查点"""
+        """Save checkpoint"""
         if not self.accelerator.is_main_process:
             return
 
-        # 管理检查点数量
+        # Manage checkpoint count
         if self.config.train.checkpoints_total_limit is not None:
             checkpoints = os.listdir(self.config.logging.output_dir)
             checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
@@ -586,7 +570,7 @@ class QwenImageEditTrainer:
         )
         os.makedirs(save_path, exist_ok=True)
 
-        # 保存 LoRA 权重
+        # Save LoRA weights
         self.save_lora(save_path)
 
     def adjust_image_size(self, image: Union[Image.Image, List[Image.Image]]) -> Tuple[torch.Tensor, Image.Image]:
@@ -693,7 +677,7 @@ class QwenImageEditTrainer:
         self.cache_manager.save_cache("empty_prompt_embeds_mask", empty_prompt_hash, empty_prompt_embeds_mask)
 
     def cache(self, train_dataloader):
-        """预计算并缓存embeddings"""
+        """Pre-compute and cache embeddings"""
         from tqdm import tqdm
 
         self.cache_manager = train_dataloader.cache_manager
@@ -713,17 +697,17 @@ class QwenImageEditTrainer:
 
         logging.info("Cache completed")
 
-        # 清理模型
+        # Clean up models
         self.text_encoder.cpu()
         self.vae.cpu()
         del self.text_encoder
         del self.vae
 
     def fit(self, train_dataloader):
-        """主训练循环"""
+        """Main training loop"""
         logger.info("Starting training process...")
 
-        # 设置组件
+        # Setup components
         self.setup_accelerator()
         self.load_model()
         self.set_lora()
@@ -736,14 +720,14 @@ class QwenImageEditTrainer:
         logger.info(f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}")
         logger.info(f"  Use cache: {self.use_cache}, Cache exists: {self.cache_exist}")
 
-        # 进度条
+        # Progress bar
         progress_bar = tqdm(
             range(0, self.config.train.max_train_steps),
             desc="train",
             disable=not self.accelerator.is_local_main_process,
         )
 
-        # 训练循环
+        # Training loop
         train_loss = 0.0
         running_loss = 0.0
 
@@ -752,7 +736,7 @@ class QwenImageEditTrainer:
                 with self.accelerator.accumulate(self.transformer):
                     loss = self.training_step(batch)
 
-                    # 反向传播
+                    # Backward pass
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(
@@ -764,34 +748,34 @@ class QwenImageEditTrainer:
                     self.lr_scheduler.step()
                     self.optimizer.zero_grad()
 
-                # 同步梯度时更新
+                # Update when syncing gradients
                 if self.accelerator.sync_gradients:
                     progress_bar.update(1)
                     self.global_step += 1
 
-                    # 计算平均损失
+                    # Calculate average loss
                     avg_loss = self.accelerator.gather(
                         loss.repeat(self.batch_size)
                     ).mean()
                     train_loss += avg_loss.item() / self.config.train.gradient_accumulation_steps
                     running_loss = train_loss
 
-                    # 记录日志
+                    # Log metrics
                     self.accelerator.log({"train_loss": train_loss}, step=self.global_step)
                     train_loss = 0.0
 
-                    # 保存检查点
+                    # Save checkpoint
                     if self.global_step % self.config.train.checkpointing_steps == 0:
                         self.save_checkpoint(epoch, self.global_step)
 
-                # 更新进度条
+                # Update progress bar
                 logs = {
                     "loss": f"{running_loss:.3f}",
                     "lr": f"{self.lr_scheduler.get_last_lr()[0]:.1e}",
                 }
                 progress_bar.set_postfix(**logs)
 
-                # 检查是否达到最大步数
+                # Check if maximum steps reached
                 if self.global_step >= self.config.train.max_train_steps:
                     break
 
@@ -878,22 +862,22 @@ class QwenImageEditTrainer:
         return image_latents
 
     def setup_predict(self):
-        """设置预测模式"""
+        """Setup prediction mode"""
         self.load_model()
 
-        # 加载LoRA权重（如果有）
+        # Load LoRA weights (if available)
         if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
             self.load_lora(self.config.model.lora.pretrained_weight)
 
-        # 设置评估模式
+        # Set evaluation mode
         self.transformer.eval()
         self.vae.eval()
         self.text_encoder.eval()
 
-        # 分配设备
+        # Allocate devices
         self.set_model_devices(mode="predict")
 
-        # 量化（如果启用）
+        # Quantize (if enabled)
         if self.quantize:
             self.transformer = self.quantize_model(
                 self.transformer,
@@ -906,32 +890,35 @@ class QwenImageEditTrainer:
         prompt: Union[str, List[str]],
         negative_prompt: Union[str, List[str]] = "",
         num_inference_steps: int = 20,
-        true_cfg_scale: float = 4.0
+        true_cfg_scale: float = 4.0,
+        image_latents: torch.Tensor = None,
+        prompt_embeds: torch.Tensor = None,
+        prompt_embeds_mask: torch.Tensor = None,
     ) -> Union[np.ndarray, List[np.ndarray]]:
         """
-        预测方法 - 遵循原始QwenImageEditPipeline.__call__逻辑，支持批量处理
+        Prediction method - follows original QwenImageEditPipeline.__call__ logic, supports batch processing
 
         Args:
-            prompt_image: PIL.Image.Image 或 List[PIL.Image.Image], 输入的提示图片
-            prompt: str 或 List[str], 文本提示 (如果是列表，需与prompt_image长度相同)
-            negative_prompt: str 或 List[str], 负面文本提示，默认为空
-            num_inference_steps: int, 推理步数，默认20
-            true_cfg_scale: float, 真实CFG引导强度，默认4.0
+            prompt_image: PIL.Image.Image or List[PIL.Image.Image], input prompt images
+            prompt: str or List[str], text prompts (if list, must match prompt_image length)
+            negative_prompt: str or List[str], negative text prompts, default empty
+            num_inference_steps: int, number of inference steps, default 20
+            true_cfg_scale: float, true CFG guidance strength, default 4.0
 
         Returns:
-            Union[np.ndarray, List[np.ndarray]]: 生成的图片，RGB格式
+            Union[np.ndarray, List[np.ndarray]]: Generated images in RGB format
         """
         import logging
         logging.info(f"Starting prediction with {num_inference_steps} steps, CFG scale: {true_cfg_scale}")
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
-        # 处理输入格式
+        # Process input format
         if isinstance(prompt_image, PIL.Image.Image):
             image = [prompt_image]
         else:
             image = prompt_image
 
-        # 1. 计算图像尺寸 (遵循原始pipeline逻辑)
+        # 1. Calculate image dimensions (follows original pipeline logic)
         image_size = image[0].size if isinstance(image, list) else image.size
         calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, image_size[0] / image_size[1])
         height = calculated_height
@@ -966,11 +953,16 @@ class QwenImageEditTrainer:
 
         # 4. encode prompt
         self.text_encoder.to(device_text_encoder)
-        prompt_embeds, prompt_embeds_mask = self.encode_prompt(
-            image=prompt_image_processed,
-            prompt=prompt,
-            device=device_text_encoder,
-        )
+        if prompt_image_processed is not None:
+            prompt_embeds = prompt_embeds.unsqueeze(0)
+            prompt_embeds_mask = prompt_embeds_mask.unsqueeze(0)
+
+        else:
+            prompt_embeds, prompt_embeds_mask = self.encode_prompt(
+                image=prompt_image_processed,
+                prompt=prompt,
+                device=device_text_encoder,
+            )
 
         if do_true_cfg:
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
@@ -981,17 +973,28 @@ class QwenImageEditTrainer:
 
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
-        latents, image_latents = self.prepare_latents(
-            image,
-            batch_size,
-            num_channels_latents,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device_vae,
-            generator=None,
-            latents=None,
-        )
+        if image_latents is not None:
+            image_latents = image_latents.unsqueeze(0)
+            shape = (batch_size, 1, num_channels_latents, height, width)
+            latents = randn_tensor(shape, generator=None, device=device_transformer, dtype=prompt_embeds.dtype)
+            latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
+            latents = latents.to(device=device_transformer, dtype=prompt_embeds.dtype)
+        else:
+            latents, image_latents = self.prepare_latents(
+                image,
+                batch_size,
+                num_channels_latents,
+                height,
+                width,
+                prompt_embeds.dtype,
+                device_vae,
+                generator=None,
+                latents=None,
+            )
+
+        print('latents shape', latents.shape)
+        print('num_channels_latents', num_channels_latents)
+        print('image-latent shape', image_latents.shape)
 
         img_shapes = [
             [
@@ -999,6 +1002,13 @@ class QwenImageEditTrainer:
                 (1, calculated_height // self.vae_scale_factor // 2, calculated_width // self.vae_scale_factor // 2),
             ]
         ] * batch_size
+
+        print('shape of img_shapes', img_shapes)
+        print('self.vae_scale_factor', self.vae_scale_factor)
+        print('height', height)
+        print('width', width)
+        print('calculated_height', calculated_height)
+        print('calculated_width', calculated_width)
 
         # 6. 准备时间步 (遵循原始pipeline逻辑)
         import numpy as np
@@ -1068,7 +1078,7 @@ class QwenImageEditTrainer:
                 # broadcast to batch dimension
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-                # 使用cache_context (如果transformer支持)
+                # Usecache_context (如果transformer支持)
                 with self.transformer.cache_context("cond"):
                     noise_pred = self.transformer(
                         hidden_states=latent_model_input,
