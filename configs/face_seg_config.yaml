@@ -14,8 +14,8 @@ model:
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/mnt/nas/public2/lilong/repos/qwen-image-finetune/data/face_seg"
-    image_size: [1024,1024]  # 人脸分割通常使用512x512
+    dataset_path: "/raid/lilong/data/face_seg/"
+    image_size: [864, 1048]  # 人脸分割通常使用512x512
     caption_dropout_rate: 0.05  # 降低caption dropout，因为任务比较专一
     prompt_image_dropout_rate: 0.05
     cache_dir: ${cache.cache_dir}
@@ -57,7 +57,7 @@ lr_scheduler:
   power: 1.0
 
 train:
-  gradient_accumulation_steps: 4  # 增加梯度累积以模拟更大batch size
+  gradient_accumulation_steps: 1  # 增加梯度累积以模拟更大batch size
   max_train_steps: 6000  # 人脸分割数据量较小，减少训练步数
   num_epochs: 100  # 增加epoch数量
   checkpointing_steps: 100  # 更频繁的保存检查点
@@ -86,3 +86,5 @@ validation:
   enabled: false  # 如果有验证集可以启用
   validation_steps: 200
   num_validation_samples: 4
+
+# 48.6 GB used for traning with batchsize 2, speed 18.35s/it
