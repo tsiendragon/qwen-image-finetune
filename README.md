@@ -45,18 +45,54 @@ cd qwen-image-finetune
 
 ### Basic Usage with Toy Dataset
 ```bash
-# 1. 项目已提供toy数据集在 data/face_seg/
-ls data/face_seg/control_images/    # 输入图像 (20个样本)
-ls data/face_seg/training_images/   # 目标图像和文本 (20个样本)
+# 1. provied toy data for lora training  data/face_seg/
+ls data/face_seg/control_images/    # control images  (20 samples)
+ls data/face_seg/training_images/   # target images and prompts (20 samples)
 
-# 2. 配置训练
+# 2. trainig config
 cp configs/face_seg_config.yaml configs/my_config.yaml
 
-# 3. 缓存嵌入（推荐）
+# 3. doing cache to same GPU memory. It needs 48.6G memory for lora training with batch size 2 and gradient checkpoint
 CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cache
 
-# 4. 开始训练
+# 4. start training
 CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+```
+
+### Inference
+```python
+# Inference with trained LoRA model
+from src.qwen_image_edit_trainer import QwenImageEditTrainer
+from src.data.config import load_config_from_yaml
+from PIL import Image
+
+# Load configuration
+config = load_config_from_yaml("configs/face_seg_config.yaml")
+
+# Initialize trainer
+trainer = QwenImageEditTrainer(config)
+
+# Load trained LoRA weights
+trainer.load_lora("/path/to/your/lora/weights")
+
+# Setup for inference
+trainer.setup_predict()
+
+# Load input image
+input_image = Image.open("data/face_seg/control_images/060002_4_028450_FEMALE_30.jpg")
+
+# Generate face segmentation
+result = trainer.predict(
+    prompt_image=input_image,
+    prompt="change the image from the face to the face segmentation mask",
+    num_inference_steps=20,
+    true_cfg_scale=4.0
+)
+# show the image
+result[0]
+# Save result
+result[0].save("output_segmentation.png")
+print("Generated face segmentation saved as output_segmentation.png")
 ```
 
 ## 📋 Documentation Roadmap

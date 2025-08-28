@@ -86,6 +86,39 @@ def predict(
 
 ### Advanced Usage
 
+#### Using Trained LoRA Models
+
+```python
+# Load and use trained LoRA weights
+from src.qwen_image_edit_trainer import QwenImageEditTrainer
+from src.data.config import load_config_from_yaml
+from PIL import Image
+
+# Load configuration
+config = load_config_from_yaml("configs/face_seg_config.yaml")
+
+# Initialize trainer
+trainer = QwenImageEditTrainer(config)
+
+# Load your trained LoRA weights
+trainer.load_lora("outputs/lora_weights.pth")
+
+# Setup for prediction
+trainer.setup_predict()
+
+# Use the trained model for inference
+input_image = Image.open("data/face_seg/control_images/060002_4_028450_FEMALE_30.jpg")
+result = trainer.predict(
+    prompt_image=input_image,
+    prompt="change the image from the face to the face segmentation mask",
+    num_inference_steps=20,
+    true_cfg_scale=4.0
+)
+
+# Save result
+result[0].save("face_segmentation_output.png")
+```
+
 #### Batch Inference
 
 ```python
