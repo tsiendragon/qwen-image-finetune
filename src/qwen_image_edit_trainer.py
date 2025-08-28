@@ -138,6 +138,7 @@ class QwenImageEditTrainer:
         self.num_channels_latents = self.transformer.config.in_channels // 4
 
         # Set models to training/evaluation mode
+        self.text_encoder.requires_grad_(False)
         self.vae.requires_grad_(False)
         self.transformer.requires_grad_(False)
         torch.cuda.empty_cache()
@@ -238,7 +239,8 @@ class QwenImageEditTrainer:
     def load_lora(self, pretrained_weight):
         """Load pretrained LoRA weights"""
         if pretrained_weight is not None:
-            self.transformer.load_adapter(pretrained_weight)
+            # 使用 load_lora_adapter 方法而不是 load_adapter
+            self.transformer.load_lora_adapter(pretrained_weight)
             logging.info(f"Loaded LoRA weights from {pretrained_weight}")
 
     def save_lora(self, save_path):
@@ -907,7 +909,7 @@ class QwenImageEditTrainer:
         self,
         prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]],
         prompt: Union[str, List[str]],
-        negative_prompt: Union[str, List[str]] = "",
+        negative_prompt: Union[None, str, List[str]] = None,
         num_inference_steps: int = 20,
         true_cfg_scale: float = 4.0,
         image_latents: torch.Tensor = None,
@@ -969,7 +971,7 @@ class QwenImageEditTrainer:
             image = self.image_processor.preprocess(image, calculated_height, calculated_width)
             image = image.unsqueeze(2)
 
-        has_neg_prompt = negative_prompt is not None and negative_prompt != ""
+        has_neg_prompt = negative_prompt is not None
         do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
 
         # 4. encode prompt
@@ -984,14 +986,31 @@ class QwenImageEditTrainer:
                 prompt=prompt,
                 device=device_text_encoder,
             )
+            prompt_embeds_mask = prompt_embeds_mask.to(torch.int64)
             print('prompt_embeds_mask', prompt_embeds_mask.dtype)
 
+
+
+
         if do_true_cfg:
+            # 清理显存以确保有足够空间进行 CFG
+            torch.cuda.empty_cache()
+            print('negative_prompt', negative_prompt)
+
+            # 临时将 positive prompt embeddings 移到 CPU 以节省显存
+
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
                 image=prompt_image_processed,
                 prompt=negative_prompt,
                 device=device_text_encoder,
             )
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer, dtype=torch.int64)
+
+            # 将 positive embeddings 移回 GPU
+
+            # 检查 negative prompt embeddings 是否有梯度
+            print(f"negative_prompt_embeds.requires_grad: {negative_prompt_embeds.requires_grad}")
+            print(f"negative_prompt_embeds_mask.requires_grad: {negative_prompt_embeds_mask.requires_grad}")
 
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
@@ -1016,7 +1035,7 @@ class QwenImageEditTrainer:
                 generator=None,
                 latents=None,
             )
-
+        print('image latent got grad', image_latents.requires_grad)
         print('latents shape', latents.shape)
         print('num_channels_latents', num_channels_latents)
         print('image-latent shape', image_latents.shape)
@@ -1066,7 +1085,12 @@ class QwenImageEditTrainer:
             guidance = guidance.expand(latents.shape[0])
         else:
             guidance = None
-
+        print(
+            'prompt_embeds_mask.sum(dim=1)',
+            prompt_embeds_mask.sum(dim=1),
+            prompt_embeds_mask[:2],
+            prompt_embeds_mask.sum(dim=1).tolist()
+        )
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
         negative_txt_seq_lens = (
             negative_prompt_embeds_mask.sum(dim=1).tolist()
@@ -1079,20 +1103,22 @@ class QwenImageEditTrainer:
         self.attention_kwargs = {}
 
         # set to proper device
-        prompt_embeds_mask = prompt_embeds_mask.to(device_transformer, dtype=self.weight_dtype)
         prompt_embeds = prompt_embeds.to(device_transformer, dtype=self.weight_dtype)
+        prompt_embeds_mask = prompt_embeds_mask.to(device_transformer, dtype=torch.int64)
+
         if do_true_cfg:
-            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer, dtype=self.weight_dtype)
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer, dtype=torch.int64)
             negative_prompt_embeds = negative_prompt_embeds.to(device_transformer, dtype=self.weight_dtype)
 
         print('timesteps', timesteps)
         print('num_inference_steps', num_inference_steps)
         print('sigmas', sigmas)
         with torch.inference_mode():
-            progress_bar = tqdm(enumerate(timesteps), total=num_inference_steps, desc="Generating")
-            for i, t in progress_bar:
-                progress_bar.set_postfix({'timestep': f'{t:.1f}'})
-                progress_bar.update()
+            # progress_bar = tqdm(enumerate(timesteps), total=num_inference_steps, desc="Generating")
+            # for i, t in progress_bar:
+            for i, t in tqdm(enumerate(timesteps), desc="Generating"):
+                # progress_bar.set_postfix({'timestep': f'{t:.1f}'})
+                # progress_bar.update()
 
                 self._current_timestep = t
                 latents = latents.to(device_transformer, dtype=self.weight_dtype)
@@ -1130,6 +1156,10 @@ class QwenImageEditTrainer:
                     noise_pred = noise_pred[:, : latents.size(1)]
 
                 if do_true_cfg:
+                    # 临时释放正面推理结果的显存，避免两次推理同时占用显存
+                    noise_pred_cpu = noise_pred.cpu()
+                    torch.cuda.empty_cache()
+
                     with self.transformer.cache_context("uncond"):
                         neg_noise_pred = self.transformer(
                             hidden_states=latent_model_input,
@@ -1143,11 +1173,18 @@ class QwenImageEditTrainer:
                             return_dict=False,
                         )[0]
                     neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+
+                    # 将正面推理结果移回 GPU 进行合并
+                    noise_pred = noise_pred_cpu.to(device_transformer)
                     comb_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 
                     cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
                     noise_norm = torch.norm(comb_pred, dim=-1, keepdim=True)
                     noise_pred = comb_pred * (cond_norm / noise_norm)
+
+                    # 释放中间结果显存
+                    del neg_noise_pred, comb_pred, cond_norm, noise_norm
+                    torch.cuda.empty_cache()
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
@@ -1174,7 +1211,7 @@ class QwenImageEditTrainer:
         final_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
 
         # 后处理
-        final_image = self.image_processor.postprocess(final_image, output_type="np")
+        final_image = self.image_processor.postprocess(final_image, output_type="pil")
         return final_image
 
     def encode_prompt(
@@ -1186,6 +1223,7 @@ class QwenImageEditTrainer:
         r"""
         get the embedding of prompt and image via qwen_vl. Support batch inference. For batch inference,
         will pad to largest length of prompt in batch.
+        It got grad by default, lets add the inference mode first
 
         Args:
             prompt (`str` or `List[str]`, *optional*):
@@ -1203,7 +1241,8 @@ class QwenImageEditTrainer:
         num_images_per_prompt = 1  # 固定为1，支持单图像生成
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
-        prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, image, device)
+        with torch.inference_mode():
+            prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, image, device)
         _, seq_len, _ = prompt_embeds.shape
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
         prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)

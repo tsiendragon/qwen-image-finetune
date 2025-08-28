@@ -30,13 +30,27 @@ class ImageDataset(Dataset):
                 - image_size: 图像尺寸 [img_w, img_h]，默认为(512, 512)
                 - cache_dir: 缓存目录路径，如果提供则启用缓存
                 - use_cache: 是否使用缓存，默认为 True
+                - random_crop: 是否启用随机裁剪，默认为 False
+                - crop_size: 裁剪后的正方形尺寸，默认为 None
+                - crop_scale: 裁剪缩放范围 [min, max]，默认为 [0.8, 1.0]
+                - center_crop: 是否启用中心裁剪，默认为 False
+                - center_crop_ratio: 中心裁剪比例，默认为 1.0
 
         """
         self.data_config = data_config
         self.dataset_path = data_config.get('dataset_path', './dataset')
-        self.image_size = data_config.get('image_size', (512, 512))
+        self.image_size = data_config.get('image_size', None)
         self.cache_dir = data_config.get('cache_dir', None)
         self.use_cache = data_config.get('use_cache', True)
+
+        # 随机裁剪配置
+        self.random_crop = data_config.get('random_crop', False)
+        self.crop_size = data_config.get('crop_size', None)
+        self.crop_scale = data_config.get('crop_scale', [0.8, 1.0])
+
+        # center crop 配置
+        self.center_crop = data_config.get('center_crop', False)
+        self.center_crop_ratio = data_config.get('center_crop_ratio', 1.0)
 
         # 初始化缓存管理器
         if self.use_cache:
@@ -66,11 +80,127 @@ class ImageDataset(Dataset):
         else:
             self.resize_size = self.image_size
 
-    def preprocess(self, image_path):
-        img = cv2.imread(image_path)
-        img = img[:, :, ::-1]
+    def get_random_crop_bbox(self, h, w):
+        """
+        生成随机裁剪的边界框
+        Args:
+            h: 图像高度
+            w: 图像宽度
+        Returns:
+            tuple: (x, y, crop_w, crop_h) 裁剪区域
+        """
+        if not self.random_crop:
+            return None
+
+        # 计算随机缩放因子
+        scale = random.uniform(self.crop_scale[0], self.crop_scale[1])
+
+        # 选择较小的边作为基准，确保裁剪出正方形
+        min_side = min(h, w)
+        crop_size_final = int(min_side * scale)
+
+        # 随机选择裁剪位置
+        if w > crop_size_final:
+            x = random.randint(0, w - crop_size_final)
+        else:
+            x = 0
+
+        if h > crop_size_final:
+            y = random.randint(0, h - crop_size_final)
+        else:
+            y = 0
+
+        return (x, y, crop_size_final, crop_size_final)
+
+    def get_center_crop_bbox(self, h, w):
+        """
+        生成中心裁剪的边界框，保持目标比例且在图片内部能达到的最大尺寸
+        Args:
+            h: 图像高度
+            w: 图像宽度
+        Returns:
+            tuple: (x, y, crop_w, crop_h) 裁剪区域
+        """
+        if not self.center_crop:
+            return None
+
+        # 确定目标宽高比
         if self.resize_size is not None:
+            if isinstance(self.resize_size, (tuple, list)):
+                target_w, target_h = self.resize_size
+            else:
+                target_w = target_h = self.resize_size
+        else:
+            # 如果没有指定 resize_size，默认使用正方形
+            target_w = target_h = min(h, w)
+
+        # 计算目标宽高比
+        target_ratio = target_w / target_h
+
+        # 根据图像尺寸和目标比例，计算能容纳的最大裁剪区域
+        # 按照目标比例，计算两种可能的裁剪尺寸
+        crop_w_by_height = int(h * target_ratio)  # 按高度限制计算宽度
+        crop_h_by_width = int(w / target_ratio)   # 按宽度限制计算高度
+
+        if crop_w_by_height <= w:
+            # 高度是限制因素，使用完整高度
+            crop_h = h
+            crop_w = crop_w_by_height
+        else:
+            # 宽度是限制因素，使用完整宽度
+            crop_w = w
+            crop_h = crop_h_by_width
+
+        # 应用 center_crop_ratio 进行缩放
+        crop_w = int(crop_w * self.center_crop_ratio)
+        crop_h = int(crop_h * self.center_crop_ratio)
+
+        # 计算中心裁剪位置
+        x = (w - crop_w) // 2
+        y = (h - crop_h) // 2
+
+        return (x, y, crop_w, crop_h)
+
+    def apply_crop_and_resize(self, img, bbox=None):
+        """
+        应用裁剪和调整大小
+        Args:
+            img: 输入图像 (H, W, C)
+            bbox: 裁剪边界框 (x, y, w, h)，如果为None则不裁剪
+        Returns:
+            处理后的图像
+        """
+        if bbox is not None:
+            x, y, w, h = bbox
+            img = img[y:y+h, x:x+w]
+
+        # 调整到目标尺寸
+        if self.random_crop and self.crop_size is not None:
+            img = cv2.resize(img, (self.crop_size, self.crop_size))
+        elif self.center_crop and self.resize_size is not None:
+            # center crop 后需要 resize 到目标尺寸
             img = cv2.resize(img, self.resize_size)
+        elif self.resize_size is not None:
+            img = cv2.resize(img, self.resize_size)
+
+        return img
+
+    def preprocess(self, image_path, crop_bbox=None):
+        """
+        预处理单个图像
+        Args:
+            image_path: 图像路径
+            crop_bbox: 可选的裁剪边界框 (x, y, w, h)
+        Returns:
+            处理后的图像数组 (C, H, W)
+        """
+        img = cv2.imread(image_path)
+        img = img[:, :, ::-1]  # BGR to RGB
+
+        # 应用裁剪和调整大小
+        img = self.apply_crop_and_resize(img, crop_bbox)
+
+        # 转换为CHW格式
         img = img.transpose(2, 0, 1)
         return img
 
@@ -160,10 +290,22 @@ class ImageDataset(Dataset):
         with open(file_info['caption'], 'r', encoding='utf-8') as f:
             prompt = f.read().strip()
 
-        image_numpy = self.preprocess(file_info['image'])
+        # 如果启用裁剪，生成共同的裁剪边界框
+        crop_bbox = None
+        if (self.random_crop and self.crop_size is not None) or self.center_crop:
+            # 读取第一个图像来获取尺寸（假设image和control尺寸相同）
+            temp_img = cv2.imread(file_info['image'])
+            if temp_img is not None:
+                h, w = temp_img.shape[:2]
+                if self.center_crop:
+                    crop_bbox = self.get_center_crop_bbox(h, w)
+                elif self.random_crop and self.crop_size is not None:
+                    crop_bbox = self.get_random_crop_bbox(h, w)
 
-        # 加载控制图像
-        control_numpy = self.preprocess(file_info['control'])
+        image_numpy = self.preprocess(file_info['image'], crop_bbox)
+
+        # 加载控制图像（使用相同的裁剪边界框）
+        control_numpy = self.preprocess(file_info['control'], crop_bbox)
 
         if self.use_cache:
             image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])

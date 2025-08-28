@@ -1,0 +1,41 @@
+#!/bin/bash
+# Qwen Image Edit 预测测试脚本
+
+set -e
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+# 测试配置
+IMAGE_PATH="/raid/lilong/data/kyc_gen/aligned/control_images/row_fff37bba.jpg"
+PROMPT_TEXT="Change Name from \"MAKSIMOV DMITRII\" to \"ALBERT ROBISON\", Change the NIE from \"Y5428731P\" to \"Y0123456B\", change the face from male to female with glasses. Keep the ID card structure, layout, fingerprint, biometric marks, or any other patterns associated to this card type."
+# LORA_WEIGHT="/raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/checkpoint-1-900/pytorch_lora_weights.safetensors"
+LORA_WEIGHT='/raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/checkpoint-0-900/pytorch_lora_weights.safetensors'
+OUTPUT_DIR="tests/outputs/$(date +%Y%m%d_%H%M%S)"
+
+echo "=== Qwen Image Edit 预测测试 ==="
+
+# 检查文件存在性
+[ ! -f "$IMAGE_PATH" ] && echo "错误: 图像文件不存在: $IMAGE_PATH" && exit 1
+
+mkdir -p "$OUTPUT_DIR"
+echo "输出目录: $OUTPUT_DIR"
+
+# 运行测试
+if [ -f "$LORA_WEIGHT" ]; then
+    echo "运行对比测试 (基础模型 vs LoRA模型)"
+    python tests/test_predict.py \
+        --image "$IMAGE_PATH" \
+        --prompt-text "$PROMPT_TEXT" \
+        --lora-weight "$LORA_WEIGHT" \
+        --output-dir "$OUTPUT_DIR" \
+        --compare
+else
+    echo "LoRA权重不存在，仅测试基础模型"
+    python tests/test_predict.py \
+        --image "$IMAGE_PATH" \
+        --prompt-text "$PROMPT_TEXT" \
+        --output-dir "$OUTPUT_DIR"
+fi
+
+echo "=== 测试完成 ==="
+echo "结果保存在: $OUTPUT_DIR"
+ls -la "$OUTPUT_DIR"

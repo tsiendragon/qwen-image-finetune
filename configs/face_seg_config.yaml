@@ -15,12 +15,18 @@ data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path: "/mnt/nas/public2/lilong/repos/qwen-image-finetune/data/face_seg"
-    image_size: null  # 人脸分割通常使用512x512
+    image_size: [1024,1024]  # 人脸分割通常使用512x512
     caption_dropout_rate: 0.05  # 降低caption dropout，因为任务比较专一
     prompt_image_dropout_rate: 0.05
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
     cache_drop_rate: 0.1  # 10%的概率使用空prompt进行训练
+    # 裁剪配置 - 使用 center crop 替代 random crop
+    random_crop: false  # 禁用随机裁剪
+    crop_size: 1024  # 裁剪后的正方形尺寸
+    crop_scale: [0.8, 1.0]  # 裁剪缩放范围
+    center_crop: true  # 启用中心裁剪
+    center_crop_ratio: 1.0  # 中心裁剪比例，0.9表示裁剪到90%的区域
   batch_size: 2  # 根据显存调整，可以设置为 1, 2, 4
   num_workers: 2
   shuffle: true
@@ -52,8 +58,8 @@ lr_scheduler:
 
 train:
   gradient_accumulation_steps: 4  # 增加梯度累积以模拟更大batch size
-  max_train_steps: 2000  # 人脸分割数据量较小，减少训练步数
-  num_epochs: 10  # 增加epoch数量
+  max_train_steps: 6000  # 人脸分割数据量较小，减少训练步数
+  num_epochs: 100  # 增加epoch数量
   checkpointing_steps: 100  # 更频繁的保存检查点
   checkpoints_total_limit: 20
   max_grad_norm: 1.0
