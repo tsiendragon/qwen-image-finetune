@@ -964,12 +964,16 @@ class QwenImageEditTrainer:
         device_transformer = self.config.predict.devices['transformer']
         device_vae = self.config.predict.devices['vae']
 
+        print('calculated size', calculated_height, calculated_width)
+
         # 3. 预处理图像 (遵循原始pipeline逻辑)
         if image is not None and not (isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels):
-            image = self.image_processor.resize(image, calculated_height, calculated_width)
+            image = [self.image_processor.resize(xx, calculated_height, calculated_width) for xx in image]
             prompt_image_processed = image
+            print('prompt_image_processed', [xxx.size for xxx in prompt_image_processed])
             image = self.image_processor.preprocess(image, calculated_height, calculated_width)
             image = image.unsqueeze(2)
+            print('image', image.size)
 
         has_neg_prompt = negative_prompt is not None
         do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
@@ -1011,7 +1015,11 @@ class QwenImageEditTrainer:
             # 检查 negative prompt embeddings 是否有梯度
             print(f"negative_prompt_embeds.requires_grad: {negative_prompt_embeds.requires_grad}")
             print(f"negative_prompt_embeds_mask.requires_grad: {negative_prompt_embeds_mask.requires_grad}")
+            print('negative_prompt_embeds', negative_prompt_embeds.shape, negative_prompt_embeds.dtype)
+            print('negative_prompt_embeds_mask', negative_prompt_embeds_mask.shape, negative_prompt_embeds_mask.dtype)
 
+        print('mask shape', prompt_embeds_mask.shape, prompt_embeds_mask.dtype)
+        print('prompt_embeds shape', prompt_embeds.shape, prompt_embeds.dtype)
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
         if image_latents is not None:
@@ -1241,6 +1249,8 @@ class QwenImageEditTrainer:
         num_images_per_prompt = 1  # 固定为1，支持单图像生成
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
+        print('image shape', [xxx.size for xxx in image])
+        print('prompt', prompt)
         with torch.inference_mode():
             prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, image, device)
         _, seq_len, _ = prompt_embeds.shape

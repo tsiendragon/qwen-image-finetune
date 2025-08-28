@@ -95,7 +95,7 @@ def run_prediction(trainer: QwenImageEditTrainer,
     result = trainer.predict(
         prompt_image=image,
         prompt=prompt,
-        negative_prompt="blur text",
+        negative_prompt="blurry",
         num_inference_steps=num_inference_steps,
         true_cfg_scale=cfg_scale,
         weight_dtype=torch.bfloat16
@@ -166,9 +166,9 @@ def main():
     parser.add_argument("--output-dir", type=str,
                         default="tests/outputs",
                         help="输出目录")
-    parser.add_argument("--steps", type=int, default=40,
+    parser.add_argument("--steps", type=int, default=20,
                         help="推理步数")
-    parser.add_argument("--cfg-scale", type=float, default=3.5,
+    parser.add_argument("--cfg-scale", type=float, default=2.5,
                         help="CFG guidance scale")
     parser.add_argument("--compare", action="store_true",
                         help="对比测试（基础模型 vs LoRA模型）")

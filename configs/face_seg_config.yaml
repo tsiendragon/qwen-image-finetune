@@ -74,9 +74,9 @@ cache:
 
 predict:
   devices:
-    vae: cuda:0
-    text_encoder: cuda:0
-    transformer: cuda:0
+    vae: cuda:1
+    text_encoder: cuda:1
+    transformer: cuda:1
 
 # 训练恢复设置
 resume_from_checkpoint: "latest"

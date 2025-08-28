@@ -20,3 +20,4 @@ ipykernel
 # optimum
 optimum-quanto
 bitsandbytes
+transformer_engine[pytorch]

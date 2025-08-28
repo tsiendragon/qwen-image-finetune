@@ -94,7 +94,45 @@ result[0]
 result[0].save("output_segmentation.png")
 print("Generated face segmentation saved as output_segmentation.png")
 ```
+### Quantize Model
 
+```
+pip install --upgrade --force-reinstall transformer-engine-cu12==1.7.0
+# need to set the CUDA HOME if not found nvcc
+export CUDA_HOME=<path_to_cuda_env>
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+pip install --upgrade --force-reinstall flash-attn --no-build-isolation
+```
+## 🎯 LoRA Fine-tuning Results Comparison
+
+This project demonstrates fine-tuning the Qwen-VL model for face segmentation tasks. Below shows the comparison between pre and post fine-tuning results:
+
+### Input Image
+<div align="center">
+  <img src="docs/images/input_image.jpg" alt="Original Input Image" width="400"/>
+  <p><em>Original input image for face segmentation</em></p>
+</div>
+
+### Base Model Results (Before Fine-tuning)
+<div align="center">
+  <img src="docs/images/result_base_model.jpg" alt="Base Model Results" width="400"/>
+  <p><em>Segmentation results from the base Qwen-VL model</em></p>
+</div>
+
+### LoRA Fine-tuned Model Results (After Fine-tuning)
+<div align="center">
+  <img src="docs/images/result_lora_model.jpg" alt="LoRA Fine-tuned Model Results" width="400"/>
+  <p><em>Segmentation results from LoRA fine-tuned model - significantly improved accuracy and details</em></p>
+</div>
+
+### Performance Analysis
+- **Before Fine-tuning**: Base model can identify face regions but with limited segmentation precision
+- **After Fine-tuning**: LoRA fine-tuning significantly improves segmentation accuracy and boundary details
+- **Key Improvements**: More precise boundary detection, better detail preservation, more stable segmentation quality
+
+> 💡 **Note**: Through LoRA fine-tuning, we achieve significant performance improvements for specific tasks while maintaining model efficiency and lightweight characteristics.
 ## 📋 Documentation Roadmap
 
 ### For New Users
