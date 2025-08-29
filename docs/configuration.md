@@ -1,107 +1,124 @@
 # Configuration Guide
 
-This guide covers all configuration options available in the Qwen Image Finetune framework.
+This guide covers the configuration options for Qwen Image Finetune training.
 
 ## Configuration File Structure
 
-The framework uses YAML configuration files located in the `configs/` directory. Here's the complete structure:
+The framework uses YAML configuration files. Here's the complete structure:
 
 ```yaml
 # Model Configuration
 model:
-  pretrained_model_name_or_path: "Qwen/Qwen2-VL-7B-Instruct"
-  quantize: false
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"  # or "ovedrive/qwen-image-edit-4bit"
+  quantize: true  # Runtime FP8 quantization
   lora:
-    enabled: true
-    rank: 16
-    alpha: 32
-    target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
-    dropout: 0.1
+    r: 16                    # LoRA rank (8, 16, 32)
+    lora_alpha: 16           # Usually equal to r
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null  # Path to pretrained LoRA weights
 
 # Data Configuration
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path: "/path/to/dataset"
-    image_size: [832, 576]
-    batch_size: 4
-    cache_dir: "/path/to/cache"
-    use_cache: true
-    num_workers: 4
-    pin_memory: true
+    image_size: [864, 1048]
+    caption_dropout_rate: 0.05
+    prompt_image_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    cache_drop_rate: 0.1
+    random_crop: false
+    crop_size: 1024
+    crop_scale: [0.8, 1.0]
+    center_crop: true
+    center_crop_ratio: 1.0
+  batch_size: 2
+  num_workers: 2
+  shuffle: true
 
 # Training Configuration
 train:
-  num_epochs: 10
-  learning_rate: 1e-4
-  gradient_accumulation_steps: 4
-  gradient_checkpointing: true
-  mixed_precision: "bf16"
+  gradient_accumulation_steps: 1
+  max_train_steps: 6000
+  num_epochs: 100
+  checkpointing_steps: 100
+  checkpoints_total_limit: 20
   max_grad_norm: 1.0
-  save_every_n_epochs: 2
-  eval_every_n_epochs: 1
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+
+# Optimizer Configuration
+optimizer:
+  class_path: "bnb.optim.Adam8bit"  # 8-bit Adam for memory efficiency
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+# Learning Rate Scheduler
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 50
+  num_cycles: 0.5
+  power: 1.0
 
 # Cache Configuration
 cache:
-  use_cache: true
+  vae_encoder_device: "cuda:0"
+  text_encoder_device: "cuda:1"
   cache_dir: "/path/to/cache"
-  vae_encoder_device: "cuda:1"
-  text_encoder_device: "cuda:2"
+  use_cache: true
 
 # Prediction Configuration
 predict:
   devices:
     vae: "cuda:0"
-    text_encoder: "cuda:1"
-    transformer: "cuda:2"
-
-# Optimizer Configuration
-optimizer:
-  class_path: "torch.optim.AdamW"
-  init_args:
-    lr: 1e-4
-    weight_decay: 0.01
-    betas: [0.9, 0.999]
-
-# Learning Rate Scheduler
-lr_scheduler:
-  class_path: "transformers.get_cosine_schedule_with_warmup"
-  init_args:
-    num_warmup_steps: 100
-    num_training_steps: 1000
+    text_encoder: "cuda:0"
+    transformer: "cuda:0"
 
 # Logging Configuration
 logging:
-  use_wandb: false
-  wandb_project: "qwen-image-finetune"
-  log_every_n_steps: 10
-  output_dir: "./outputs"
+  output_dir: "/path/to/output"
+  logging_dir: "logs"
+  report_to: "tensorboard"
+  tracker_project_name: "qwen_image_finetune"
+
+# Resume Configuration
+resume_from_checkpoint: "latest"
+
+# Validation Configuration (optional)
+validation:
+  enabled: false
+  validation_steps: 200
+  num_validation_samples: 4
 ```
 
-## Configuration Sections
+## Key Configuration Sections
 
 ### Model Configuration
 
-#### Basic Model Settings
+#### Quantization Options
 ```yaml
+# Runtime FP8 quantization
 model:
-  pretrained_model_name_or_path: "Qwen/Qwen2-VL-7B-Instruct"  # Base model path
-  quantize: false                                              # Enable FP8 quantization
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
+  quantize: true
+
+# Pre-quantized FP4 model
+model:
+  pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"
+  quantize: false
 ```
 
-#### LoRA Configuration
+#### LoRA Settings
 ```yaml
 model:
   lora:
-    enabled: true                                    # Enable LoRA fine-tuning
-    rank: 16                                        # LoRA rank (lower = fewer parameters)
-    alpha: 32                                       # LoRA scaling factor
-    target_modules:                                 # Modules to apply LoRA
-      - "to_q"                                     # Query projection
-      - "to_v"                                     # Value projection
-      - "to_k"                                     # Key projection
-      - "to_out.0"                                 # Output projection
-    dropout: 0.1                                   # LoRA dropout rate
+    r: 16                    # Rank: 8 (small), 16 (medium), 32 (large)
+    lora_alpha: 16           # Usually equal to r
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
 ```
 
 ### Data Configuration
@@ -109,306 +126,136 @@ model:
 #### Dataset Settings
 ```yaml
 data:
-  class_path: "src.data.dataset.ImageDataset"      # Dataset class
   init_args:
-    dataset_path: "/path/to/dataset"               # Dataset directory
-    image_size: [832, 576]                         # Target image size [width, height]
-    batch_size: 4                                  # Training batch size
-    shuffle: true                                  # Shuffle training data
-    drop_last: true                               # Drop incomplete batches
+    dataset_path: "/path/to/dataset"
+    image_size: [864, 1048]    # [height, width]
+    caption_dropout_rate: 0.05  # Text prompt dropout
+    prompt_image_dropout_rate: 0.05  # Image dropout
 ```
 
-#### Data Loading Optimization
+#### Crop Settings
 ```yaml
 data:
   init_args:
-    num_workers: 4                                 # Parallel data loading workers
-    pin_memory: true                               # Pin memory for faster GPU transfer
-    prefetch_factor: 2                            # Prefetch batches
-    persistent_workers: true                       # Keep workers alive between epochs
-```
-
-#### Cache Settings
-```yaml
-data:
-  init_args:
-    cache_dir: "/path/to/cache"                   # Cache directory
-    use_cache: true                               # Enable embedding cache
+    random_crop: false       # Use center crop instead
+    crop_size: 1024         # Square crop size
+    crop_scale: [0.8, 1.0]  # Scale range
+    center_crop: true
+    center_crop_ratio: 1.0
 ```
 
 ### Training Configuration
 
-#### Basic Training Settings
-```yaml
-train:
-  num_epochs: 10                                  # Number of training epochs
-  learning_rate: 1e-4                            # Base learning rate
-  gradient_accumulation_steps: 4                 # Accumulate gradients over N steps
-  max_grad_norm: 1.0                            # Gradient clipping threshold
-```
-
 #### Memory Optimization
 ```yaml
 train:
-  gradient_checkpointing: true                   # Enable gradient checkpointing
-  mixed_precision: "bf16"                        # Mixed precision mode ("bf16", "fp16", "no")
-  dataloader_num_workers: 4                      # Data loading parallelism
+  gradient_checkpointing: true  # Enable for memory savings
+  mixed_precision: "bf16"       # Use bfloat16
+  gradient_accumulation_steps: 1 # Increase for larger effective batch
 ```
 
-#### Model Compilation and Optimization
+#### Training Steps
 ```yaml
 train:
-  compile_model: true                            # Enable PyTorch 2.0 compilation
-  use_memory_efficient_attention: true          # Memory efficient attention
-```
-
-#### Checkpointing
-```yaml
-train:
-  save_every_n_epochs: 2                        # Save checkpoint frequency
-  save_top_k: 3                                 # Keep top K checkpoints
-  monitor_metric: "val_loss"                    # Metric to monitor for best model
-```
-
-### Cache Configuration
-
-#### Cache Devices
-```yaml
-cache:
-  use_cache: true                                # Enable cache system
-  cache_dir: "/path/to/cache"                   # Cache storage directory
-  vae_encoder_device: "cuda:1"                  # Device for VAE encoding
-  text_encoder_device: "cuda:2"                # Device for text encoding
-```
-
-#### Cache Behavior
-```yaml
-cache:
-  force_rebuild: false                          # Force cache rebuild
-  cache_batch_size: 8                          # Batch size for caching
-  validate_cache: true                         # Validate cache integrity
-```
-
-### Prediction Configuration
-
-#### Device Allocation
-```yaml
-predict:
-  devices:
-    vae: "cuda:0"                               # VAE encoder/decoder device
-    text_encoder: "cuda:1"                      # Text encoder device
-    transformer: "cuda:2"                       # Main transformer device
-```
-
-#### Inference Settings
-```yaml
-predict:
-  enable_memory_efficient_attention: true      # Memory efficient attention
-  enable_vae_slicing: true                     # VAE slicing for large images
-  enable_cpu_offload: false                   # Offload unused components to CPU
+  max_train_steps: 6000    # Total training steps
+  num_epochs: 100          # Number of epochs
+  checkpointing_steps: 100 # Save frequency
 ```
 
 ### Optimizer Configuration
 
-#### AdamW (Recommended)
+#### 8-bit Adam (Recommended)
+```yaml
+optimizer:
+  class_path: "bnb.optim.Adam8bit"
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+```
+
+#### Standard AdamW (Alternative)
 ```yaml
 optimizer:
   class_path: "torch.optim.AdamW"
   init_args:
-    lr: 1e-4                                    # Learning rate
-    weight_decay: 0.01                          # Weight decay for regularization
-    betas: [0.9, 0.999]                        # Adam beta parameters
-    eps: 1e-8                                   # Epsilon for numerical stability
+    lr: 0.0001
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+    eps: 1e-8
 ```
 
-#### Alternative Optimizers
+### Cache Configuration
+
+#### Single GPU Setup
 ```yaml
-# SGD
-optimizer:
-  class_path: "torch.optim.SGD"
-  init_args:
-    lr: 1e-3
-    momentum: 0.9
-    weight_decay: 1e-4
-
-# AdaFactor (memory efficient)
-optimizer:
-  class_path: "transformers.optimization.Adafactor"
-  init_args:
-    lr: 1e-4
-    scale_parameter: false
-    relative_step: false
-```
-
-### Learning Rate Scheduler
-
-#### Cosine with Warmup (Recommended)
-```yaml
-lr_scheduler:
-  class_path: "transformers.get_cosine_schedule_with_warmup"
-  init_args:
-    num_warmup_steps: 100                       # Warmup steps
-    num_training_steps: 1000                    # Total training steps
-```
-
-#### Alternative Schedulers
-```yaml
-# Linear with warmup
-lr_scheduler:
-  class_path: "transformers.get_linear_schedule_with_warmup"
-  init_args:
-    num_warmup_steps: 100
-    num_training_steps: 1000
-
-# Constant with warmup
-lr_scheduler:
-  class_path: "transformers.get_constant_schedule_with_warmup"
-  init_args:
-    num_warmup_steps: 100
-
-# Polynomial decay
-lr_scheduler:
-  class_path: "transformers.get_polynomial_decay_schedule_with_warmup"
-  init_args:
-    num_warmup_steps: 100
-    num_training_steps: 1000
-    power: 1.0
-```
-
-### Logging Configuration
-
-#### Weights & Biases
-```yaml
-logging:
-  use_wandb: true                               # Enable W&B logging
-  wandb_project: "qwen-image-finetune"          # W&B project name
-  wandb_name: "experiment-1"                    # Run name
-  wandb_tags: ["lora", "qwen", "image-edit"]   # Tags for organization
-```
-
-#### TensorBoard
-```yaml
-logging:
-  use_tensorboard: true                         # Enable TensorBoard
-  tensorboard_dir: "./logs/tensorboard"         # TensorBoard log directory
-```
-
-#### Basic Logging
-```yaml
-logging:
-  log_every_n_steps: 10                        # Log frequency
-  output_dir: "./outputs"                       # Output directory
-  log_level: "INFO"                            # Log level (DEBUG, INFO, WARNING, ERROR)
-```
-
-## Configuration Templates
-
-### LoRA Fine-tuning (Recommended)
-```yaml
-# configs/lora_config.yaml
-model:
-  lora:
-    enabled: true
-    rank: 16
-    alpha: 32
-    dropout: 0.1
-
-train:
-  learning_rate: 1e-4
-  gradient_checkpointing: true
-  mixed_precision: "bf16"
-  batch_size: 4
-  gradient_accumulation_steps: 4
-```
-
-### Full Fine-tuning
-```yaml
-# configs/full_finetune_config.yaml
-model:
-  lora:
-    enabled: false
-
-train:
-  learning_rate: 1e-5                          # Lower LR for full fine-tuning
-  gradient_checkpointing: true                 # Essential for memory
-  mixed_precision: "bf16"
-  batch_size: 2                               # Smaller batch size
-  gradient_accumulation_steps: 8              # Higher accumulation
-```
-
-### Fast Training with Cache
-```yaml
-# configs/cached_training_config.yaml
-data:
-  init_args:
-    use_cache: true
-    cache_dir: "/fast/ssd/cache"
-
 cache:
+  vae_encoder_device: "cuda:0"
+  text_encoder_device: "cuda:0"
   use_cache: true
-  vae_encoder_device: "cuda:1"
-  text_encoder_device: "cuda:2"
+```
+
+#### Multi-GPU Setup
+```yaml
+cache:
+  vae_encoder_device: "cuda:0"
+  text_encoder_device: "cuda:1"
+  use_cache: true
+```
+
+## Example Configurations
+
+### Small Dataset (Runtime FP8)
+```yaml
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
+  quantize: true
+  lora:
+    r: 8
+    lora_alpha: 8
+
+data:
+  batch_size: 1
 
 train:
-  gradient_checkpointing: false                # Can disable with cache
-  batch_size: 8                               # Larger batch with cache
+  max_train_steps: 1000
+  num_epochs: 50
 ```
 
-### Multi-GPU Inference
+### Large Dataset (Pre-quantized FP4)
 ```yaml
-# configs/inference_config.yaml
-predict:
-  devices:
-    vae: "cuda:0"
-    text_encoder: "cuda:1"
-    transformer: "cuda:2"
-
 model:
-  quantize: true                              # Enable quantization for speed
+  pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"
+  quantize: false
+  lora:
+    r: 32
+    lora_alpha: 32
+
+data:
+  batch_size: 4
+
+train:
+  max_train_steps: 10000
+  num_epochs: 20
 ```
 
-## Environment Variables
+## Configuration Tips
 
-You can override configuration values using environment variables:
-
-```bash
-# Override learning rate
-export LEARNING_RATE=1e-5
-
-# Override batch size
-export BATCH_SIZE=8
-
-# Override cache directory
-export CACHE_DIR="/custom/cache/path"
-
-# Override output directory
-export OUTPUT_DIR="/custom/output/path"
-```
-
-## Configuration Best Practices
-
-### Memory Management
-1. **Enable gradient checkpointing** for large models
-2. **Use mixed precision** (bf16) for memory and speed
-3. **Adjust batch size** based on available memory
-4. **Use gradient accumulation** to simulate larger batches
+### Memory Optimization
+1. Use 8-bit optimizer: `bnb.optim.Adam8bit`
+2. Enable gradient checkpointing: `gradient_checkpointing: true`
+3. Use mixed precision: `mixed_precision: "bf16"`
+4. Use pre-quantized models for maximum memory savings
 
 ### Performance Optimization
-1. **Pre-compute embeddings** with cache system
-2. **Use multiple data workers** for faster loading
-3. **Enable model compilation** with PyTorch 2.0
-4. **Distribute components** across multiple GPUs
-
-### Training Stability
-1. **Use learning rate warmup** for stable training
-2. **Apply gradient clipping** to prevent explosion
-3. **Monitor validation metrics** to detect overfitting
-4. **Save checkpoints regularly** for recovery
+1. Enable caching: `use_cache: true`
+2. Adjust batch size based on memory
+3. Use multiple workers: `num_workers: 2-4`
+4. Place encoders on different GPUs if available
 
 ### Quality Optimization
-1. **Start with proven hyperparameters** and adjust gradually
-2. **Use validation set** to guide hyperparameter tuning
-3. **Log comprehensive metrics** for analysis
-4. **Experiment systematically** with one change at a time
+1. Use cosine scheduler: `scheduler_type: "cosine"`
+2. Add warmup steps: `warmup_steps: 50`
+3. Use appropriate LoRA rank (16 for most cases)
+4. Enable validation monitoring when available
 
-This configuration guide should help you optimize your training setup for the best results with your specific requirements and hardware.
+This configuration guide provides all essential settings for successful training with the Qwen Image Finetune framework.

@@ -323,8 +323,10 @@ if __name__ == "__main__":
         model,
         engine="bnb",
         verbose=True,
-        device='cuda:1',
+        device='cuda:0',
     )
+    quantized_model  = quantized_model.eval()
+    quantized_model._requires_grad = False
     quantized_model = quantized_model.cpu()
     torch.cuda.empty_cache()
     # latent_model_input torch.Size([1, 8208, 64])
@@ -336,6 +338,7 @@ if __name__ == "__main__":
     # img_shapes [[(1, 54, 76), (1, 54, 76)]]
     # txt_seq_lens [646]
     # attention_kwargs {}
+
     device = "cuda:1"
 
     weight_dtype = torch.bfloat16
@@ -349,30 +352,43 @@ if __name__ == "__main__":
     txt_seq_lens = [646]
     attention_kwargs = {}
     model = model.to(device).to(weight_dtype)
-    out = model(
-        latent_model_input,
-        encoder_hidden_states=prompt_embeds,
-        encoder_hidden_states_mask=prompt_embeds_mask,
-        timestep=timestep,
-        guidance=guidance,
-        img_shapes=img_shapes,
-        txt_seq_lens=txt_seq_lens,
-        attention_kwargs=attention_kwargs
-    )
+    with torch.inference_mode():
+        out = model(
+            latent_model_input,
+            encoder_hidden_states=prompt_embeds,
+            encoder_hidden_states_mask=prompt_embeds_mask,
+            timestep=timestep,
+            guidance=guidance,
+            img_shapes=img_shapes,
+            txt_seq_lens=txt_seq_lens,
+            attention_kwargs=attention_kwargs
+        )
     model = model.cpu()
     torch.cuda.empty_cache()
-    quantized_model = quantized_model.to(device).to(weight_dtype)
-    out2 = quantized_model(
-        latent_model_input,
-        encoder_hidden_states=prompt_embeds,
-        encoder_hidden_states_mask=prompt_embeds_mask,
-        timestep=timestep,
-        guidance=guidance,
-        img_shapes=img_shapes,
-        txt_seq_lens=txt_seq_lens,
-        attention_kwargs=attention_kwargs
-    )
 
+    device = "cuda:0"
+    quantized_model = quantized_model.to(device)
+    latent_model_input = latent_model_input.to(device)
+    prompt_embeds = prompt_embeds.to(device)
+    prompt_embeds_mask = prompt_embeds_mask.to(device)
+    timestep = timestep.to(device)
+    img_shapes = [[(1, 54, 76), (1, 54, 76)]]
+    txt_seq_lens = [646]
+    attention_kwargs = {}
+    with torch.inference_mode():
+        out2 = quantized_model(
+            latent_model_input,
+            encoder_hidden_states=prompt_embeds,
+            encoder_hidden_states_mask=prompt_embeds_mask,
+            timestep=timestep,
+            guidance=guidance,
+            img_shapes=img_shapes,
+            txt_seq_lens=txt_seq_lens,
+            attention_kwargs=attention_kwargs
+        )
+
+    out = out[0].detach().cpu()
+    out2 = out2[0].detach().cpu()
     # calcualte the difference between out and out2
     print(out[0].shape)
     print(out2[0].shape)

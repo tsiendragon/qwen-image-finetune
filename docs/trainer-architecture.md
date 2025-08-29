@@ -4,7 +4,7 @@
 
 ## Overview
 
-The trainer is built on top of the existing `trainer.py` architecture and extends it with multimodal image editing capabilities. It separates components from `QwenImageEditPipeline` to provide fine-grained control over training and inference processes.
+The trainer is built specifically for the Qwen Image Edit model and extends the `QwenImageEditPipeline` with comprehensive training capabilities. It separates and manages individual components from `QwenImageEditPipeline` to provide fine-grained control over training, caching, and inference processes.
 
 ## Core Architecture
 
@@ -15,7 +15,7 @@ class QwenImageEditTrainer:
     def __init__(self, config):
         # Core model components (separated from pipeline)
         self.vae = None                   # AutoencoderKLQwenImage
-        self.qwen_vl = None               # Qwen2_5_VLForConditionalGeneration (text_encoder)
+        self.text_encoder = None          # Qwen2_5_VLForConditionalGeneration
         self.transformer = None           # QwenImageTransformer2DModel
         self.tokenizer = None             # Qwen2Tokenizer
         self.processor = None             # Qwen2VLProcessor
@@ -30,8 +30,17 @@ class QwenImageEditTrainer:
         # Cache and optimization
         self.use_cache = config.cache.use_cache
         self.cache_exist = check_cache_exists(config.cache.cache_dir)
+        self.cache_dir = config.cache.cache_dir
         self.quantize = config.model.quantize
         self.weight_dtype = torch.bfloat16
+        self.batch_size = config.data.batch_size
+        self.prompt_image_dropout_rate = config.data.init_args.get('prompt_image_dropout_rate', 0.1)
+
+        # VAE-related parameters
+        self.vae_scale_factor = None
+        self.vae_latent_mean = None
+        self.vae_latent_std = None
+        self.vae_z_dim = None
 ```
 
 ### Key Features
@@ -47,28 +56,48 @@ class QwenImageEditTrainer:
 
 ### 1. Model Loading and Setup
 
-#### `load_model()`
+#### `load_model(text_encoder_device=None)`
 Loads and separates all components from QwenImageEditPipeline:
 
 ```python
-def load_model(self):
+def load_model(self, text_encoder_device=None):
+    # Load complete model using pipeline
     pipe = QwenImageEditPipeline.from_pretrained(
         self.config.model.pretrained_model_name_or_path,
-        torch_dtype=self.weight_dtype
+        torch_dtype=self.weight_dtype,
+        transformer=None,
+        vae=None,
     )
-    # Separate all components
-    self.vae = pipe.vae
-    self.qwen_vl = pipe.text_encoder
-    self.transformer = pipe.transformer
-    self.tokenizer = pipe.tokenizer
+    pipe.to('cpu')
+
+    # Load individual components using custom loaders
+    from src.models.load_model import load_vae, load_qwenvl, load_transformer
+
+    self.vae = load_vae("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)
+    self.text_encoder = load_qwenvl("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)
+    self.transformer = load_transformer(
+        self.config.model.pretrained_model_name_or_path,
+        weight_dtype=self.weight_dtype
+    )
+
+    # Copy processor, tokenizer and scheduler from pipeline
     self.processor = pipe.processor
+    self.tokenizer = pipe.tokenizer
     self.scheduler = pipe.scheduler
+
+    # Set VAE-related parameters
+    self.vae_scale_factor = 2 ** len(self.vae.temperal_downsample)
+    self.vae_latent_mean = self.vae.config.latents_mean
+    self.vae_latent_std = self.vae.config.latents_std
+    self.vae_z_dim = self.vae.config.z_dim
 ```
 
 #### Setup Methods
 - `setup_accelerator()`: Initialize accelerator and mixed precision
 - `set_lora()`: Configure LoRA training parameters and gradient checkpointing
 - `configure_optimizers()`: Setup optimizer and learning rate scheduler
+- `set_model_devices(mode)`: Set device allocation based on training mode
+- `quantize_model(model, device)`: Apply FP8 quantization to model
 
 ### 2. Training Capabilities
 
@@ -89,7 +118,7 @@ def load_model(self):
 ```python
 def training_step(self, batch):
     # Automatic mode detection
-    if 'prompt_embed' in batch and 'pixel_latent' in batch:
+    if 'prompt_embed' in batch and 'pixel_latent' in batch and 'control_latent' in batch:
         return self._training_step_cached(batch)
     else:
         return self._training_step_compute(batch)
@@ -100,15 +129,14 @@ def training_step(self, batch):
 - `training_step(batch)`: Single training step with automatic mode detection
 - `_training_step_cached(batch)`: Optimized training with cached embeddings
 - `_training_step_compute(batch)`: Real-time computation training
-- `_compute_loss(...)`: Loss computation with noise prediction
+- `_compute_loss(pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask, height, width)`: Loss computation with flow matching
 
 ### 3. Caching System
 
 #### Cache Methods
 ```python
-cache_embeddings(train_dataloader)      # Pre-compute embeddings for entire dataset
-cache_step(batch, vae_device, text_device) # Single batch caching
-_encode_empty_prompt(image, device)     # Encode empty prompt for CFG
+cache(train_dataloader)                 # Pre-compute embeddings for entire dataset
+cache_step(data, vae_encoder_device, text_encoder_device) # Single data point caching
 ```
 
 #### Cached Content Types
@@ -159,37 +187,44 @@ def predict(
 
 #### Training Device Allocation
 
-**Cached Mode**:
+**Cached Mode** (`mode="train"` with cache enabled):
 ```python
 # Only transformer needs to be on training GPU
-self.qwen_vl.cpu()        # Text encoder to CPU
-self.vae.cpu()            # VAE to CPU
-self.transformer.to(accelerator.device)  # Transformer on GPU
+self.text_encoder.cpu()
+self.vae.cpu()
+del self.text_encoder
+del self.vae
+gc.collect()
+self.transformer.to(self.accelerator.device)
 ```
 
-**Real-time Mode**:
+**Real-time Mode** (`mode="train"` without cache):
 ```python
 # Encoders needed for real-time computation
 self.vae.decoder.cpu()    # VAE decoder to CPU (not needed for training)
-self.vae.encoder.to(accelerator.device)   # VAE encoder on GPU
-self.qwen_vl.to(accelerator.device)       # Text encoder on GPU
-self.transformer.to(accelerator.device)   # Transformer on GPU
+self.vae.encoder.to(self.accelerator.device)
+self.text_encoder.to(self.accelerator.device)
+self.transformer.to(self.accelerator.device)
 ```
 
-#### Prediction Device Allocation
+#### Prediction Device Allocation (`mode="predict"`):
 ```python
 # Flexible multi-GPU allocation from config
-self.vae.to(config.predict.devices.vae)              # e.g., cuda:0
-self.qwen_vl.to(config.predict.devices.text_encoder) # e.g., cuda:1
-self.transformer.to(config.predict.devices.transformer) # e.g., cuda:2
+devices = self.config.predict.devices
+self.vae.to(devices['vae'])               # e.g., cuda:0
+self.text_encoder.to(devices['text_encoder']) # e.g., cuda:1
+self.transformer.to(devices['transformer'])   # e.g., cuda:2
 ```
 
-#### Caching Device Allocation
+#### Caching Device Allocation (`mode="cache"`):
 ```python
 # Specialized devices for cache computation
-self.qwen_vl.to(config.cache.text_encoder_device)    # e.g., cuda:1
-self.vae.to(config.cache.vae_encoder_device)         # e.g., cuda:2
-self.transformer.cpu()  # Not needed during caching
+self.vae = self.vae.to(self.config.cache.vae_encoder_device, non_blocking=True)
+self.text_encoder = self.text_encoder.to(self.config.cache.text_encoder_device, non_blocking=True)
+self.transformer.cpu()
+del self.transformer
+gc.collect()
+self.vae.decoder.cpu()
 ```
 
 ### 6. LoRA and Optimization Features
@@ -197,13 +232,24 @@ self.transformer.cpu()  # Not needed during caching
 #### LoRA Configuration
 ```python
 def set_lora(self):
+    # Apply quantization if enabled
+    if self.quantize:
+        self.transformer = self.quantize_model(self.transformer, self.accelerator.device)
+    else:
+        self.transformer.to(self.accelerator.device)
+
     # Configure LoRA parameters
     lora_config = LoraConfig(
-        r=self.config.model.lora.rank,
-        lora_alpha=self.config.model.lora.alpha,
+        r=self.config.model.lora.r,
+        lora_alpha=self.config.model.lora.lora_alpha,
+        init_lora_weights=self.config.model.lora.init_lora_weights,
         target_modules=self.config.model.lora.target_modules,
-        lora_dropout=self.config.model.lora.dropout,
     )
+
+    # Add LoRA adapter to transformer
+    self.transformer.add_adapter(lora_config)
+    self.transformer.requires_grad_(False)
+    self.transformer.train()
 
     # Enable gradient checkpointing if configured
     if self.config.train.gradient_checkpointing:
@@ -211,8 +257,8 @@ def set_lora(self):
 ```
 
 #### LoRA Methods
-- `load_lora(path)`: Load pre-trained LoRA weights
-- `save_lora(path)`: Save current LoRA weights
+- `load_lora(pretrained_weight)`: Load pre-trained LoRA weights
+- `save_lora(save_path)`: Save current LoRA weights
 - `merge_lora()`: Merge LoRA weights into base model
 
 #### Gradient Checkpointing
@@ -225,9 +271,11 @@ def set_lora(self):
 
 #### Image Processing
 ```python
-encode_image_embedding(image, device)           # Encode single image to latent
-encode_prompt_image_embedding(prompt, image, device) # Multimodal encoding
+encode_prompt(prompt, image, device)            # Encode prompt with image context
+_get_qwen_prompt_embeds(prompt, image, device)  # Get embeddings from Qwen model
 decode_vae_latent(latents)                      # Decode latents to image
+prepare_latents(...)                            # Prepare latents for training/inference
+_encode_vae_image(image, generator)             # Encode image using VAE
 ```
 
 #### Multimodal Processing
@@ -235,35 +283,52 @@ The trainer handles complex multimodal inputs where text prompts are combined wi
 
 ```python
 # Example of multimodal encoding
-prompt_embeds, prompt_embeds_mask = self.encode_prompt_image_embedding(
+prompt_embeds, prompt_embeds_mask = self.encode_prompt(
     prompt="Make the sky more dramatic",
     image=input_image,
-    device=self.qwen_vl.device
+    device=self.text_encoder.device
 )
 ```
 
 ### 8. Advanced Features
 
 #### Prompt Embedding Padding
-The system automatically handles variable-length prompt embeddings:
+The system automatically handles variable-length prompt embeddings through the `_get_qwen_prompt_embeds` method:
 
 ```python
-# Automatic padding for batch processing
-# Different prompt lengths and image sizes result in different embedding sizes
-# The system automatically pads to batch maximum length
-prompt_embeds_mask[:,-1100:-900]
-tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...],  # Sample 1: all valid
-        [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, ...]], # Sample 2: padded sections
-       device='cuda:1')
+# Extract valid tokens and pad to maximum length in batch
+split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
+split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
+max_seq_len = max([e.size(0) for e in split_hidden_states])
+prompt_embeds = torch.stack(
+    [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
+)
+```
+
+#### Accelerator Integration
+The trainer integrates deeply with Hugging Face Accelerate for distributed training:
+
+```python
+def accelerator_prepare(self, train_dataloader):
+    lora_layers_model = AttnProcsLayers(get_lora_layers(self.transformer))
+    lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
+        lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
+    )
 ```
 
 #### FP8 Quantization Support
 ```python
 def quantize_model(self, model, device):
-    # FP8 quantization for inference acceleration
-    from optimum.quanto import quantize, qfloat8, freeze
-    quantize(model, weights=qfloat8)
-    freeze(model)
+    # FP8 quantization for inference acceleration using BitsAndBytes
+    from src.models.quantize import quantize_model_to_fp8
+    model = quantize_model_to_fp8(
+        model,
+        engine="bnb",
+        verbose=True,
+        device=device,
+    )
+    model = model.to(device)
+    return model
 ```
 
 ## Configuration Integration
@@ -321,7 +386,7 @@ trainer.fit(train_dataloader)
 ### Cache-Accelerated Training
 ```python
 # Pre-compute embeddings for faster training
-trainer.cache_embeddings(train_dataloader)
+trainer.cache(train_dataloader)
 
 # Training will automatically use cached embeddings
 trainer.fit(train_dataloader)  # 2-3x faster after first epoch

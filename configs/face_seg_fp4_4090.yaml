@@ -1,7 +1,8 @@
 model:
-  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
+  # pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
+  pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"  # 4bit version
   rank: 16
-  quantize: True
+  quantize: False
   lora:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
     lora_alpha: 16  # LoRA alpha, usually equal to r
@@ -12,7 +13,7 @@ model:
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/raid/lilong/data/face_seg/"
+    dataset_path: "/raid/lilong/data/face_seg/"  # change the path to your own dataset path
     image_size: [864, 1048]  # face segmentation usually uses 512x512
     caption_dropout_rate: 0.05  # reduce caption dropout, because the task is relatively specialized
     prompt_image_dropout_rate: 0.05
@@ -30,7 +31,7 @@ data:
   shuffle: true
 
 logging:
-  output_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora"
+  output_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4-4090/"  # change the path to your own output path
   logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "face_segmentation_lora"
@@ -66,15 +67,15 @@ train:
 
 cache:
   vae_encoder_device: cuda:0
-  text_encoder_device: cuda:0  # if there is only one card, put them on cuda:0
-  cache_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora/cache"
+  text_encoder_device: cuda:1  # if there is only one card, put them on cuda:0
+  cache_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4_4090/cache"
   use_cache: true
 
 predict:
   devices:
     vae: cuda:0
     text_encoder: cuda:0
-    transformer: cuda:1
+    transformer: cuda:0
 
 # training resume setting
 resume_from_checkpoint: "latest"
@@ -85,4 +86,4 @@ validation:
   validation_steps: 200
   num_validation_samples: 4
 
-# 48.6 GB used for traning with batchsize 2, speed 18.35s/it, on A100
+# 22.17 GB used for traning with batchsize 2, speed 18.35s/it, on A100

@@ -46,6 +46,7 @@ cd qwen-image-finetune
 # Or with custom path and HF token
 ./setup.sh /your/path hf_your_token_here
 ```
+Refer [`docs/speed_optimization.md`](docs/speed_optimization.md) to install `flash-atten` to speed-up the training.
 
 ### Basic Usage with Toy Dataset
 ```bash
@@ -63,28 +64,104 @@ CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cach
 CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 ```
 
+#### Training with RTX4090
+
+```
+Config Exampe
+configs/face_seg_fp4_4090.yaml
+NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
+```
+For multi-gpu training, need to set
+```
+distributed_type: MULTI_GPU  #for multi-gpu training
+```
+in the `accelerate_config.yaml`
+
 
 #### 🎯 LoRA Fine-tuning Results Comparison
 
 This project demonstrates fine-tuning the Qwen-VL model for face segmentation tasks. Below shows the comparison between pre and post fine-tuning results:
 
-##### Input Image
+##### Results Comparison
+
 <div align="center">
-  <img src="docs/images/input_image.jpg" alt="Original Input Image" width="400"/>
-  <p><em>Original input image for face segmentation</em></p>
+  <table>
+    <tr>
+      <th>Input Image</th>
+      <th>Base Model Results</th>
+      <th>LoRA Fine-tuned Results</th>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/input_image.jpg" alt="Original Input Image" width="300"/>
+        <br><em>Original input image</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/result_base_model.jpg" alt="Base Model Results" width="300"/>
+        <br><em>Base Qwen-VL model</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/result_lora_model.jpg" alt="LoRA Fine-tuned Model Results" width="300"/>
+        <br><em>LoRA fine-tuned model</em>
+      </td>
+    </tr>
+  </table>
+  <p><strong>Comparison:</strong> The LoRA fine-tuned model shows significantly improved accuracy and details in face segmentation compared to the base model.</p>
 </div>
 
-##### Base Model Results (Before Fine-tuning)
+##### Precision Comparison: BF16 vs FP4 LoRA Fine-tuning
+
 <div align="center">
-  <img src="docs/images/result_base_model.jpg" alt="Base Model Results" width="400"/>
-  <p><em>Segmentation results from the base Qwen-VL model</em></p>
+  <table>
+    <tr>
+      <th>Input Image</th>
+      <th>Base Model</th>
+      <th>LoRA Fine-tuned Result</th>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/20250829_160238/input_image.jpg" alt="Input Image BF16" width="300"/>
+        <br><em>Original input</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/20250829_160238/result_base_model.jpg" alt="Base Model BF16" width="300"/>
+        <br><em>Diffusion Base Model FP16</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/20250829_160238/result_lora_model.jpg" alt="LoRA BF16 Results" width="300"/>
+        <br><em><strong>Diffusion Base Model FP16, LoRA BF16</strong></em>
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/20250829_155502/input_image.jpg" alt="Input Image FP4" width="300"/>
+        <br><em>Original input</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/20250829_155502/result_base_model.jpg" alt="Base Model FP4" width="300"/>
+        <br><em>Diffusion Base Model FP4 Quantized</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/20250829_155502/result_lora_model.jpg" alt="LoRA FP4 Results" width="300"/>
+        <br><em><strong>Base FP4 Quantized, LoRA FP16</strong></em>
+      </td>
+    </tr>
+  </table>
 </div>
 
-##### LoRA Fine-tuned Model Results (After Fine-tuning)
-<div align="center">
-  <img src="docs/images/result_lora_model.jpg" alt="LoRA Fine-tuned Model Results" width="400"/>
-  <p><em>Segmentation results from LoRA fine-tuned model - significantly improved accuracy and details</em></p>
-</div>
+**Experiment Details:**
+  - **Prompt:** "change the image from the face to the face segmentation mask"
+  - **Row 1 - BF16 LoRA:** Base model (BF16) + LoRA adapters (BF16) - Checkpoint 900 steps on 20 samples
+  - **Row 2 - FP4 LoRA:** Base model (BF16) + LoRA adapters (FP4 quantized) - Checkpoint 1000 steps on 20 samples
+  - **Inference Steps:** 20, **CFG Scale:** 2.5
+
+  **Key Observations:**
+  - Both LoRA variants significantly outperform the base model
+  - BF16 LoRA shows slightly better detail preservation
+  - FP4 quantized LoRA maintains competitive quality while being more memory efficient
+  - Base model uses BF16 precision in both experiments; only the LoRA adapters differ in quantization
+
 
 ##### Performance Analysis
 - **Before Fine-tuning**: Base model can identify face regions but with limited segmentation precision
@@ -100,6 +177,9 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
 |2 | fp4| True| False|A100 |22.47 | 10.6 s/it|
 | 2 | fbf16| True | True | A100 | 50.2 G | 10.34 s/it|
 | 2 | fp4 | True | True | A100 | 23.7 G | 10.8 s/it|
+| 2| fp4| True| True| rtx4090| 23.3/22.8G | 12.8 s/it|
+| 1| fp4| True| True| rtx4090| 18.8/17.9G | 6.34 s/it|
+
 ### Inference
 ```python
 # Inference with trained LoRA model
@@ -137,10 +217,10 @@ print("Generated face segmentation saved as output_segmentation.png")
 ```
 ## Speed Optimization
 
-[Speed Optimization including quantilizationand flash attention](docs/speed_optimization.md)
+[Speed Optimization including quantilizationand flash attention in `docs/speed_optimization.md`](docs/speed_optimization.md)
 
 ## Debug
-[record of bugs encountered](docs/debug.md)
+[Record of bugs encountered in `docs/debug.md`](docs/debug.md)
 
 ## 🎯 Key Features Covered
 

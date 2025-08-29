@@ -1,4 +1,5 @@
 # TODO list
 
-- [ ] Flash attention speedup
+- [x] Flash attention speedup
+- [x] DDP training in rtx 4090
 - [ ] Dataset: cache hash caclculated

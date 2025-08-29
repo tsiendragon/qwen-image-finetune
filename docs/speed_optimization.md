@@ -3,7 +3,7 @@
 
 ## Setup
 
-
+Instll transformer-engine-cu12
 ```
 pip install --upgrade --force-reinstall transformer-engine-cu12==1.7.0
 # need to set the CUDA HOME if not found nvcc
@@ -42,10 +42,14 @@ Install cuda toolkit according to the commands. If want to specify the cuda path
     PY
 
     # 1) install dependacy
+
     python -m pip install -U packaging ninja wheel setuptools
+
 
     # 2) Specify A100 architecture to avoid compiling unnecessary SM
     export TORCH_CUDA_ARCH_LIST="8.0"     # A100 = sm80
+    <!-- export TORCH_CUDA_ARCH_LIST="8.9"     # RTX 4090 = sm_89 -->
+
 
     # 3) Install (disable build isolation for faster and more stable installation)
     #    If memory is limited, you can add MAX_JOBS=4
@@ -54,14 +58,23 @@ Install cuda toolkit according to the commands. If want to specify the cuda path
     The installation should be successful
 
     Verify flash attention works
+
     ```bash
-     python - <<'PY'
-    > import flash_attn, torch
-    > print("flash-attn:", flash_attn.__version__)
-    > import flash_attn_2_cuda as ext
-    > import os; print("so:", os.path.realpath(ext.__file__))
-    > PY
+    python - <<'PY'
+    import flash_attn, torch
+    print("flash-attn:", flash_attn.__version__)
+    import flash_attn_2_cuda as ext
+    import os; print("so:", os.path.realpath(ext.__file__))
+    PY
     ```
+
+    Make sure your torch version is compatible with cuda version
+    Install correct one based on [torch install](https://pytorch.org/get-started/previous-versions/). For example
+
+    ```bash
+    pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+    ```
+
 
 3. Forward with flash attention
 
@@ -85,3 +98,16 @@ model = AutoModelForCausalLM.from_pretrained(
     python -m pip install --no-binary=flash-attn flash-attn==2.7.4.post1 --no-build-isolation -v
     ```
     This workds for `GLIBC_2.31`. If your `GLIBC` is of different version, maybe try different version of flash-attn
+
+2. ./cuda-installer: error while loading shared libraries: libxml2.so.2: cannot open shared object file: No such file or directory
+
+    ```bash
+    sudo apt update
+    sudo apt install libxml2
+    ```
+
+3. `W0829 05:07:25.264000 1567 site-packages/torch/utils/cpp_extension.py:517] There are no g++ version bounds defined for CUDA version 12.2`
+
+    ```bash
+    sudo apt-get update && sudo apt-get install -y gcc-11 g++-11
+    ```

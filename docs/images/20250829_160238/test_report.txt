@@ -1,0 +1,13 @@
+Qwen Image Edit 预测测试报告
+==================================================
+
+测试时间: 2025-08-29 16:05:14
+输入图像: data/test_person.png
+提示词文件: /raid/lilong/data/kyc_gen/aligned/training_images/row_fff37bba.txt
+推理步数: 20
+CFG Scale: 2.5
+测试模式: 对比测试
+LoRA权重: /raid/lilong/data/experiment/qwen-edit-face_seg_lora/checkpoint-89-900/pytorch_lora_weights.safetensors
+
+提示词内容:
+change the image from the face to the face segmentation mask

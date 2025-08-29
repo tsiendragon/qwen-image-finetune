@@ -35,6 +35,12 @@ def main():
     )
 
     if config.mode == 'cache':
+        try:
+            from accelerate.hooks import remove_hook_from_module
+            remove_hook_from_module(trainer.text_encoder)
+        except Exception as e:
+            print("remove_hook skipped:", repr(e))
+
         trainer.cache(train_dataloader)
     else:
         # 开始训练

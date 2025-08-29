@@ -82,29 +82,37 @@ class QwenImageEditTrainer:
         self.vae_latent_std = None
         self.vae_z_dim = None
 
-    def load_model(self):
+    def load_model(self, text_encoder_device=None):
         """Load and separate components from QwenImageEditPipeline"""
         logging.info("Loading QwenImageEditPipeline and separating components...")
 
         # Load complete model using pipeline
         pipe = QwenImageEditPipeline.from_pretrained(
             self.config.model.pretrained_model_name_or_path,
-            torch_dtype=self.weight_dtype
+            torch_dtype=self.weight_dtype,
+            transformer=None,
+            vae=None,
         )
+        pipe.to('cpu')
+        print('excution device', pipe._execution_device)
 
         # Separate individual components
 
-        from src.models.load_model import load_vae
+        from src.models.load_model import load_vae, load_qwenvl
         self.vae = load_vae(
-            self.config.model.pretrained_model_name_or_path,
+            "Qwen/Qwen-Image-Edit",  # use original one
             weight_dtype=self.weight_dtype
         )
         # same to model constructed from vae self.vae = pipe.vae
-        self.text_encoder = pipe.text_encoder  # text_encoder is actually qwen_vl
+        self.text_encoder = load_qwenvl(
+            "Qwen/Qwen-Image-Edit",  # use original one
+            weight_dtype=self.weight_dtype
+        )
+        print('text_encoder device', self.text_encoder.device)
         # self.transformer = pipe.transformer this is same as the following, verified
         from src.models.load_model import load_transformer
         self.transformer = load_transformer(
-            self.config.model.pretrained_model_name_or_path,
+            self.config.model.pretrained_model_name_or_path,  # could use quantized version
             weight_dtype=self.weight_dtype
         )
         # load_transformer is same as pipe.transformer
@@ -160,6 +168,7 @@ class QwenImageEditTrainer:
             log_with=self.config.logging.report_to,
             project_config=accelerator_project_config,
         )
+        logging.info(f"Number of devices used in DDP training: {self.accelerator.num_processes}")
 
         # Set weight data type
         if self.accelerator.mixed_precision == "fp16":
@@ -177,23 +186,32 @@ class QwenImageEditTrainer:
         logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
     def quantize_model(self, model, device):
-        """FP8 quantize model"""
-        from optimum.quanto import quantize, qfloat8, freeze
+        # """FP8 quantize model"""
+        # from optimum.quanto import quantize, qfloat8, freeze
 
-        model = model.to('cpu')
-        torch.cuda.empty_cache()  # save memory
+        # model = model.to('cpu')
+        # torch.cuda.empty_cache()  # save memory
 
-        torch_dtype = self.weight_dtype
-        all_blocks = list(model.transformer_blocks)
-        for block in tqdm(all_blocks):
-            block.to('cpu', dtype=torch_dtype)
-            quantize(block, weights=qfloat8)
-            freeze(block)
-            # block.to("cpu")
-        model.to('cpu', dtype=torch_dtype)
-        quantize(model, weights=qfloat8)
-        freeze(model)
-        model.to(device)
+        # torch_dtype = self.weight_dtype
+        # all_blocks = list(model.transformer_blocks)
+        # for block in tqdm(all_blocks):
+        #     block.to('cpu', dtype=torch_dtype)
+        #     quantize(block, weights=qfloat8)
+        #     freeze(block)
+        #     # block.to("cpu")
+        # model.to('cpu', dtype=torch_dtype)
+        # quantize(model, weights=qfloat8)
+        # freeze(model)
+        # model.to(device)
+        # return model
+        from src.models.quantize import quantize_model_to_fp8
+        model = quantize_model_to_fp8(
+            model,
+            engine="bnb",
+            verbose=True,
+            device=device,
+        )
+        model = model.to(device)
         return model
 
     def set_lora(self):
@@ -287,8 +305,10 @@ class QwenImageEditTrainer:
 
         elif mode == "cache":
             # Cache mode: need encoders, don't need transformer
-            self.vae = self.vae.to(self.config.cache.vae_encoder_device)
-            self.text_encoder = self.text_encoder.to(self.config.cache.text_encoder_device)
+            self.vae = self.vae.to(self.config.cache.vae_encoder_device, non_blocking=True)
+            self.text_encoder = self.text_encoder.to(self.config.cache.text_encoder_device, non_blocking=True)
+
+            torch.cuda.synchronize()
             self.transformer.cpu()
             torch.cuda.empty_cache()
             del self.transformer
@@ -705,8 +725,12 @@ class QwenImageEditTrainer:
         logging.info("Starting embedding caching process...")
 
         # load models
-        self.load_model()
+        self.load_model(text_encoder_device=text_encoder_device)
+        self.text_encoder.eval()
+        self.vae.eval()
         self.set_model_devices(mode="cache")
+
+
 
         # cache for each item
         dataset = train_dataloader.dataset
@@ -732,6 +756,7 @@ class QwenImageEditTrainer:
         self.configure_optimizers()
         self.set_model_devices(mode="train")
         train_dataloader = self.accelerator_prepare(train_dataloader)
+
 
         logging.info("***** Running training *****")
         logging.info(f"  Instantaneous batch size per device = {self.batch_size}")
@@ -882,6 +907,11 @@ class QwenImageEditTrainer:
     def setup_predict(self):
         """Setup prediction mode"""
         self.load_model()
+        if self.quantize:
+            self.transformer = self.quantize_model(
+                self.transformer,
+                self.config.predict.devices['transformer']
+            )
 
         # Load LoRA weights (if available)
         if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
@@ -931,6 +961,7 @@ class QwenImageEditTrainer:
         logging.info(f"Starting prediction with {num_inference_steps} steps, CFG scale: {true_cfg_scale}")
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
+
         # Process input format
         if isinstance(prompt_image, PIL.Image.Image):
             image = [prompt_image]
@@ -1285,13 +1316,15 @@ class QwenImageEditTrainer:
             return_tensors="pt",
         ).to(device)
 
-        outputs = self.text_encoder(
-            input_ids=model_inputs.input_ids,
-            attention_mask=model_inputs.attention_mask,
-            pixel_values=model_inputs.pixel_values,
-            image_grid_thw=model_inputs.image_grid_thw,
-            output_hidden_states=True,
-        )
+        with torch.cuda.device(model_inputs.input_ids.device):          # 作用域内的 'cuda' 都指向同一张卡
+            print('input ids device', model_inputs.input_ids.device)
+            outputs = self.text_encoder(
+                input_ids=model_inputs.input_ids,
+                attention_mask=model_inputs.attention_mask,
+                pixel_values=model_inputs.pixel_values,
+                image_grid_thw=model_inputs.image_grid_thw,
+                output_hidden_states=True,
+            )
 
         hidden_states = outputs.hidden_states[-1]
         split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)

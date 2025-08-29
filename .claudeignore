@@ -1,0 +1,8 @@
+node_modules/
+.git/
+*.pyc
+__pycache__/
+.venv/
+venv/
+*.log
+*.tmp
