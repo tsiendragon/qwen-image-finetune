@@ -13,8 +13,10 @@ IMAGE_PATH='test_prompt_image.png'
 IMAGE_PATH='data/face_seg/control_images/060020_3_024801_NONE_28.jpg'
 PROMPT_TEXT="change the image from the face to the face segmentation mask"
 LORA_WEIGHT='/raid/lilong/data/experiment/qwen-edit-face_seg_lora/checkpoint-89-900/pytorch_lora_weights.safetensors'
+LORA_WEIGHT='/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4/checkpoint-9-100/pytorch_lora_weights.safetensors'
 OUTPUT_DIR="tests/outputs/$(date +%Y%m%d_%H%M%S)"
 config_file='configs/face_seg_config.yaml'
+config_file='configs/face_seg_fp4_config.yaml'
 echo "=== Qwen Image Edit 预测测试 ==="
 
 # 检查文件存在性

@@ -28,7 +28,8 @@ def load_transformer(pretrained_model_name_or_path, weight_dtype):
         pretrained_model_name_or_path,
         subfolder="transformer",
         torch_dtype=weight_dtype,
-        use_safetensors=True  # 使用 safetensors 格式，加载更快
+        use_safetensors=True,  # 使用 safetensors 格式，加载更快,
+        attn_implementation="flash_attention_2"
     )
     return flux_transformer
 

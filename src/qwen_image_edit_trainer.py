@@ -211,10 +211,7 @@ class QwenImageEditTrainer:
         )
 
         # Configure model
-        if self.quantize:
-            self.transformer.to(self.accelerator.device)
-        else:
-            self.transformer.to(self.accelerator.device, dtype=self.weight_dtype)
+        self.transformer.to(self.accelerator.device)
 
         self.transformer.add_adapter(lora_config)
         self.transformer.requires_grad_(False)

@@ -472,6 +472,22 @@ Run health check:
 python health_check.py
 ```
 
+## install flash-atten
+
+```bash
+
+conda install -n myenv -c conda-forge cuda-nvcc=12.2 # install correct cuda-nvcc
+
+export CUDA_HOME=/home/lilong/.local/envs/myenv
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+
+git clone https://github.com/Dao-AILab/flash-attention
+cd flash-attention
+python setup.py install
+
+```
+
 ## Next Steps
 
 After successful setup:

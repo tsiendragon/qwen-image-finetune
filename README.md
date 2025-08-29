@@ -1,29 +1,33 @@
-# Qwen Image Finetune Documentation
+# Qwen-Image-Edit Fine-tuning Framework
 
-Welcome to the comprehensive documentation for Qwen Image Finetune project. This documentation provides detailed guides and references for setup, training, and usage of the Qwen Image editing model.
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)  [![CUDA](https://img.shields.io/badge/CUDA-12.0%2B-green.svg)](https://developer.nvidia.com/cuda-downloads)  [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)  [![Framework](https://img.shields.io/badge/framework-PyTorch-orange.svg)](https://pytorch.org/)
 
-## 📚 Documentation Overview
+## Overview
 
-### 🚀 Getting Started
-- **[Setup Guide](docs/setup.md)** - Complete installation and environment setup
-- **[Quick Start](#quick-start)** - Get running in minutes
-- **[Data Preparation](docs/data-preparation.md)** - Prepare your dataset for training
+This repository provides a comprehensive framework for fine-tuning Qwen Vision-Language models for specialized image editing and understanding tasks. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 
-### 📖 User Guides
-- **[Training Guide](docs/training.md)** - Complete training workflow and best practices
-- **[Inference Guide](docs/inference.md)** - Running predictions and model inference
-- **[Configuration Guide](docs/configuration.md)** - Configuration parameters and examples
+## Key Features
 
-### 🔧 Advanced Topics
-- **[Cache System](docs/cache-system.md)** - Embedding cache system for training acceleration
-- **[Trainer Architecture](docs/trainer-architecture.md)** - QwenImageEditTrainer comprehensive documentation
-- **[Model Architecture](docs/architecture/qwen_image_model_architecture.md)** - Deep dive into model internals
+- **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
+- **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
+- **Multi-GPU Support**: Distributed training capabilities with gradient accumulation
+- **Quantization Support**: FP4/INT8 quantization for reduced memory usage
+- **Flexible Architecture**: Modular design supporting various vision-language tasks
+- **Production Ready**: Comprehensive testing suite and deployment configurations
 
-### 🛠️ Tools & Utilities
-- **[Storage Checker](script/README_storage_checker.md)** - Monitor storage usage during training
-- **[Change Log](docs/CHANGELOG.md)** - Project updates and version history
+## Table of Contents
 
-## 🚀 Quick Start
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Documentation](#documentation)
+- [Model Architecture](#model-architecture)
+- [Training](#training)
+- [Inference](#inference)
+- [Performance Benchmarks](#performance-benchmarks)
+- [Citation](#citation)
+- [License](#license)
+
+## Installation
 
 ### Prerequisites
 - Python 3.12+
@@ -59,6 +63,43 @@ CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cach
 CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 ```
 
+
+#### 🎯 LoRA Fine-tuning Results Comparison
+
+This project demonstrates fine-tuning the Qwen-VL model for face segmentation tasks. Below shows the comparison between pre and post fine-tuning results:
+
+##### Input Image
+<div align="center">
+  <img src="docs/images/input_image.jpg" alt="Original Input Image" width="400"/>
+  <p><em>Original input image for face segmentation</em></p>
+</div>
+
+##### Base Model Results (Before Fine-tuning)
+<div align="center">
+  <img src="docs/images/result_base_model.jpg" alt="Base Model Results" width="400"/>
+  <p><em>Segmentation results from the base Qwen-VL model</em></p>
+</div>
+
+##### LoRA Fine-tuned Model Results (After Fine-tuning)
+<div align="center">
+  <img src="docs/images/result_lora_model.jpg" alt="LoRA Fine-tuned Model Results" width="400"/>
+  <p><em>Segmentation results from LoRA fine-tuned model - significantly improved accuracy and details</em></p>
+</div>
+
+##### Performance Analysis
+- **Before Fine-tuning**: Base model can identify face regions but with limited segmentation precision
+- **After Fine-tuning**: LoRA fine-tuning significantly improves segmentation accuracy and boundary details
+- **Key Improvements**: More precise boundary detection, better detail preservation, more stable segmentation quality
+
+> 💡 **Note**: Through LoRA fine-tuning, we achieve significant performance improvements for specific tasks while maintaining model efficiency and lightweight characteristics.
+### Lora Training Performance
+
+|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed|
+|---|---|---|---|---|---|---|
+|2| bf16| True| False|A100|48.6 G | 18.3 s/it|
+|2 | fp4| True| False|A100 |22.47 | 10.6 s/it|
+| 2 | fbf16| True | True | A100 | 50.2 G | 10.34 s/it|
+| 2 | fp4 | True | True | A100 | 23.7 G | 10.8 s/it|
 ### Inference
 ```python
 # Inference with trained LoRA model
@@ -94,62 +135,12 @@ result[0]
 result[0].save("output_segmentation.png")
 print("Generated face segmentation saved as output_segmentation.png")
 ```
-### Quantize Model
+## Speed Optimization
 
-```
-pip install --upgrade --force-reinstall transformer-engine-cu12==1.7.0
-# need to set the CUDA HOME if not found nvcc
-export CUDA_HOME=<path_to_cuda_env>
-export PATH=$CUDA_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+[Speed Optimization including quantilizationand flash attention](docs/speed_optimization.md)
 
-pip install --upgrade --force-reinstall flash-attn --no-build-isolation
-```
-## 🎯 LoRA Fine-tuning Results Comparison
-
-This project demonstrates fine-tuning the Qwen-VL model for face segmentation tasks. Below shows the comparison between pre and post fine-tuning results:
-
-### Input Image
-<div align="center">
-  <img src="docs/images/input_image.jpg" alt="Original Input Image" width="400"/>
-  <p><em>Original input image for face segmentation</em></p>
-</div>
-
-### Base Model Results (Before Fine-tuning)
-<div align="center">
-  <img src="docs/images/result_base_model.jpg" alt="Base Model Results" width="400"/>
-  <p><em>Segmentation results from the base Qwen-VL model</em></p>
-</div>
-
-### LoRA Fine-tuned Model Results (After Fine-tuning)
-<div align="center">
-  <img src="docs/images/result_lora_model.jpg" alt="LoRA Fine-tuned Model Results" width="400"/>
-  <p><em>Segmentation results from LoRA fine-tuned model - significantly improved accuracy and details</em></p>
-</div>
-
-### Performance Analysis
-- **Before Fine-tuning**: Base model can identify face regions but with limited segmentation precision
-- **After Fine-tuning**: LoRA fine-tuning significantly improves segmentation accuracy and boundary details
-- **Key Improvements**: More precise boundary detection, better detail preservation, more stable segmentation quality
-
-> 💡 **Note**: Through LoRA fine-tuning, we achieve significant performance improvements for specific tasks while maintaining model efficiency and lightweight characteristics.
-## 📋 Documentation Roadmap
-
-### For New Users
-1. **Start Here**: [Setup Guide](docs/setup.md) - Get your environment ready
-2. **Prepare Data**: [Data Preparation](docs/data-preparation.md) - Format your dataset
-3. **First Training**: [Training Guide](docs/training.md) - Run your first training
-4. **Generate Images**: [Inference Guide](docs/inference.md) - Use your trained model
-
-### For Developers
-1. **Architecture**: [Model Architecture](docs/architecture/qwen_image_model_architecture.md) - Understand the model
-2. **Implementation**: [Trainer Architecture](docs/trainer-architecture.md) - Training implementation details
-3. **Optimization**: [Cache System](docs/cache-system.md) - Performance optimization
-
-### For Advanced Users
-1. **Performance**: [Cache System](docs/cache-system.md) - 2-3x training speedup
-2. **Monitoring**: [Storage Checker](script/README_storage_checker.md) - Resource monitoring
-3. **Customization**: [Configuration Guide](docs/configuration.md) - Advanced settings
+## Debug
+[record of bugs encountered](docs/debug.md)
 
 ## 🎯 Key Features Covered
 

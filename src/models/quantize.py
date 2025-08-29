@@ -322,8 +322,11 @@ if __name__ == "__main__":
     quantized_model = quantize_model_to_fp8(
         model,
         engine="bnb",
-        verbose=True
+        verbose=True,
+        device='cuda:1',
     )
+    quantized_model = quantized_model.cpu()
+    torch.cuda.empty_cache()
     # latent_model_input torch.Size([1, 8208, 64])
 
     # timestep tensor([1000.], device='cuda:1', dtype=torch.bfloat16)
@@ -333,17 +336,19 @@ if __name__ == "__main__":
     # img_shapes [[(1, 54, 76), (1, 54, 76)]]
     # txt_seq_lens [646]
     # attention_kwargs {}
-    device = "cuda:0"
+    device = "cuda:1"
 
-    latent_model_input = torch.randn(1, 8208, 64).to(device)
-    timestep = torch.tensor([1000.], device=device, dtype=torch.bfloat16)
+    weight_dtype = torch.bfloat16
+
+    latent_model_input = torch.randn(1, 8208, 64).to(device).to(weight_dtype)
+    timestep = torch.tensor([1000.], device=device, dtype=weight_dtype)
     guidance = None
-    prompt_embeds_mask = torch.randint(0, 2, (1, 646)).to(device)
-    prompt_embeds = torch.randn(1, 646, 3584).to(device)
+    prompt_embeds_mask = torch.randint(0, 2, (1, 646)).to(device).to(torch.int64)
+    prompt_embeds = torch.randn(1, 646, 3584).to(device).to(weight_dtype)
     img_shapes = [[(1, 54, 76), (1, 54, 76)]]
     txt_seq_lens = [646]
     attention_kwargs = {}
-    model = model.to(device)
+    model = model.to(device).to(weight_dtype)
     out = model(
         latent_model_input,
         encoder_hidden_states=prompt_embeds,
@@ -354,7 +359,9 @@ if __name__ == "__main__":
         txt_seq_lens=txt_seq_lens,
         attention_kwargs=attention_kwargs
     )
-    quantized_model = quantized_model.to(device)
+    model = model.cpu()
+    torch.cuda.empty_cache()
+    quantized_model = quantized_model.to(device).to(weight_dtype)
     out2 = quantized_model(
         latent_model_input,
         encoder_hidden_states=prompt_embeds,
