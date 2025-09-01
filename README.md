@@ -99,7 +99,7 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
       </td>
       <td align="center">
         <img src="docs/images/result_base_model.jpg" alt="Base Model Results" width="300"/>
-        <br><em>Base Qwen-VL model</em>
+        <br><em>Base Qwen-Image-Edit model</em>
       </td>
       <td align="center">
         <img src="docs/images/result_lora_model.jpg" alt="LoRA Fine-tuned Model Results" width="300"/>
@@ -126,11 +126,11 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
       </td>
       <td align="center">
         <img src="docs/images/20250829_160238/result_base_model.jpg" alt="Base Model BF16" width="300"/>
-        <br><em>Diffusion Base Model FP16</em>
+        <br><em>Base Qwen-Image-Edit model (bfloat16)</em>
       </td>
       <td align="center">
         <img src="docs/images/20250829_160238/result_lora_model.jpg" alt="LoRA BF16 Results" width="300"/>
-        <br><em><strong>Diffusion Base Model FP16, LoRA BF16</strong></em>
+        <br><em><strong>LoRA fine-tuned model in bf16</strong></em>
       </td>
     </tr>
     <tr>
@@ -140,11 +140,11 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
       </td>
       <td align="center">
         <img src="docs/images/20250829_155502/result_base_model.jpg" alt="Base Model FP4" width="300"/>
-        <br><em>Diffusion Base Model FP4 Quantized</em>
+        <br><em>Base Qwen-Image-Edit model（fp4)</em>
       </td>
       <td align="center">
         <img src="docs/images/20250829_155502/result_lora_model.jpg" alt="LoRA FP4 Results" width="300"/>
-        <br><em><strong>Base FP4 Quantized, LoRA FP16</strong></em>
+        <br><em><strong>LoRA fine-tuned model (Base fp4,Lora bf16)</strong></em>
       </td>
     </tr>
   </table>
