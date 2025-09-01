@@ -1,178 +1,125 @@
-# Qwen Image模型架构详解
+# Qwen Image Edit Architecture
 
-## 模型概述
+## Model Overview
 
-Qwen Image是一个基于双流架构（Double-Stream Architecture）的扩散模型，用于图像编辑和生成任务。该模型采用联合注意力机制同时处理图像和文本信息，实现文本引导的图像生成/编辑。
+要了解 Qwen-Image-Edit 模型，首先我们要了解图片生成模型都是怎么工作的。生成模型从最初的 GAN 到现在的 latent diffusion 经历了很多的演变。Latent Diffusion 又涉及到 VAE 和扩散模型的原理，这些基础先要理解清楚。
+- VAE: https://mad-sg.github.io/generative-ai-start-to-surrender/book/chapter6_VAE/vae_introduction/
+- Diffusion: https://mad-sg.github.io/generative-ai-start-to-surrender/book/chapter7_diffusion/ddpm/
 
-## 数据预处理管道
+这上面有链接 对 VAE 和 Diffusion 有介绍
 
-### Embedding预计算流程概述
+假设我们有了上述的理解，那我们就有一个大概的 latent diffusion 模型的一个架构了。 首先得有一个 VAE，这个主要用来做压缩，节省计算量。VAE 将图片压缩的 latent 空间，具有更紧凑的语义特征以及低层特征。 同时 VAE 的 AE 是不一样，这里需要理解清楚， VAE encoder 得到的是一个 mean 和 std，需要进行采样，才是统计空间里的具体的样本。 但是也可能只用这个 mean，如果预测的分布是一个比较窄的高斯分布，那 mean 和 sample 差别就不大，而且更加稳定。用 sample 的话好处是能得到更多的多样性。 如果这个实在不太清楚 就理解成 AE，对于 latent diffusion 的理解影响不大，后续再详细理解什么是 VAE。
 
-在模型训练之前，Qwen Image使用预计算的embedding来提高训练效率。整个预处理过程包括**文本embedding预计算**和**图像embedding预计算**两个并行的管道。
+![vaestrcutrue](https://data-science-blog.com/wp-content/uploads/2022/04/variational-auto-encoder-image-encoding-decoding.png)
 
-### 文本Embedding预计算过程
 
-#### 处理流程
-1. **初始化文本编码管道**
-   ```python
-   text_encoding_pipeline = QwenImageEditPipeline.from_pretrained(
-       args.pretrained_model_name_or_path, transformer=None, vae=None, torch_dtype=weight_dtype
-   )
-   ```
-   - **作用**：加载预训练的Qwen图像编辑管道，但只保留文本编码部分
-   - **输入**：预训练模型路径
-   - **输出**：文本编码管道对象
 
-2. **图片和文本配对处理**
-   ```python
-   for img_name in tqdm([i for i in os.listdir(args.data_config.control_dir) if ".png" in i or '.jpg' in i]):
-       img_path = os.path.join(args.data_config.control_dir, img_name)
-       txt_path = os.path.join(args.data_config.img_dir, img_name.split('.')[0] + '.txt')
-   ```
-   - **作用**：遍历控制图片目录，为每张图片找到对应的文本文件
-   - **输入**：图片目录和文本目录路径
-   - **输出**：图片路径和对应文本路径的配对
 
-3. **图片预处理和尺寸计算**
-   ```python
-   img = Image.open(img_path).convert('RGB')
-   calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, img.size[0] / img.size[1])
-   prompt_image = text_encoding_pipeline.image_processor.resize(img, calculated_height, calculated_width)
-   ```
-   - **作用**：
-     - 打开图片并转换为RGB格式
-     - 根据原图比例计算新的宽高（保持总像素数为1024×1024）
-     - 将图片调整到计算出的尺寸
-   - **输入**：图片路径
-   - **输出**：预处理后的图片张量
 
-4. **多模态编码**
-   ```python
-   prompt = open(txt_path).read()
-   prompt_embeds, prompt_embeds_mask = text_encoding_pipeline.encode_prompt(
-       image=prompt_image,
-       prompt=[prompt],
-       device=text_encoding_pipeline.device,
-       num_images_per_prompt=1,
-       max_sequence_length=1024,
-   )
-   ```
-   - **作用**：
-     - 读取文本内容
-     - 将图片和文本一起编码为embedding（多模态融合）
-     - 生成注意力mask用于后续计算
-   - **输入**：预处理后的图片 + 文本prompt
-   - **输出**：prompt_embeds（文本embedding）和 prompt_embeds_mask（注意力mask）
+然后另外一个模块就是对 prompt 的处理，最开始 prompt 只包括文本，目的是将文本转化为一个 包含了语义信息的embedding，然后注入到扩散模型里，相当于扩散的条件 `C`, 条件生成模型。最早的 stable diffusion 和 Flux 模型都是使用预训练的文本 embedding 模型，例如 clip 或者 T5,将文本转化为 embedding。 注入到扩散模型里。embedding 可能是一个 1 维的向量，浓缩了高度的信息，知道图片生成。但是问题是这种语义太过浓缩了，就没法控制一些精确的细节，因此后续也会用 T5 生成一个更加底层的 embedding，不再是一个一维的向量，而是一个 sequence token，更能充分包含更多信息，就能包含更多细节的信息。说一从整体的结构来说，我们需要给扩散模型提供一个条件的信息。那对于图片编辑类型的生成模型，是不是图片本身也可以提供语义信息作为条件，这样比只用 prompt 的文本信息，会更加充分。真好，目前的多模态大模型能完美提供这个条件，而且正好可以利用到多模态大模型发展带来的益处。
 
-5. **Embedding缓存**
-   ```python
-   cached_text_embeddings[img_name.split('.')[0] + '.txt'] = {
-       'prompt_embeds': prompt_embeds[0].to('cpu'),
-       'prompt_embeds_mask': prompt_embeds_mask[0].to('cpu')
-   }
-   ```
-   - **作用**：将计算出的embedding保存到内存或磁盘，避免训练时重复计算
-   - **输入**：计算出的embedding
-   - **输出**：缓存的embedding字典
-
-### 图像Embedding预计算过程
-
-#### 处理流程
-1. **VAE编码器初始化**
-   ```python
-   vae = AutoencoderKLQwenImage.from_pretrained(
-       args.pretrained_model_name_or_path, subfolder="vae"
-   )
-   ```
-   - **作用**：加载变分自编码器（VAE），用于将图片编码到潜在空间
-   - **输入**：预训练模型路径
-   - **输出**：VAE编码器对象
-
-2. **目标图片预处理**
-   ```python
-   img = Image.open(os.path.join(args.data_config.img_dir, img_name)).convert('RGB')
-   calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, img.size[0] / img.size[1])
-   img = text_encoding_pipeline.image_processor.resize(img, calculated_height, calculated_width)
-   ```
-   - **作用**：遍历目标图片目录，调整图片尺寸保持比例
-   - **输入**：图片目录路径
-   - **输出**：预处理后的图片
-
-3. **图片标准化处理**
-   ```python
-   img = torch.from_numpy((np.array(img) / 127.5) - 1)
-   img = img.permute(2, 0, 1).unsqueeze(0)
-   pixel_values = img.unsqueeze(2)  # 添加时间维度
-   ```
-   - **作用**：
-     - 将像素值从[0,255]标准化到[-1,1]
-     - 调整张量维度：(H,W,C) → (C,H,W) → (1,C,H,W) → (1,C,1,H,W)
-     - 添加时间维度变成5D张量以适配VAE
-   - **输入**：PIL图片
-   - **输出**：标准化的5D张量
-
-4. **VAE潜在空间编码**
-   ```python
-   pixel_latents = vae.encode(pixel_values).latent_dist.sample().to('cpu')[0]
-   ```
-   - **作用**：使用VAE将图片编码到潜在空间，大幅降低计算复杂度
-   - **输入**：标准化的图片张量
-   - **输出**：图片的潜在表示（latent）
-
-5. **控制图片处理**
-   - 对控制图片目录执行相同的VAE编码过程
-   - 生成控制图片的embedding用于条件生成
-
-### 预计算流程图
 
 ```mermaid
-flowchart TD
-    subgraph "文本Embedding预计算"
-        A["图片路径 + 文本路径"] --> B["加载QwenImageEditPipeline"]
-        B --> C["图片预处理<br/>尺寸调整 + RGB转换"]
-        C --> D["读取文本prompt"]
-        D --> E["多模态编码<br/>encode_prompt()"]
-        E --> F["缓存text embedding<br/>prompt_embeds + mask"]
-    end
+flowchart LR
+  T[Prompt] --> QV[Qwen2.5-VL] --> C[Cond embedding]
+  R[Ref image] --> QV
+  R --> VAEe[VAE encoder] --> Zref[Ref latent]
 
-    subgraph "图像Embedding预计算"
-        G["图片路径"] --> H["加载AutoencoderKLQwenImage"]
-        H --> I["图片预处理<br/>尺寸调整 + 标准化"]
-        I --> J["转换为5D张量<br/>添加时间维度"]
-        J --> K["VAE编码<br/>encode().sample()"]
-        K --> L["缓存image latents"]
-    end
+  ZT[Init noise] --> CAT[Concat]
+  Zref --> CAT
 
-    subgraph "训练时使用"
-        M["从缓存加载embedding"] --> N["直接进入训练循环<br/>跳过重复计算"]
-    end
+  CAT --> D[Diffusion denoiser]
+  C --> D
 
-    F --> M
-    L --> M
+  D --> Zhat[Denoised latent]
+  Zhat --> VAEd[VAE decoder] --> Y[Edited image]
+```
+总体而言，对于 Qwen-Image-Edit, prompt和参考图片本身经过 Qwen2.5-VL 生成了一个 embedding，用来作为 diffusion 模块的条件。
+作为图片编辑的 diffusion 模块，是直接借鉴了 Flux Kontext的设计，输入除了 noise latent, 还有一个参考图片经过 VAE encoder 的 decoder.因为图片编辑需要保持identity 不变，那么最好的方式是在原图上修改。但是 diffusion 是不支持直接在原图上进行修改的，它需要从一个 noise 逐步过度到真实图片。那么一个可行的方案，就是把 noise 和 prompt image latent concat 起来，这样模型也能看到原图。就可以让 diffusion 在后续的 attention 过程中，直接获取原图的信息，从而减少图片生成的难度以及对 object identity 的维持。 总体而言，整体的结构就和上面的流程图一样。 接下来我们再了解 diffusion 模块的细节。关于 VAE 和 Qwen2.5-VL 的内容，我们在其他模块里再仔细分析。
 
-    style A fill:#e8f5e8
-    style G fill:#e1f5fe
-    style E fill:#fff3e0
-    style K fill:#fff3e0
-    style N fill:#f3e5f5
+下面我们 总体介绍一下 Qwen-Image-Edit 的图片编辑过程，以一个 512x512 的图片为例子
+```mermaid
+flowchart LR
+
+%% ===== Modules grouped: Image Encoding | Qwen2.5-VL Encoding | Diffusion | Image Decoding =====
+
+subgraph IE["Image Encoding"]
+  X["Image [B, 3, 512, 512]"] --> VAEe["VAE encoder (model)"]
+  VAEe --> Zraw["Latent [B, 16, 64, 64]"]
+  Zraw --> PK["Patchify 2x2"]
+  PK --> Zp["Packed latent [B, 1024, 64]"]
+end
+
+subgraph QVENC["Qwen2.5-VL Encoding"]
+  QV["Qwen2.5-VL (model)"] --> C["Sequence tokens [B, seq_len, 3584]"]
+end
+T["Prompt"] --> QV
+X --> QV
+
+subgraph DIFF["Diffusion (iterative)"]
+  direction LR
+  N["Noisy latent z_T [B, 1024, 64]"] --> CAT["Concat(z_t || z_img)"]
+  Zp --> CAT
+  CAT --> D["MMDiT denoiser (model)"]
+  C --> D
+  D --> Ztm1["Denoised latent z_{t-1} [B, 1024, 64]"]
+  Ztm1 -- "t := t-1; repeat until t = 0" --> CAT
+end
+
+subgraph DEC["Image Decoding"]
+  UNPK["Unpack 2x2"] --> Zfinal2["Latent [B, 16, 64, 64]"]
+  VAEd["VAE decoder (model)"] --> Y["Edited image [B, 3, 512, 512]"]
+end
+
+Ztm1 --> UNPK
+Zfinal2 --> VAEd
+
+%% ===== Styles: models vs data vs ops =====
+classDef model fill:#E0F2FE,stroke:#0284C7,stroke-width:1px;
+classDef data  fill:#FEF3C7,stroke:#D97706,stroke-width:1px;
+classDef op    fill:#F3F4F6,stroke:#6B7280,stroke-width:1px;
+
+class QV,VAEe,VAEd,D model;
+class X,T,Zraw,Zp,N,Ztm1,C,Y data;
+class PK,CAT,UNPK op;
+```
+```
+1. 输入预处理
+   原图: [B, 3, 512, 512] → VAE编码 → [B, 16, 1, 64, 64]
+
+2. Latent打包
+   [B, 16, 64, 64] → 2×2打包 → [B, 1024, 64]
+
+3. 文本编码
+   ["添加小猫",参考图片]→ Qwen2.5-VL → prompt embedding -> [B, seq_len, 3584]
+
+4. 扩散过程 (50步迭代)
+   noise latent = random gaussian sampling -> [B, 1024, 64]
+   for loop:
+      concat_latent = concat(noise latent , image latent) -> [B,2048,64]
+      -> concat_latent, prompt embedding -> 去噪步骤  -> 新的 latent -> [B,2048,64]
+      -> 提取钱 1024 个 patch -> [B,1024,64]
+      -> 替换 noise latent
+
+5. 结果生成
+   denoised latent-> unpack latent  [B, 16, 64, 64] -> 最终latent → VAE解码 → [B, 3, 512, 512]
 ```
 
-### 预计算的优势
+## Qwen-Image-Edit MMDiT
+现在我们来进一步分析 Qwen-Image-Edit 的模型结构，可以和 Flux Kontext 模型的 MMDiT 进行对比。通过比较他们的不同之处，就能比较容易理解 Qwen-Image-Edit 的改动之处。
+我们按照从上到下的思路进行分析，先分析大的结构，再考虑小的结构。
 
-1. **训练加速**：避免每个epoch重复计算embedding，显著提升训练速度
-2. **内存优化**：可选择磁盘缓存模式，减少GPU内存占用
-3. **一致性保证**：所有训练步骤使用相同的embedding，确保训练稳定性
-4. **多模态融合**：文本embedding已经包含图像信息，提供更丰富的语义表示
+提前先总结一下他们差异的部分
 
-## 整体架构
+|维度| Qwen-Image-Edit MMDiT| Flux Kontext MMDiT|
+|---|---|---|
+|输入| prompt embedding 只有一个，由 Qwen2.5-VL提供 | prompt embedding 有两个，由 CLIP 和T5 分别提供|
+| MMDiT block| 全程使用 双流 DiT 模块，60 层| 前面是双流，后面是单流|
+|latent patch | 对 latent 做 2x2 的 patchify| 不做|
+|位置编码| 使用
+### 整体架构图
 
-### 核心特性
-- **双流架构**：同时处理图像流和文本流
-- **联合注意力**：图像和文本信息进行联合注意力计算
-- **RoPE位置编码**：支持3D位置编码（时间、高度、宽度）
-- **扩散过程**：基于时间步的去噪生成
-
-### 整体架构流程图
+#### Qwen-Image-Edit
 
 ```mermaid
 flowchart TD
@@ -210,6 +157,9 @@ flowchart TD
     style G fill:#fce4ec
     style U fill:#f3e5f5
 ```
+
+#### Flux Kontext
+
 
 ## 模块详细分析
 
