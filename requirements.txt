@@ -25,3 +25,4 @@ packaging
 ninja
 wheel
 setuptools
+sentencepiece
