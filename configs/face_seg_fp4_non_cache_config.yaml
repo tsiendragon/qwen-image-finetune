@@ -31,7 +31,7 @@ data:
   shuffle: true
 
 logging:
-  output_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4/"  # change the path to your own output path
+  output_dir: "/raid/lilong/data/experiment/qwen-edit/"  # change the path to your own output path
   logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "face_segmentation_lora"
@@ -91,3 +91,4 @@ validation:
   num_validation_samples: 4
 
 # 22.17 GB used for traning with batchsize 2, speed 18.35s/it, on A100
+

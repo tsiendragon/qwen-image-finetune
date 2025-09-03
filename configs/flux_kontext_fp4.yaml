@@ -1,0 +1,91 @@
+model:
+  pretrained_model_name_or_path: "eramth/flux-kontext-4bit-fp4"
+  model_type: "flux_kontext"
+  quantize: true  # Enable quantization for FP4 model
+  lora:
+    r: 32  # Increase LoRA rank to compensate for quantization precision loss
+    lora_alpha: 32  # Increase alpha proportionally
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]  # Flux transformer attention modules
+    pretrained_weight: null
+
+data:
+  class_path: "src.data.dataset.ImageDataset"
+  init_args:
+    dataset_path: "/raid/lilong/data/face_seg/"  # change to your dataset path
+    image_size: [1024, 1024]  # Flux Kontext typical resolution
+    caption_dropout_rate: 0.03  # reduce dropout for FP4 to maintain stability
+    prompt_image_dropout_rate: 0.03
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    cache_drop_rate: 0.05  # reduce cache drop rate for stability
+    # Image processing configuration
+    random_crop: false
+    crop_size: 1024
+    crop_scale: [0.85, 1.0]  # slightly more conservative crop range
+    center_crop: true
+    center_crop_ratio: 1.0
+  batch_size: 4  # FP4 allows larger batch sizes
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/raid/lilong/data/experiment/flux-kontext-fp4/"  # change to your output path
+  logging_dir: "logs"
+  report_to: "tensorboard"
+  tracker_project_name: "flux_kontext_fp4_lora"
+
+optimizer:
+  class_path: bnb.optim.Adam8bit  # 8-bit optimizer essential for FP4 models
+  init_args:
+    lr: 0.00008  # slightly lower learning rate for stability
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 200  # longer warmup for FP4 stability
+  num_cycles: 0.5
+  power: 1.0
+
+train:
+  gradient_accumulation_steps: 2  # reduced due to larger batch size
+  max_train_steps: 8000  # more steps to compensate for precision loss
+  num_epochs: 80  # more epochs for convergence
+  checkpointing_steps: 100
+  checkpoints_total_limit: 15  # keep more checkpoints for FP4
+  max_grad_norm: 0.8  # stricter gradient clipping for stability
+  mixed_precision: "bf16"  # use BF16 for computation, FP4 for storage
+  gradient_checkpointing: true
+  low_memory: true
+  vae_encoder_device: cuda:0
+  text_encoder_device: cuda:0  # can put both encoders on same device due to memory savings
+  text_encoder_2_device: cuda:0
+
+cache:
+  vae_encoder_device: cuda:0
+  text_encoder_device: cuda:0  # both encoders can share device
+  text_encoder_2_device: cuda:0
+  cache_dir: "/raid/lilong/data/experiment/flux-kontext-fp4/cache"
+  use_cache: true
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0  # CLIP
+    text_encoder_2: cuda:0  # T5 - can share device due to low memory usage
+    transformer: cuda:0  # all on same device possible with FP4
+
+# Training resume setting
+resume_from_checkpoint: "latest"
+
+# Validation setting
+validation:
+  enabled: true  # enable validation for FP4 to monitor quality
+  validation_steps: 150  # more frequent validation
+  num_validation_samples: 6
+
+# Expected memory usage: ~12GB VRAM for training with batch_size=4
+# Training speed: ~20s/it on RTX 4090 (fastest training)
+# Model quality: Good, some quality loss but acceptable for many use cases
+# Use case: Resource-constrained environments, rapid prototyping
+# Note: May require more careful hyperparameter tuning due to quantization effects
