@@ -155,6 +155,9 @@ class QwenImageEditTrainer:
 
     def setup_accelerator(self):
         """Initialize accelerator and logging configuration"""
+        # Setup versioned logging directory
+        self.setup_versioned_logging_dir()
+
         logging_dir = os.path.join(
             self.config.logging.output_dir, self.config.logging.logging_dir
         )
@@ -282,6 +285,79 @@ class QwenImageEditTrainer:
             save_path, lora_state_dict, safe_serialization=True
         )
         logging.info(f"Saved LoRA weights to {save_path}")
+
+    def setup_versioned_logging_dir(self):
+        """设置版本化的日志目录"""
+        base_output_dir = self.config.logging.output_dir
+
+        # 如果基础目录不存在，直接使用 v0
+        if not os.path.exists(base_output_dir):
+            versioned_dir = os.path.join(base_output_dir, "v0")
+            self.config.logging.output_dir = versioned_dir
+            logging.info(f"创建新的训练版本目录: {versioned_dir}")
+            return
+
+        # 查找现有版本
+        existing_versions = []
+        for item in os.listdir(base_output_dir):
+            item_path = os.path.join(base_output_dir, item)
+            if os.path.isdir(item_path) and item.startswith('v') and item[1:].isdigit():
+                version_num = int(item[1:])
+                existing_versions.append((version_num, item_path))
+
+        # 清理无效版本（训练步数 < 5）
+        valid_versions = []
+        for version_num, version_path in existing_versions:
+            if self._is_valid_training_version(version_path):
+                valid_versions.append(version_num)
+            else:
+                logging.info(f"移除无效训练版本: {version_path}")
+                shutil.rmtree(version_path)
+
+        # 确定新版本号
+        if valid_versions:
+            next_version = max(valid_versions) + 1
+        else:
+            next_version = 0
+
+        # 创建新版本目录
+        versioned_dir = os.path.join(base_output_dir, f"v{next_version}")
+        self.config.logging.output_dir = versioned_dir
+        logging.info(f"使用训练版本目录: {versioned_dir}")
+
+    def _is_valid_training_version(self, version_path):
+        """检查版本是否包含有效的训练数据（步数 >= 5）"""
+        # 检查 checkpoint 目录
+        checkpoints = []
+        if os.path.exists(version_path):
+            for item in os.listdir(version_path):
+                if item.startswith("checkpoint-") and os.path.isdir(os.path.join(version_path, item)):
+                    try:
+                        # 从 checkpoint-{epoch}-{global_step} 中提取 global_step
+                        parts = item.split('-')
+                        if len(parts) >= 3:
+                            global_step = int(parts[2])
+                            checkpoints.append(global_step)
+                    except (ValueError, IndexError):
+                        continue
+
+        # 检查 tensorboard 日志
+        logs_dir = os.path.join(version_path, self.config.logging.logging_dir)
+        has_logs = False
+        if os.path.exists(logs_dir):
+            # 检查是否有 tensorboard 事件文件
+            log_files = [f for f in os.listdir(logs_dir) if f.startswith('events.out.tfevents')]
+            has_logs = len(log_files) > 0
+
+        # 如果有检查点且最大步数 >= 5，或者只有日志文件但没有检查点，认为有效
+        if checkpoints:
+            return max(checkpoints) >= 5
+        elif has_logs:
+            # 如果只有日志但没有检查点，可能是训练刚开始就中断了，认为无效
+            return False
+        else:
+            # 既没有检查点也没有日志，认为无效
+            return False
 
     def merge_lora(self):
         """Merge LoRA weights into base model"""
@@ -413,7 +489,6 @@ class QwenImageEditTrainer:
         prompt_embeds_mask = batch["prompt_embeds_mask"].to(self.accelerator.device)
         prompt_embeds_mask = prompt_embeds_mask.to(torch.int64)  # original is int64 dtype
 
-
         image = batch['image']  # torch.tensor: B,C,H,W
         image = image[0].cpu().numpy()
         image = image.transpose(1, 2, 0)
@@ -536,8 +611,7 @@ class QwenImageEditTrainer:
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
             # prompt_embeds = prompt_embeds.repeat(batch_size, 1, 1)
 
-
-        # timesteps tensor([374., 749.], device='cuda:0')                                                                                                                                         packedinput shape torch.Size([2, 8208, 64])
+        # timesteps tensor([374., 749.], device='cuda:0') packedinput shape torch.Size([2, 8208, 64])
         # prompt_embeds shape torch.Size([4, 1071, 3584])
         # prompt_embeds_mask shape torch.Size([2, 1071])
         # img_shapes [[(1, 54, 76), (1, 54, 76)], [(1, 54, 76), (1, 54, 76)]]
@@ -773,8 +847,6 @@ class QwenImageEditTrainer:
         self.vae.eval()
         self.set_model_devices(mode="cache")
 
-
-
         # cache for each item
         dataset = train_dataloader.dataset
         for data in tqdm(dataset, total=len(dataset), desc="cache_embeddings"):
@@ -802,7 +874,6 @@ class QwenImageEditTrainer:
         self.configure_optimizers()
         self.set_model_devices(mode="train")
         train_dataloader = self.accelerator_prepare(train_dataloader)
-
 
         logging.info("***** Running training *****")
         logging.info(f"  Instantaneous batch size per device = {self.batch_size}")
@@ -1067,16 +1138,12 @@ class QwenImageEditTrainer:
             prompt_embeds_mask = prompt_embeds_mask.to(torch.int64)
             print('prompt_embeds_mask', prompt_embeds_mask.dtype)
 
-
-
-
         if do_true_cfg:
             # 清理显存以确保有足够空间进行 CFG
             torch.cuda.empty_cache()
             print('negative_prompt', negative_prompt)
 
             # 临时将 positive prompt embeddings 移到 CPU 以节省显存
-
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
                 image=prompt_image_processed,
                 prompt=negative_prompt,
@@ -1157,7 +1224,6 @@ class QwenImageEditTrainer:
             mu=mu,
         )
 
-        num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self._num_timesteps = len(timesteps)
 
         # 处理guidance
