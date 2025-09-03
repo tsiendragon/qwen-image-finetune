@@ -327,9 +327,9 @@ class TrainConfig:
         if not isinstance(self.low_memory, bool):
             raise ValueError(f"low_memory must be a boolean, got {self.low_memory}")
         # check vae_encoder_device
-        if self.vae_encoder_device is not None:
-            if not isinstance(self.vae_encoder_device, str):
-                raise ValueError(f"vae_encoder_device must be a non-negative string or None, got {self.vae_encoder_device}")
+        if self.vae_encoder_device is not None and not isinstance(self.vae_encoder_device, str):
+            raise ValueError(f"vae_encoder_device must be a non-negative string or None, got {self.vae_encoder_device}")
+
         # check text_encoder_device
         if self.text_encoder_device is not None:
             if not isinstance(self.text_encoder_device, str):
