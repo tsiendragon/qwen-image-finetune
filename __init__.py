@@ -5,7 +5,7 @@ Qwen Image Finetune - 千问视觉模型微调工具包
 支持QwenVL图像编辑模型的高效微调和推理。
 """
 
-__version__ = "0.2.0"
+__version__ = "1.1.0"
 __author__ = "lilong"
 __description__ = "Professional image editing model training framework based on QwenVL"
 

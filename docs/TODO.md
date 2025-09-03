@@ -6,6 +6,8 @@
 - [x] multi dataset_path supported
 - [x] resume training
 - [ ] Fix lora training without cache function
-- [ ] non-caching training mode with memory efficiency
+- [x] non-caching training mode with memory efficiency
 - [ ] FSDP training
 - [ ] tensorboard log dir add version when resume training
+- [ ] Flux Kontext Lora
+- [ ] training step dtype convertion simplification
