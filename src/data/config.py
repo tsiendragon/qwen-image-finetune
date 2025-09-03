@@ -331,9 +331,9 @@ class TrainConfig:
             raise ValueError(f"vae_encoder_device must be a non-negative string or None, got {self.vae_encoder_device}")
 
         # check text_encoder_device
-        if self.text_encoder_device is not None:
-            if not isinstance(self.text_encoder_device, str):
-                raise ValueError(f"text_encoder_device must be a non-negative string or None, got {self.text_encoder_device}")
+        if self.text_encoder_device is not None and not isinstance(self.text_encoder_device, str):
+            raise ValueError(f"text_encoder_device must be a non-negative string or None, got {self.text_encoder_device}")
+
 
 
 @dataclass
