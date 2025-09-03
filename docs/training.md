@@ -217,11 +217,16 @@ The framework automatically manages training versions to prevent data loss and e
 output_dir/
 ├── v0/                     # First training run
 │   ├── logs/
-│   │   └── events.out.tfevents.*
+│   │   └── {tracker_project_name}/
+│   │       └── events.out.tfevents.*
 │   ├── checkpoint-0-100/
+│   │   └── pytorch_lora_weights.safetensors
 │   └── checkpoint-0-200/
+│       └── pytorch_lora_weights.safetensors
 ├── v1/                     # Second training run
 │   ├── logs/
+│   │   └── {tracker_project_name}/
+│   │       └── events.out.tfevents.*
 │   └── checkpoints...
 └── v2/                     # Third training run
     └── ...
@@ -231,6 +236,25 @@ output_dir/
 - **Auto-versioning**: Creates `v0`, `v1`, `v2`... for each training run
 - **Invalid cleanup**: Removes versions with < 5 training steps (failed runs)
 - **Safe restart**: Never overwrites existing valid training data
+
+**Real Example:**
+```
+/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4/
+├── v0/
+│   ├── logs/
+│   │   └── face_segmentation_lora/
+│   │       ├── 1756887994.3818905
+│   │       ├── 1756887994.383021
+│   │       └── events.out.tfevents.1756887994.workspace-dgx3-lilong-559b7bd5d5-n5x66.616211.0
+│   ├── checkpoint-0-100/
+│   │   └── pytorch_lora_weights.safetensors
+│   └── checkpoint-0-200/
+│       └── pytorch_lora_weights.safetensors
+└── v1/
+    └── (next training run)
+```
+
+Note: `{tracker_project_name}` comes from your config's `logging.tracker_project_name` setting.
 
 ### Basic Training Workflow
 
@@ -246,7 +270,9 @@ CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --ca
 CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 
 # 4. Monitor training progress
-tail -f output/*/v*/logs/training.log
+tensorboard --logdir output_dir/ --port 6006
+# Or check TensorBoard logs directly:
+# ls output_dir/v*/logs/{tracker_project_name}/
 ```
 
 ### Single GPU Training
