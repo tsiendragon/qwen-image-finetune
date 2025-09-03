@@ -216,17 +216,15 @@ The framework automatically manages training versions to prevent data loss and e
 ```
 output_dir/
 ├── v0/                     # First training run
-│   ├── logs/
-│   │   └── {tracker_project_name}/
-│   │       └── events.out.tfevents.*
+│   ├── {tracker_project_name}/
+│   │   └── events.out.tfevents.*
 │   ├── checkpoint-0-100/
 │   │   └── pytorch_lora_weights.safetensors
 │   └── checkpoint-0-200/
 │       └── pytorch_lora_weights.safetensors
 ├── v1/                     # Second training run
-│   ├── logs/
-│   │   └── {tracker_project_name}/
-│   │       └── events.out.tfevents.*
+│   ├── {tracker_project_name}/
+│   │   └── events.out.tfevents.*
 │   └── checkpoints...
 └── v2/                     # Third training run
     └── ...
@@ -241,11 +239,10 @@ output_dir/
 ```
 /raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4/
 ├── v0/
-│   ├── logs/
-│   │   └── face_segmentation_lora/
-│   │       ├── 1756887994.3818905
-│   │       ├── 1756887994.383021
-│   │       └── events.out.tfevents.1756887994.workspace-dgx3-lilong-559b7bd5d5-n5x66.616211.0
+│   ├── face_segmentation_lora/
+│   │   ├── 1756887994.3818905
+│   │   ├── 1756887994.383021
+│   │   └── events.out.tfevents.1756887994.workspace-dgx3-lilong-559b7bd5d5-n5x66.616211.0
 │   ├── checkpoint-0-100/
 │   │   └── pytorch_lora_weights.safetensors
 │   └── checkpoint-0-200/
@@ -272,7 +269,7 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m
 # 4. Monitor training progress
 tensorboard --logdir output_dir/ --port 6006
 # Or check TensorBoard logs directly:
-# ls output_dir/v*/logs/{tracker_project_name}/
+# ls output_dir/v*/{tracker_project_name}/
 ```
 
 ### Single GPU Training
@@ -518,6 +515,9 @@ tensorboard --logdir output_dir/ --port 6006
 
 # Access specific version checkpoints
 ls output_dir/v1/checkpoint-*
+
+# Access specific version TensorBoard logs
+ls output_dir/v1/{tracker_project_name}/
 
 # Remove all versions and start fresh
 rm -rf output_dir/v*

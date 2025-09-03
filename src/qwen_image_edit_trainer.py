@@ -158,9 +158,8 @@ class QwenImageEditTrainer:
         # Setup versioned logging directory
         self.setup_versioned_logging_dir()
 
-        logging_dir = os.path.join(
-            self.config.logging.output_dir, self.config.logging.logging_dir
-        )
+        # Set logging_dir to the versioned output directory directly (no logs subdirectory)
+        logging_dir = self.config.logging.output_dir
         accelerator_project_config = ProjectConfiguration(
             project_dir=self.config.logging.output_dir, logging_dir=logging_dir
         )
@@ -341,13 +340,15 @@ class QwenImageEditTrainer:
                     except (ValueError, IndexError):
                         continue
 
-        # 检查 tensorboard 日志
-        logs_dir = os.path.join(version_path, self.config.logging.logging_dir)
+        # 检查 tensorboard 日志（现在直接在版本目录下）
         has_logs = False
-        if os.path.exists(logs_dir):
-            # 检查是否有 tensorboard 事件文件
-            log_files = [f for f in os.listdir(logs_dir) if f.startswith('events.out.tfevents')]
-            has_logs = len(log_files) > 0
+        if os.path.exists(version_path):
+            # 查找 tensorboard 事件文件，可能在项目名子目录中
+            for root, dirs, files in os.walk(version_path):
+                log_files = [f for f in files if f.startswith('events.out.tfevents')]
+                if log_files:
+                    has_logs = True
+                    break
 
         # 如果有检查点且最大步数 >= 5，或者只有日志文件但没有检查点，认为有效
         if checkpoints:
