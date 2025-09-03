@@ -11,6 +11,7 @@ The Qwen Image Finetune framework supports multiple training configurations opti
 - **Quantized Training**: FP8/FP4 quantization for memory optimization
 - **Cached Training**: Accelerated training with pre-computed embeddings
 - **Multi-GPU Training**: Distributed training across multiple devices
+- **Pretrained LoRA**: Initialize training with existing LoRA weights
 
 ## Dataset Preparation
 
@@ -359,6 +360,39 @@ model:
   pretrained_model_name_or_path: "path/to/fp4_model"  # 50-70% memory reduction
   quantize: false
 ```
+
+## Using Pretrained LoRA Weights
+
+You can initialize training with pretrained LoRA weights by specifying the `pretrained_weight` parameter in your configuration.
+
+### Configuration
+
+```yaml
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen2-VL-7B-Instruct"
+  lora:
+    r: 16
+    lora_alpha: 32
+    target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
+    pretrained_weight: "/path/to/pytorch_lora_weights.safetensors"
+
+data:
+  init_args:
+    dataset_path: "data/your_dataset"
+    batch_size: 2
+
+train:
+  num_epochs: 5
+  max_train_steps: 500
+```
+
+### Usage
+
+```bash
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/your_config.yaml
+```
+
+The framework will automatically load the specified LoRA weights before starting training. Ensure that the LoRA rank (`r`) and target modules match those used when the pretrained weights were created.
 
 ## Performance Optimization
 

@@ -273,6 +273,11 @@ class TrainConfig:
     max_grad_norm: float = 1.0
     mixed_precision: str = "bf16"  # fp16, bf16, no
     gradient_checkpointing: bool = True  # 启用梯度检查点以节省显存
+    low_memory: bool = False
+    # if used low_memory mode, then the model will be loaded on the specified devices
+    # otherwise, the model will be loaded on all the gpus
+    vae_encoder_device: Optional[str] = None
+    text_encoder_device: Optional[str] = None
 
     def __post_init__(self):
         """验证训练配置"""
@@ -318,6 +323,17 @@ class TrainConfig:
             raise ValueError(
                 f"gradient_checkpointing must be a boolean, got {self.gradient_checkpointing}"
             )
+        # check low_memory
+        if not isinstance(self.low_memory, bool):
+            raise ValueError(f"low_memory must be a boolean, got {self.low_memory}")
+        # check vae_encoder_device
+        if self.vae_encoder_device is not None and not isinstance(self.vae_encoder_device, str):
+            raise ValueError(f"vae_encoder_device must be a non-negative string or None, got {self.vae_encoder_device}")
+
+        # check text_encoder_device
+        if self.text_encoder_device is not None and not isinstance(self.text_encoder_device, str):
+            raise ValueError(f"text_encoder_device must be a non-negative string or None, got {self.text_encoder_device}")
+
 
 
 @dataclass
@@ -397,6 +413,9 @@ class Config:
                 "max_grad_norm": self.train.max_grad_norm,
                 "mixed_precision": self.train.mixed_precision,
                 "gradient_checkpointing": self.train.gradient_checkpointing,
+                "low_memory": self.train.low_memory,
+                "vae_encoder_device": self.train.vae_encoder_device,
+                "text_encoder_device": self.train.text_encoder_device,
             }
         )
 

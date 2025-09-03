@@ -349,7 +349,7 @@ class ImageDataset(Dataset):
             prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt)
             empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], "empty")
 
-        if self.cache_exists:
+        if self.cache_exists and self.use_cache:
             # 如果启用缓存，尝试加载缓存的嵌入
             # 检查缓存是否存在
             cached_data = {}

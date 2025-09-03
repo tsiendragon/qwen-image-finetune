@@ -73,7 +73,7 @@ cache:
   vae_encoder_device: cuda:0
   text_encoder_device: cuda:0  # if there is only one card, put them on cuda:0
   cache_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora/cache"
-  use_cache: true
+  use_cache: False
 
 predict:
   devices:
