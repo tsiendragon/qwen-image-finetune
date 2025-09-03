@@ -288,18 +288,22 @@ class QwenImageEditTrainer:
     def setup_versioned_logging_dir(self):
         """设置版本化的日志目录"""
         base_output_dir = self.config.logging.output_dir
+        project_name = self.config.logging.tracker_project_name
 
-        # 如果基础目录不存在，直接使用 v0
-        if not os.path.exists(base_output_dir):
-            versioned_dir = os.path.join(base_output_dir, "v0")
+        # 创建项目目录结构: output_dir/project_name/v0
+        project_dir = os.path.join(base_output_dir, project_name)
+
+        # 如果项目目录不存在，直接使用 v0
+        if not os.path.exists(project_dir):
+            versioned_dir = os.path.join(project_dir, "v0")
             self.config.logging.output_dir = versioned_dir
             logging.info(f"创建新的训练版本目录: {versioned_dir}")
             return
 
         # 查找现有版本
         existing_versions = []
-        for item in os.listdir(base_output_dir):
-            item_path = os.path.join(base_output_dir, item)
+        for item in os.listdir(project_dir):
+            item_path = os.path.join(project_dir, item)
             if os.path.isdir(item_path) and item.startswith('v') and item[1:].isdigit():
                 version_num = int(item[1:])
                 existing_versions.append((version_num, item_path))
@@ -320,7 +324,7 @@ class QwenImageEditTrainer:
             next_version = 0
 
         # 创建新版本目录
-        versioned_dir = os.path.join(base_output_dir, f"v{next_version}")
+        versioned_dir = os.path.join(project_dir, f"v{next_version}")
         self.config.logging.output_dir = versioned_dir
         logging.info(f"使用训练版本目录: {versioned_dir}")
 
