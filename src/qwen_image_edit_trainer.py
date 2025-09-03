@@ -165,9 +165,6 @@ class QwenImageEditTrainer:
             logging_dir=self.config.logging.output_dir
         )
 
-        # Temporarily modify tracker_project_name to avoid double nesting
-        original_tracker_project_name = self.config.logging.tracker_project_name
-
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
             mixed_precision=self.config.train.mixed_precision,
@@ -177,7 +174,25 @@ class QwenImageEditTrainer:
 
         # Initialize tracker with empty project name to avoid subdirectory
         if self.config.logging.report_to == "tensorboard":
-            self.accelerator.init_trackers("", config=vars(self.config))
+            # Create a simple config dict with only basic types for TensorBoard
+            try:
+                simple_config = {
+                    "learning_rate": float(self.config.optimizer.init_args.get("lr", 0.0001)),
+                    "batch_size": int(self.config.data.batch_size),
+                    "max_train_steps": int(self.config.train.max_train_steps),
+                    "num_epochs": int(self.config.train.num_epochs),
+                    "gradient_accumulation_steps": int(self.config.train.gradient_accumulation_steps),
+                    "mixed_precision": str(self.config.train.mixed_precision),
+                    "lora_r": int(self.config.model.lora.r),
+                    "lora_alpha": int(self.config.model.lora.lora_alpha),
+                    "model_name": str(self.config.model.pretrained_model_name_or_path),
+                    "checkpointing_steps": int(self.config.train.checkpointing_steps),
+                }
+                self.accelerator.init_trackers("", config=simple_config)
+            except Exception as e:
+                logging.warning(f"Failed to initialize trackers with config: {e}")
+                # Initialize without config if there's an error
+                self.accelerator.init_trackers("")
         logging.info(f"Number of devices used in DDP training: {self.accelerator.num_processes}")
 
         # Set weight data type
