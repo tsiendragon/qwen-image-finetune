@@ -236,12 +236,12 @@ output_dir/
 
 **Real Example:**
 ```
-/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4/
+/raid/lilong/data/experiment/qwen-edit/
 └── face_segmentation_lora/
     ├── v0/
     │   ├── events.out.tfevents.1756887994.workspace-dgx3-lilong-559b7bd5d5-n5x66.616211.0
-    │   ├── 1756887994.3818905
-    │   ├── 1756887994.383021
+    │   ├── 1756887994.3818905/
+    │   ├── 1756887994.383021/
     │   ├── checkpoint-0-100/
     │   │   └── pytorch_lora_weights.safetensors
     │   └── checkpoint-0-200/

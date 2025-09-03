@@ -158,11 +158,15 @@ class QwenImageEditTrainer:
         # Setup versioned logging directory
         self.setup_versioned_logging_dir()
 
-        # Set logging_dir to the versioned output directory directly (no logs subdirectory)
-        logging_dir = self.config.logging.output_dir
+        # Set logging_dir to the versioned output directory directly
+        # Use project_dir as logging_dir to avoid extra subdirectory creation
         accelerator_project_config = ProjectConfiguration(
-            project_dir=self.config.logging.output_dir, logging_dir=logging_dir
+            project_dir=self.config.logging.output_dir,
+            logging_dir=self.config.logging.output_dir
         )
+
+        # Temporarily modify tracker_project_name to avoid double nesting
+        original_tracker_project_name = self.config.logging.tracker_project_name
 
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
@@ -170,6 +174,10 @@ class QwenImageEditTrainer:
             log_with=self.config.logging.report_to,
             project_config=accelerator_project_config,
         )
+
+        # Initialize tracker with empty project name to avoid subdirectory
+        if self.config.logging.report_to == "tensorboard":
+            self.accelerator.init_trackers("", config=vars(self.config))
         logging.info(f"Number of devices used in DDP training: {self.accelerator.num_processes}")
 
         # Set weight data type
@@ -697,11 +705,7 @@ class QwenImageEditTrainer:
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
 
-        # Initialize trackers
-        if self.accelerator.is_main_process:
-            self.accelerator.init_trackers(
-                self.config.logging.tracker_project_name, {"test": None}
-            )
+        # Trackers already initialized in setup_accelerator
         return train_dataloader
 
     def save_checkpoint(self, epoch, global_step):
