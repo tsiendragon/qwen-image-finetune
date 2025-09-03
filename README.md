@@ -171,14 +171,15 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
 > 💡 **Note**: Through LoRA fine-tuning, we achieve significant performance improvements for specific tasks while maintaining model efficiency and lightweight characteristics.
 ### Lora Training Performance
 
-|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed|
-|---|---|---|---|---|---|---|
-|2| bf16| True| False|A100|48.6 G | 18.3 s/it|
-|2 | fp4| True| False|A100 |22.47 | 10.6 s/it|
-| 2 | fbf16| True | True | A100 | 50.2 G | 10.34 s/it|
-| 2 | fp4 | True | True | A100 | 23.7 G | 10.8 s/it|
-| 2| fp4| True| True| rtx4090| 23.3/22.8G | 12.8 s/it|
-| 1| fp4| True| True| rtx4090| 18.8/17.9G | 6.34 s/it|
+|cache|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed|
+|---|---|---|---|---|---|---|---|
+|cache|2| bf16| True| False|A100|48.6 G | 18.3 s/it|
+|cache|2 | fp4| True| False|A100 |22.47 | 10.6 s/it|
+|cache| 2 | fbf16| True | True | A100 | 50.2 G | 10.34 s/it|
+|cache| 2 | fp4 | True | True | A100 | 23.7 G | 10.8 s/it|
+|cache| 2| fp4| True| True| rtx4090| 23.3/22.8G | 12.8 s/it|
+|non-cache|2| fp4| True| True|A100|54.8/53.9G| 20.1 s/it|
+|cache| 1| fp4| True| True| rtx4090| 18.8/17.9G | 6.34 s/it|
 
 ### Inference
 ```python

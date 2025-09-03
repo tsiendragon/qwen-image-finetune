@@ -306,6 +306,7 @@ class QwenImageEditTrainer:
 
         elif not self.use_cache and mode == "train":
             # Non-cache mode: need encoders
+            self.vae.to(self.accelerator.device)
             self.vae.decoder.cpu()
             torch.cuda.empty_cache()
             gc.collect()
@@ -433,34 +434,66 @@ class QwenImageEditTrainer:
     def _training_step_compute(self, batch):
         """Training step with embedding computation (no cache)"""
         image, control, prompt = batch["image"], batch["control"], batch["prompt"]
+        # convert to list
+        image = [x.cpu().numpy().transpose(1, 2, 0) for x in image]
+        control = [x.cpu().numpy().transpose(1, 2, 0) for x in control]
+        image = [Image.fromarray(x) for x in image]
+        control = [Image.fromarray(x) for x in control]
 
-        # Encode image and control image
-        pixel_latents = self.encode_image_embedding(image, self.accelerator.device)
-        control_latents = self.encode_image_embedding(control, self.accelerator.device)
+        # doing preprocessing
+
+        control_tensor, prompt_image_processed, height_control, width_control = self.adjust_image_size(control)
+        image_tensor, _, height_image, width_image = self.adjust_image_size(image)
 
         # Encode prompt
-        if random.random() < self.config.data.init_args.get('caption_dropout_rate', 0.1):
-            prompt = ""
-        prompt_embeds, prompt_embeds_mask = self.encode_prompt_image_embedding(
-            prompt, control, self.accelerator.device
+        new_prompts = []
+        # # random drop the prompt to be empty string
+        for p in prompt:
+            if random.random() < self.config.data.init_args.get('caption_dropout_rate', 0.1):
+                new_prompts.append("")
+            else:
+                new_prompts.append(p)
+
+        prompt = new_prompts
+
+        prompt_embeds, prompt_embeds_mask = self.encode_prompt(
+            image=prompt_image_processed,
+            prompt=prompt,
+            device=self.accelerator.device,
+        )
+        batch_size = image_tensor.shape[0]
+        _, image_latents = self.prepare_latents(
+            image_tensor,
+            batch_size,
+            self.num_channels_latents,
+            height_image,
+            width_image,
+            torch.bfloat16,
+            self.accelerator.device,
+            generator=None,
+            latents=None,
         )
 
-        # Normalize latent vectors
-        with torch.inference_mode():
-            latents_mean = (
-                torch.tensor(self.vae_latent_mean, dtype=self.weight_dtype)
-                .view(1, 1, self.vae_z_dim, 1, 1)
-                .to(pixel_latents.device, non_blocking=True)
-            )
-            latents_std = (
-                (1.0 / torch.tensor(self.vae_latent_std, dtype=self.weight_dtype))
-                .view(1, 1, self.vae_z_dim, 1, 1)
-                .to(pixel_latents.device, non_blocking=True)
-            )
-            pixel_latents = (pixel_latents - latents_mean) * latents_std
-            control_latents = (control_latents - latents_mean) * latents_std
+        _, control_latents = self.prepare_latents(
+            control_tensor,
+            batch_size,
+            self.num_channels_latents,
+            height_control,
+            width_control,
+            torch.bfloat16,
+            self.accelerator.device,
+            generator=None,
+            latents=None,
+        )
 
-        return self._compute_loss(pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask)
+        return self._compute_loss(
+            image_latents,
+            control_latents,
+            prompt_embeds,
+            prompt_embeds_mask,
+            height_image,
+            width_image
+        )
 
     def _compute_loss(self, pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask, height, width):
         """calculate the flowmatching loss
@@ -762,7 +795,10 @@ class QwenImageEditTrainer:
         # Setup components
         self.setup_accelerator()
         self.load_model()
+
         self.set_lora()
+        self.text_encoder.eval()
+        self.vae.eval()
         self.configure_optimizers()
         self.set_model_devices(mode="train")
         train_dataloader = self.accelerator_prepare(train_dataloader)
@@ -1287,8 +1323,6 @@ class QwenImageEditTrainer:
         num_images_per_prompt = 1  # 固定为1，支持单图像生成
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
-        print('image shape', [xxx.size for xxx in image])
-        print('prompt', prompt)
         with torch.inference_mode():
             prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, image, device)
         _, seq_len, _ = prompt_embeds.shape
@@ -1327,7 +1361,6 @@ class QwenImageEditTrainer:
         ).to(device)
 
         with torch.cuda.device(model_inputs.input_ids.device):          # 作用域内的 'cuda' 都指向同一张卡
-            print('input ids device', model_inputs.input_ids.device)
             outputs = self.text_encoder(
                 input_ids=model_inputs.input_ids,
                 attention_mask=model_inputs.attention_mask,
