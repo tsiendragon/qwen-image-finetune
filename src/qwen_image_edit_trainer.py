@@ -155,11 +155,14 @@ class QwenImageEditTrainer:
 
     def setup_accelerator(self):
         """Initialize accelerator and logging configuration"""
-        logging_dir = os.path.join(
-            self.config.logging.output_dir, self.config.logging.logging_dir
-        )
+        # Setup versioned logging directory
+        self.setup_versioned_logging_dir()
+
+        # Set logging_dir to the versioned output directory directly
+        # Use project_dir as logging_dir to avoid extra subdirectory creation
         accelerator_project_config = ProjectConfiguration(
-            project_dir=self.config.logging.output_dir, logging_dir=logging_dir
+            project_dir=self.config.logging.output_dir,
+            logging_dir=self.config.logging.output_dir
         )
 
         self.accelerator = Accelerator(
@@ -168,6 +171,28 @@ class QwenImageEditTrainer:
             log_with=self.config.logging.report_to,
             project_config=accelerator_project_config,
         )
+
+        # Initialize tracker with empty project name to avoid subdirectory
+        if self.config.logging.report_to == "tensorboard":
+            # Create a simple config dict with only basic types for TensorBoard
+            try:
+                simple_config = {
+                    "learning_rate": float(self.config.optimizer.init_args.get("lr", 0.0001)),
+                    "batch_size": int(self.config.data.batch_size),
+                    "max_train_steps": int(self.config.train.max_train_steps),
+                    "num_epochs": int(self.config.train.num_epochs),
+                    "gradient_accumulation_steps": int(self.config.train.gradient_accumulation_steps),
+                    "mixed_precision": str(self.config.train.mixed_precision),
+                    "lora_r": int(self.config.model.lora.r),
+                    "lora_alpha": int(self.config.model.lora.lora_alpha),
+                    "model_name": str(self.config.model.pretrained_model_name_or_path),
+                    "checkpointing_steps": int(self.config.train.checkpointing_steps),
+                }
+                self.accelerator.init_trackers("", config=simple_config)
+            except Exception as e:
+                logging.warning(f"Failed to initialize trackers with config: {e}")
+                # Initialize without config if there's an error
+                self.accelerator.init_trackers("")
         logging.info(f"Number of devices used in DDP training: {self.accelerator.num_processes}")
 
         # Set weight data type
@@ -282,6 +307,85 @@ class QwenImageEditTrainer:
             save_path, lora_state_dict, safe_serialization=True
         )
         logging.info(f"Saved LoRA weights to {save_path}")
+
+    def setup_versioned_logging_dir(self):
+        """设置版本化的日志目录"""
+        base_output_dir = self.config.logging.output_dir
+        project_name = self.config.logging.tracker_project_name
+
+        # 创建项目目录结构: output_dir/project_name/v0
+        project_dir = os.path.join(base_output_dir, project_name)
+
+        # 如果项目目录不存在，直接使用 v0
+        if not os.path.exists(project_dir):
+            versioned_dir = os.path.join(project_dir, "v0")
+            self.config.logging.output_dir = versioned_dir
+            logging.info(f"创建新的训练版本目录: {versioned_dir}")
+            return
+
+        # 查找现有版本
+        existing_versions = []
+        for item in os.listdir(project_dir):
+            item_path = os.path.join(project_dir, item)
+            if os.path.isdir(item_path) and item.startswith('v') and item[1:].isdigit():
+                version_num = int(item[1:])
+                existing_versions.append((version_num, item_path))
+
+        # 清理无效版本（训练步数 < 5）
+        valid_versions = []
+        for version_num, version_path in existing_versions:
+            if self._is_valid_training_version(version_path):
+                valid_versions.append(version_num)
+            else:
+                logging.info(f"移除无效训练版本: {version_path}")
+                shutil.rmtree(version_path)
+
+        # 确定新版本号
+        if valid_versions:
+            next_version = max(valid_versions) + 1
+        else:
+            next_version = 0
+
+        # 创建新版本目录
+        versioned_dir = os.path.join(project_dir, f"v{next_version}")
+        self.config.logging.output_dir = versioned_dir
+        logging.info(f"使用训练版本目录: {versioned_dir}")
+
+    def _is_valid_training_version(self, version_path):
+        """检查版本是否包含有效的训练数据（步数 >= 5）"""
+        # 检查 checkpoint 目录
+        checkpoints = []
+        if os.path.exists(version_path):
+            for item in os.listdir(version_path):
+                if item.startswith("checkpoint-") and os.path.isdir(os.path.join(version_path, item)):
+                    try:
+                        # 从 checkpoint-{epoch}-{global_step} 中提取 global_step
+                        parts = item.split('-')
+                        if len(parts) >= 3:
+                            global_step = int(parts[2])
+                            checkpoints.append(global_step)
+                    except (ValueError, IndexError):
+                        continue
+
+        # 检查 tensorboard 日志（现在直接在版本目录下）
+        has_logs = False
+        if os.path.exists(version_path):
+            # 查找 tensorboard 事件文件，可能在项目名子目录中
+            for root, dirs, files in os.walk(version_path):
+                log_files = [f for f in files if f.startswith('events.out.tfevents')]
+                if log_files:
+                    has_logs = True
+                    break
+
+        # 如果有检查点且最大步数 >= 5，或者只有日志文件但没有检查点，认为有效
+        if checkpoints:
+            return max(checkpoints) >= 5
+        elif has_logs:
+            # 如果只有日志但没有检查点，可能是训练刚开始就中断了，认为无效
+            return False
+        else:
+            # 既没有检查点也没有日志，认为无效
+            return False
 
     def merge_lora(self):
         """Merge LoRA weights into base model"""
@@ -413,7 +517,6 @@ class QwenImageEditTrainer:
         prompt_embeds_mask = batch["prompt_embeds_mask"].to(self.accelerator.device)
         prompt_embeds_mask = prompt_embeds_mask.to(torch.int64)  # original is int64 dtype
 
-
         image = batch['image']  # torch.tensor: B,C,H,W
         image = image[0].cpu().numpy()
         image = image.transpose(1, 2, 0)
@@ -536,8 +639,7 @@ class QwenImageEditTrainer:
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
             # prompt_embeds = prompt_embeds.repeat(batch_size, 1, 1)
 
-
-        # timesteps tensor([374., 749.], device='cuda:0')                                                                                                                                         packedinput shape torch.Size([2, 8208, 64])
+        # timesteps tensor([374., 749.], device='cuda:0') packedinput shape torch.Size([2, 8208, 64])
         # prompt_embeds shape torch.Size([4, 1071, 3584])
         # prompt_embeds_mask shape torch.Size([2, 1071])
         # img_shapes [[(1, 54, 76), (1, 54, 76)], [(1, 54, 76), (1, 54, 76)]]
@@ -618,11 +720,7 @@ class QwenImageEditTrainer:
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
 
-        # Initialize trackers
-        if self.accelerator.is_main_process:
-            self.accelerator.init_trackers(
-                self.config.logging.tracker_project_name, {"test": None}
-            )
+        # Trackers already initialized in setup_accelerator
         return train_dataloader
 
     def save_checkpoint(self, epoch, global_step):
@@ -773,8 +871,6 @@ class QwenImageEditTrainer:
         self.vae.eval()
         self.set_model_devices(mode="cache")
 
-
-
         # cache for each item
         dataset = train_dataloader.dataset
         for data in tqdm(dataset, total=len(dataset), desc="cache_embeddings"):
@@ -802,7 +898,6 @@ class QwenImageEditTrainer:
         self.configure_optimizers()
         self.set_model_devices(mode="train")
         train_dataloader = self.accelerator_prepare(train_dataloader)
-
 
         logging.info("***** Running training *****")
         logging.info(f"  Instantaneous batch size per device = {self.batch_size}")
@@ -1067,16 +1162,12 @@ class QwenImageEditTrainer:
             prompt_embeds_mask = prompt_embeds_mask.to(torch.int64)
             print('prompt_embeds_mask', prompt_embeds_mask.dtype)
 
-
-
-
         if do_true_cfg:
             # 清理显存以确保有足够空间进行 CFG
             torch.cuda.empty_cache()
             print('negative_prompt', negative_prompt)
 
             # 临时将 positive prompt embeddings 移到 CPU 以节省显存
-
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
                 image=prompt_image_processed,
                 prompt=negative_prompt,
@@ -1157,7 +1248,6 @@ class QwenImageEditTrainer:
             mu=mu,
         )
 
-        num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
         self._num_timesteps = len(timesteps)
 
         # 处理guidance

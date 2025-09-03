@@ -131,7 +131,7 @@ cache:
 
 # Logging configuration
 logging:
-  output_dir: "output/face_seg_training"
+  output_dir: "output/face_seg_training"  # Base directory, versions created automatically
   logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "qwen_image_finetune"
@@ -208,6 +208,50 @@ train:
 
 ## Training Execution
 
+### Automatic Version Management
+
+The framework automatically manages training versions to prevent data loss and enable easy comparison:
+
+**Directory Structure:**
+```
+output_dir/
+└── {tracker_project_name}/
+    ├── v0/                 # First training run
+    │   ├── events.out.tfevents.*
+    │   ├── checkpoint-0-100/
+    │   │   └── pytorch_lora_weights.safetensors
+    │   └── checkpoint-0-200/
+    │       └── pytorch_lora_weights.safetensors
+    ├── v1/                 # Second training run
+    │   ├── events.out.tfevents.*
+    │   └── checkpoints...
+    └── v2/                 # Third training run
+        └── ...
+```
+
+**Features:**
+- **Auto-versioning**: Creates `v0`, `v1`, `v2`... for each training run
+- **Invalid cleanup**: Removes versions with < 5 training steps (failed runs)
+- **Safe restart**: Never overwrites existing valid training data
+
+**Real Example:**
+```
+/raid/lilong/data/experiment/qwen-edit/
+└── face_segmentation_lora/
+    ├── v0/
+    │   ├── events.out.tfevents.1756887994.workspace-dgx3-lilong-559b7bd5d5-n5x66.616211.0
+    │   ├── 1756887994.3818905/
+    │   ├── 1756887994.383021/
+    │   ├── checkpoint-0-100/
+    │   │   └── pytorch_lora_weights.safetensors
+    │   └── checkpoint-0-200/
+    │       └── pytorch_lora_weights.safetensors
+    └── v1/
+        └── (next training run)
+```
+
+Note: `{tracker_project_name}` comes from your config's `logging.tracker_project_name` setting.
+
 ### Basic Training Workflow
 
 ```bash
@@ -218,11 +262,13 @@ cp configs/face_seg_fp4_4090.yaml configs/my_config.yaml
 # 2. Pre-compute embeddings (recommended for faster training)
 CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
 
-# 3. Start training
+# 3. Start training (automatically creates new version)
 CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 
 # 4. Monitor training progress
-tail -f output/*/logs/training.log
+tensorboard --logdir output_dir/{tracker_project_name}/ --port 6006
+# Or check TensorBoard logs directly:
+# ls output_dir/{tracker_project_name}/v*/
 ```
 
 ### Single GPU Training
@@ -456,4 +502,22 @@ rm -rf /path/to/cache/*
 
 # Rebuild cache
 CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
+```
+
+### Version Management
+```bash
+# Check existing versions
+ls output_dir/{tracker_project_name}/  # Shows: v0/ v1/ v2/ ...
+
+# Compare different versions
+tensorboard --logdir output_dir/{tracker_project_name}/ --port 6006
+
+# Access specific version checkpoints
+ls output_dir/{tracker_project_name}/v1/checkpoint-*
+
+# Access specific version TensorBoard logs
+ls output_dir/{tracker_project_name}/v1/
+
+# Remove all versions and start fresh
+rm -rf output_dir/{tracker_project_name}/v*
 ```

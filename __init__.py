@@ -1,13 +1,20 @@
-"""
-Qwen Image Finetune - 千问视觉模型微调工具包
+"""Qwen Image Finetune - Parameter-efficient fine-tuning for Qwen image editing models"""
 
-一个基于PyTorch和Transformers的专业图像编辑模型训练框架，
-支持QwenVL图像编辑模型的高效微调和推理。
-"""
+from pathlib import Path
 
-__version__ = "0.2.0"
-__author__ = "lilong"
-__description__ = "Professional image editing model training framework based on QwenVL"
+# Read version from VERSION file
+_version_file = Path(__file__).parent / "VERSION"
+if _version_file.exists():
+    __version__ = _version_file.read_text().strip()
+else:
+    __version__ = "unknown"
 
-# 导出主要版本信息
-VERSION = __version__
+__author__ = "Lilong"
+__description__ = "A framework for fine-tuning Qwen image editing models with LoRA and quantization support"
+
+try:
+    from . import src
+    __all__ = ["src", "__version__"]
+except ImportError:
+    # Handle case when imported directly
+    __all__ = ["__version__"]
