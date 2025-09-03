@@ -6,7 +6,7 @@ __pycache__/
 # C extensions
 *.so
 sub_modules/
-
+test_ic*
 # Distribution / packaging
 tests/outputs/
 .Python

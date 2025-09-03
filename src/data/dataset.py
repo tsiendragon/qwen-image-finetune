@@ -26,7 +26,7 @@ class ImageDataset(Dataset):
         初始化数据集
         Args:
             data_config: 包含数据集路径和配置的字典
-                - dataset_path: 数据集根目录路径
+                - dataset_path: 数据集根目录路径，可以是单个路径字符串或路径列表
                 - image_size: 图像尺寸 [img_w, img_h]，默认为(512, 512)
                 - cache_dir: 缓存目录路径，如果提供则启用缓存
                 - use_cache: 是否使用缓存，默认为 True
@@ -38,7 +38,14 @@ class ImageDataset(Dataset):
 
         """
         self.data_config = data_config
-        self.dataset_path = data_config.get('dataset_path', './dataset')
+        dataset_path = data_config.get('dataset_path', './dataset')
+
+        # 支持多个数据集路径
+        if isinstance(dataset_path, (list, tuple)):
+            self.dataset_paths = list(dataset_path)
+        else:
+            self.dataset_paths = [dataset_path]
+
         self.image_size = data_config.get('image_size', None)
         self.cache_dir = data_config.get('cache_dir', None)
         self.use_cache = data_config.get('use_cache', True)
@@ -53,7 +60,7 @@ class ImageDataset(Dataset):
         self.center_crop_ratio = data_config.get('center_crop_ratio', 1.0)
 
         # 初始化缓存管理器
-        if self.use_cache:
+        if self.use_cache and self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
             self.cache_manager = EmbeddingCacheManager(self.cache_dir)
             print(f"缓存已启用，缓存目录: {self.cache_dir}")
@@ -61,16 +68,9 @@ class ImageDataset(Dataset):
             self.cache_manager = None
             print("缓存未启用")
 
-        self.cache_exists = check_cache_exists(self.cache_dir)
+        self.cache_exists = check_cache_exists(self.cache_dir) if self.cache_dir else False
 
-        self.images_dir = self._find_images_directory()
-        self.control_dir = self._find_control_directory()
-
-        # 检查目录是否存在
-        if not os.path.exists(self.images_dir):
-            raise ValueError(f"Images directory not found: {self.images_dir}")
-        if not os.path.exists(self.control_dir):
-            raise ValueError(f"Control directory not found: {self.control_dir}")
+        self.images_dirs, self.control_dirs = self._find_directories()
 
         # 扫描所有图像文件
         self.image_files = self._scan_image_files()
@@ -204,70 +204,106 @@ class ImageDataset(Dataset):
         img = img.transpose(2, 0, 1)
         return img
 
-    def _find_images_directory(self):
-        """查找图像目录，支持多种命名方式"""
-        possible_names = ['training_images', 'images', 'target_images']
+    def _find_directories(self):
+        """查找所有数据集路径下的图像和控制图像目录"""
+        images_dirs = []
+        control_dirs = []
 
-        for name in possible_names:
-            path = os.path.join(self.dataset_path, name)
-            if os.path.exists(path):
-                print(f"Found images directory: {path}")
-                return path
+        image_possible_names = ['training_images', 'images', 'target_images']
+        control_possible_names = ['control_images', 'control', 'condition_images']
 
-        # 如果都没找到，默认返回第一个选项
-        return os.path.join(self.dataset_path, 'training_images')
-
-    def _find_control_directory(self):
-        """查找控制图像目录，支持多种命名方式"""
-        possible_names = ['control_images', 'control', 'condition_images']
-
-        for name in possible_names:
-            path = os.path.join(self.dataset_path, name)
-            if os.path.exists(path):
-                print(f"Found control directory: {path}")
-                return path
-
-        # 如果都没找到，默认返回第一个选项
-        return os.path.join(self.dataset_path, 'control_images')
-
-    def _scan_image_files(self):
-        """扫描数据集中的所有图像文件"""
-        image_files = []
-
-        # 获取images目录下的所有图像文件
-        image_patterns = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
-        for pattern in image_patterns:
-            files = glob.glob(os.path.join(self.images_dir, pattern))
-            image_files.extend(files)
-
-        # 过滤掉没有对应control图像和caption的文件
-        valid_files = []
-        for image_file in image_files:
-            # 获取文件名（不含扩展名）
-            base_name = os.path.splitext(os.path.basename(image_file))[0]
-
-            # 检查是否存在对应的control图像
-            control_file = None
-            for ext in ['.jpg', '.jpeg', '.png', '.bmp']:
-                control_path = os.path.join(self.control_dir, base_name + ext)
-                if os.path.exists(control_path):
-                    control_file = control_path
+        for dataset_path in self.dataset_paths:
+            # 查找图像目录
+            images_dir = None
+            for name in image_possible_names:
+                path = os.path.join(dataset_path, name)
+                if os.path.exists(path):
+                    print(f"Found images directory: {path}")
+                    images_dir = path
                     break
 
-            # 检查是否存在对应的caption文件
-            caption_file = os.path.join(self.images_dir, base_name + '.txt')
+            if images_dir is None:
+                # 如果都没找到，使用默认路径
+                images_dir = os.path.join(dataset_path, 'training_images')
+                print(f"Using default images directory: {images_dir}")
 
-            if control_file and os.path.exists(caption_file):
-                valid_files.append({
-                    'image': image_file,
-                    'control': control_file,
-                    'caption': caption_file
-                })
-            else:
-                print(f"Warning: Skipping {image_file} - missing control image or caption file")
+            # 查找控制图像目录
+            control_dir = None
+            for name in control_possible_names:
+                path = os.path.join(dataset_path, name)
+                if os.path.exists(path):
+                    print(f"Found control directory: {path}")
+                    control_dir = path
+                    break
 
-        print(f"Found {len(valid_files)} valid image pairs")
-        return valid_files
+            if control_dir is None:
+                # 如果都没找到，使用默认路径
+                control_dir = os.path.join(dataset_path, 'control_images')
+                print(f"Using default control directory: {control_dir}")
+
+            # 检查目录是否存在
+            if not os.path.exists(images_dir):
+                print(f"Warning: Images directory not found: {images_dir}")
+                continue
+            if not os.path.exists(control_dir):
+                print(f"Warning: Control directory not found: {control_dir}")
+                continue
+
+            images_dirs.append(images_dir)
+            control_dirs.append(control_dir)
+
+        if not images_dirs:
+            raise ValueError("No valid dataset directories found")
+
+        return images_dirs, control_dirs
+
+    def _scan_image_files(self):
+        """扫描所有数据集中的图像文件"""
+        all_valid_files = []
+
+        # 遍历所有数据集目录
+        for i, (images_dir, control_dir) in enumerate(zip(self.images_dirs, self.control_dirs)):
+            print(f"Scanning dataset {i+1}: {images_dir}")
+            image_files = []
+
+            # 获取images目录下的所有图像文件
+            image_patterns = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
+            for pattern in image_patterns:
+                files = glob.glob(os.path.join(images_dir, pattern))
+                image_files.extend(files)
+
+            # 过滤掉没有对应control图像和caption的文件
+            valid_files = []
+            for image_file in image_files:
+                # 获取文件名（不含扩展名）
+                base_name = os.path.splitext(os.path.basename(image_file))[0]
+
+                # 检查是否存在对应的control图像
+                control_file = None
+                for ext in ['.jpg', '.jpeg', '.png', '.bmp']:
+                    control_path = os.path.join(control_dir, base_name + ext)
+                    if os.path.exists(control_path):
+                        control_file = control_path
+                        break
+
+                # 检查是否存在对应的caption文件
+                caption_file = os.path.join(images_dir, base_name + '.txt')
+
+                if control_file and os.path.exists(caption_file):
+                    valid_files.append({
+                        'image': image_file,
+                        'control': control_file,
+                        'caption': caption_file,
+                        'dataset_index': i  # 记录来自哪个数据集
+                    })
+                else:
+                    print(f"Warning: Skipping {image_file} - missing control image or caption file")
+
+            print(f"Dataset {i+1} found {len(valid_files)} valid image pairs")
+            all_valid_files.extend(valid_files)
+
+        print(f"Total found {len(all_valid_files)} valid image pairs from {len(self.images_dirs)} datasets")
+        return all_valid_files
 
     def __len__(self):
         """返回数据集大小"""

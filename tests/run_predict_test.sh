@@ -16,9 +16,22 @@ LORA_WEIGHT='/raid/lilong/data/experiment/qwen-edit-face_seg_lora/checkpoint-89-
 # LORA_WEIGHT='/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4/checkpoint-99-1000/pytorch_lora_weights.safetensors'
 LORA_WEIGHT='/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4-4090/checkpoint-99-500/pytorch_lora_weights.safetensors'
 LORA_WEIGHT='/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4-4090/checkpoint-79-400/pytorch_lora_weights.safetensors'
+LORA_WEIGHT='/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/checkpoint-0-100/pytorch_lora_weights.safetensors'
+LORA_WEIGHT='/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/checkpoint-1-2100/pytorch_lora_weights.safetensors'
+IMAGE_PATH='/data/lilong/ktp/ktp/dataset1/control_images/OCR_KTP_CHECK-f40e57645e144433_20190529023443445_2094134257_original_sample_040.jpg'
+
+PROMPT_TEXT='/data/lilong/ktp/ktp/dataset1/training_images/OCR_KTP_CHECK-f40e57645e144433_20190529023443445_2094134257_original_sample_040.txt'
+PROMPT_TEXT='/home/lilong/repos/qwen-image-finetune/data/test_ic_prompt.txt'
+IMAGE_PATH='/home/lilong/repos/qwen-image-finetune/data/test_ic.png'
+IMAGE_PATH='/data/lilong/ktp/test_dataset/control_images/test_047_OCR_KTP_CHECK-0feb983e5a3f2a61_20190529025939148_2904398016.jpg'
+PROMPT_TEXT='/data/lilong/ktp/test_dataset/training_images/test_047_OCR_KTP_CHECK-0feb983e5a3f2a61_20190529025939148_2904398016.txt'
+IMAGE_PATH='/data/lilong/ktp/test_dataset/control_images/test_009_OCR_KTP_CHECK-6541f4a1bc55408d_20190529181925938_9190064570.jpg'
+PROMPT_TEXT='/data/lilong/ktp/test_dataset/training_images/test_009_OCR_KTP_CHECK-6541f4a1bc55408d_20190529181925938_9190064570.txt'
+cfg_scale=4.5
 OUTPUT_DIR="tests/outputs/$(date +%Y%m%d_%H%M%S)"
 config_file='configs/face_seg_config.yaml'
 config_file='configs/face_seg_fp4_4090.yaml'
+config_file='configs/qwen_image_edit_config_inpainting.yaml'
 # config_file='configs/face_seg_fp4_config.yaml'
 echo "=== Qwen Image Edit 预测测试 ==="
 
@@ -33,18 +46,20 @@ if [ -f "$LORA_WEIGHT" ]; then
     echo "运行对比测试 (基础模型 vs LoRA模型)"
     python tests/test_predict.py \
         --image "$IMAGE_PATH" \
-        --prompt-text "$PROMPT_TEXT" \
+        --prompt "$PROMPT_TEXT" \
         --lora-weight "$LORA_WEIGHT" \
         --output-dir "$OUTPUT_DIR" \
         --config "$config_file" \
+        --cfg-scale $cfg_scale \
         --compare
 else
     echo "LoRA权重不存在，仅测试基础模型"
     python tests/test_predict.py \
         --image "$IMAGE_PATH" \
-        --prompt-text "$PROMPT_TEXT" \
+        --prompt "$PROMPT_TEXT" \
         --output-dir "$OUTPUT_DIR" \
-        --config "$config_file"
+        --config "$config_file" \
+        --cfg-scale $cfg_scale
 fi
 
 echo "=== 测试完成 ==="

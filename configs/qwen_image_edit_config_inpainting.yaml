@@ -1,6 +1,6 @@
 model:
-  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
-  # pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"  # 4bit
+  # pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
+  pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"  # 4bit
   # pretrained_model_name_or_path: "patientxtr/qwen-image-edit-fp8-e5m2"
   rank: 16
   quantize: False
@@ -9,32 +9,28 @@ model:
     lora_alpha: 16
     init_lora_weights: "gaussian"
     target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
-    pretrained_weight: null
+    pretrained_weight: /data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/checkpoint-1-2100/pytorch_lora_weights.safetensors
 
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     # 支持单个数据集路径
     # dataset_path: "/raid/lilong/data/kyc_gen/aligned/"
-
     # 支持多个数据集路径（推荐使用）
     dataset_path:
-      - "/raid/lilong/data/kyc_gen/aligned/"
-      - "/raid/lilong/data/kyc_gen/dataset2/"
-      - "/raid/lilong/data/kyc_gen/dataset3/"
-
+      - /data/lilong/ktp/ktp/dataset1/
+      - /data/lilong/ktp/ktp/dataset1_crop/
     image_size: [832, 576]
     caption_dropout_rate: 0.1
     prompt_image_dropout_rate: 0.1
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
-  batch_size: 4
+  batch_size: 5
   num_workers: 2
   shuffle: true
 
 logging:
-  # output_dir: "/mnt/dgx3-raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/"
-  output_dir: "/raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/"
+  output_dir: "/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/"
   logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "lora_test"
@@ -42,7 +38,7 @@ logging:
 optimizer:
   class_path: bnb.optim.Adam8bit
   init_args:
-    lr: 0.0002
+    lr: 0.00005
     betas: [0.9, 0.999]
   # class_path: "torch.optim.AdamW"
   # init_args:
@@ -59,8 +55,8 @@ lr_scheduler:
 
 train:
   gradient_accumulation_steps: 1
-  max_train_steps: 3000
-  num_epochs: 3
+  max_train_steps: 10000
+  num_epochs: 100
   checkpointing_steps: 100
   checkpoints_total_limit: 50
   max_grad_norm: 1.0
@@ -68,17 +64,16 @@ train:
   gradient_checkpointing: True  # 启用梯度检查点以节省显存
 
 cache:
-  vae_encoder_device: cuda:0
-  text_encoder_device: cuda:1
-  # cache_dir: "/mnt/dgx3-raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/cache"
-  cache_dir: "/raid/lilong/data/kyc_gen/logs/id_card_qwen_image_lora/cache"
+  vae_encoder_device: cuda:6
+  text_encoder_device: cuda:7
+  cache_dir: "/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/cache"
   use_cache: true
 
 predict:
   devices:
-    vae: cuda:0
-    text_encoder: cuda:1
-    transformer: cuda:1
+    vae: cuda:6
+    text_encoder: cuda:7
+    transformer: cuda:7
 
 # Additional training parameters that may be needed
 resume_from_checkpoint: "latest"

@@ -21,3 +21,7 @@ ipykernel
 optimum-quanto
 bitsandbytes
 transformer_engine[pytorch]
+packaging
+ninja
+wheel
+setuptools

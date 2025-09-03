@@ -232,6 +232,16 @@ class QwenImageEditTrainer:
         self.transformer.to(self.accelerator.device)
 
         self.transformer.add_adapter(lora_config)
+
+        # 如果配置中提供了预训练的LoRA权重，则加载它们
+        if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
+            try:
+                self.load_lora(self.config.model.lora.pretrained_weight)
+                logging.info(f"成功加载预训练LoRA权重: {self.config.model.lora.pretrained_weight}")
+            except Exception as e:
+                logging.error(f"加载预训练LoRA权重失败: {e}")
+                logging.info("将继续使用初始化的LoRA权重进行训练")
+
         self.transformer.requires_grad_(False)
         self.transformer.train()
 
