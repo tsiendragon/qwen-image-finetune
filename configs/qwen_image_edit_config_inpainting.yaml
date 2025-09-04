@@ -9,7 +9,8 @@ model:
     lora_alpha: 16
     init_lora_weights: "gaussian"
     target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
-    pretrained_weight: /data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/checkpoint-1-2100/pytorch_lora_weights.safetensors
+    adapter_name: "lora_edit"
+    pretrained_weight: null
 
 data:
   class_path: "src.data.dataset.ImageDataset"
@@ -33,7 +34,7 @@ logging:
   output_dir: "/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/"
   logging_dir: "logs"
   report_to: "tensorboard"
-  tracker_project_name: "lora_test"
+  tracker_project_name: "lora_test3"
 
 optimizer:
   class_path: bnb.optim.Adam8bit
@@ -57,11 +58,12 @@ train:
   gradient_accumulation_steps: 1
   max_train_steps: 10000
   num_epochs: 100
-  checkpointing_steps: 100
+  checkpointing_steps: 10
   checkpoints_total_limit: 50
   max_grad_norm: 1.0
   mixed_precision: "bf16"
   gradient_checkpointing: True  # 启用梯度检查点以节省显存
+  resume_from_checkpoint: null
 
 cache:
   vae_encoder_device: cuda:6
@@ -71,9 +73,8 @@ cache:
 
 predict:
   devices:
-    vae: cuda:6
-    text_encoder: cuda:7
-    transformer: cuda:7
+    vae: cuda:4
+    text_encoder: cuda:5
+    transformer: cuda:5
 
-# Additional training parameters that may be needed
-resume_from_checkpoint: "latest"
+
