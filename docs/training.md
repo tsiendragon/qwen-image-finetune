@@ -407,6 +407,134 @@ model:
   quantize: false
 ```
 
+## Resume Training
+
+The framework supports resuming training from previously saved checkpoints, allowing you to continue interrupted training sessions or extend training with additional epochs.
+
+### How Resume Training Works
+
+When training is interrupted or you want to continue from a specific checkpoint, the resume feature:
+
+1. **Loads Model State**: Restores LoRA weights from the checkpoint
+2. **Restores Training State**: Recovers optimizer state, learning rate scheduler, epoch count, and global step
+3. **Continues Seamlessly**: Picks up training exactly where it left off
+
+### Configuration
+
+Add the `resume_from_checkpoint` parameter to your training configuration:
+
+```yaml
+train:
+  num_epochs: 10
+  max_train_steps: 1000
+  checkpointing_steps: 100
+  checkpoints_total_limit: 5
+  resume_from_checkpoint: "/path/to/checkpoint-folder"  # Specify checkpoint path
+  # OR
+  resume_from_checkpoint: "latest"  # Automatically find latest checkpoint
+
+# Example with full config
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen2-VL-7B-Instruct"
+  lora:
+    r: 16
+    lora_alpha: 32
+    target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
+
+data:
+  init_args:
+    dataset_path: "data/face_seg"
+    batch_size: 2
+
+train:
+  num_epochs: 10
+  max_train_steps: 1000
+  checkpointing_steps: 100
+  resume_from_checkpoint: "latest"  # Resume from latest checkpoint
+```
+
+### Resume Options
+
+#### 1. Resume from Latest Checkpoint
+```yaml
+train:
+  resume_from_checkpoint: "latest"
+```
+Automatically finds and resumes from the most recent checkpoint in the output directory.
+
+#### 2. Resume from Specific Checkpoint
+```yaml
+train:
+  resume_from_checkpoint: "/path/to/output/checkpoint-5-500"
+```
+Resumes from a specific checkpoint folder. The path should point to a checkpoint directory containing:
+- `model.safetensors` (LoRA weights)
+- `optimizer.bin` (optimizer state)
+- `scheduler.bin` (learning rate scheduler state)
+- `state.json` (training metadata: epoch, global_step)
+
+### Usage Examples
+
+#### Basic Resume Training
+```bash
+# First training run
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+
+# Resume from latest checkpoint (modify config to add resume_from_checkpoint: "latest")
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+```
+
+#### Resume with Extended Training
+```bash
+# Original training: 1000 steps
+# Modify config: max_train_steps: 2000, resume_from_checkpoint: "latest"
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+```
+
+#### Resume from Specific Checkpoint
+```bash
+# Check available checkpoints
+ls output_dir/{tracker_project_name}/v0/checkpoint-*
+
+# Resume from specific checkpoint (update config)
+# resume_from_checkpoint: "output_dir/{tracker_project_name}/v0/checkpoint-5-500"
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+```
+
+### Checkpoint Structure
+
+Each checkpoint contains:
+```
+checkpoint-{epoch}-{global_step}/
+├── model.safetensors          # LoRA adapter weights
+├── optimizer.bin              # Optimizer state (AdamW parameters, momentum, etc.)
+├── scheduler.bin              # Learning rate scheduler state
+├── state.json                 # Training metadata
+└── random_states_0.pkl        # Random number generator states
+```
+
+### Best Practices
+
+1. **Regular Checkpointing**: Set reasonable `checkpointing_steps` (e.g., every 100-500 steps)
+2. **Checkpoint Limits**: Use `checkpoints_total_limit` to manage disk space
+3. **Backup Important Checkpoints**: Save key checkpoints before experimenting
+4. **Validate Resume**: Check that training loss continues smoothly after resume
+
+### Troubleshooting Resume Training
+
+#### Checkpoint Not Found
+```bash
+# Check if checkpoint exists
+ls /path/to/checkpoint/
+# Should contain: model.safetensors, optimizer.bin, scheduler.bin, state.json
+```
+
+#### Configuration Mismatch
+Ensure the model configuration (LoRA rank, target modules) matches the original training setup.
+
+#### Memory Issues After Resume
+The resumed training uses the same memory as the original training. If you encounter OOM errors, the issue likely existed in the original training.
+
 ## Using Pretrained LoRA Weights
 
 You can initialize training with pretrained LoRA weights by specifying the `pretrained_weight` parameter in your configuration.

@@ -10,6 +10,7 @@ This repository provides a comprehensive framework for fine-tuning Qwen Vision-L
 
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
+- **Resume Training**: Seamless training resumption from checkpoints with full state recovery
 - **Multi-GPU Support**: Distributed training capabilities with gradient accumulation
 - **Quantization Support**: FP4/INT8 quantization for reduced memory usage
 - **Flexible Architecture**: Modular design supporting various vision-language tasks
@@ -61,6 +62,9 @@ cp configs/face_seg_config.yaml configs/my_config.yaml
 CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cache
 
 # 4. start training
+CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+
+# 5. resume training (add resume_from_checkpoint: "latest" to config)
 CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 ```
 
