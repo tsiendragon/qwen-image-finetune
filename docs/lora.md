@@ -186,10 +186,30 @@ And load it by
 transformer.load_lora_adapter('<path_to_lora>/pytorch_lora_weights.safetensors', prefix='transformer', adapter_name='lora_edit')
 ```
 
-
-
 The parameter key will aotmatically converted to
 
 ```
 transformer_blocks.0.attn.to_q.lora_A.lora_edit.weight
 ```
+
+## save by accelerator
+
+```
+self.accelerator.save_state(save_path)
+>>>
+89M	checkpoint-0-10/model.safetensors
+178M	checkpoint-0-10/optimizer.bin
+16K	checkpoint-0-10/random_states_0.pkl
+4.0K	checkpoint-0-10/scheduler.bin
+4.0K	checkpoint-0-10/state.json
+```
+We got saved
+
+
+In this case, you cannot load by `load_lora_adapter` since it is the PEFT style. You could only add lora adapter first, and then load the statedict keys.
+
+```
+transformer.add_adapter(lora_config, adapter_name='lora_edit')  # ← 命名 LoRA
+missing, enexpected = transformer.load_state_dict(safetensors.torch.load_file(lora_weight), strict=False)
+```
+

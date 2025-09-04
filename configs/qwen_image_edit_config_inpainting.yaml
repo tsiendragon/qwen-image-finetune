@@ -26,7 +26,7 @@ data:
     prompt_image_dropout_rate: 0.1
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
-  batch_size: 5
+  batch_size: 4
   num_workers: 2
   shuffle: true
 
@@ -58,12 +58,12 @@ train:
   gradient_accumulation_steps: 1
   max_train_steps: 10000
   num_epochs: 100
-  checkpointing_steps: 10
+  checkpointing_steps: 100
   checkpoints_total_limit: 50
   max_grad_norm: 1.0
   mixed_precision: "bf16"
   gradient_checkpointing: True  # 启用梯度检查点以节省显存
-  resume_from_checkpoint: null
+  resume_from_checkpoint: /data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/lora_test3/v2/checkpoint-0-50
 
 cache:
   vae_encoder_device: cuda:6

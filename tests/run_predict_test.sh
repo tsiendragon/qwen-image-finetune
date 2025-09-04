@@ -18,6 +18,8 @@ LORA_WEIGHT='/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4-4090/check
 LORA_WEIGHT='/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4-4090/checkpoint-79-400/pytorch_lora_weights.safetensors'
 LORA_WEIGHT='/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/checkpoint-0-100/pytorch_lora_weights.safetensors'
 LORA_WEIGHT='/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/checkpoint-1-2100/pytorch_lora_weights.safetensors'
+# LORA_WEIGHT='/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/checkpoint-2-2900/pytorch_lora_weights.safetensors'
+# LORA_WEIGHT='/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/checkpoint-2-3000/pytorch_lora_weights.safetensors'
 IMAGE_PATH='/data/lilong/ktp/ktp/dataset1/control_images/OCR_KTP_CHECK-f40e57645e144433_20190529023443445_2094134257_original_sample_040.jpg'
 
 PROMPT_TEXT='/data/lilong/ktp/ktp/dataset1/training_images/OCR_KTP_CHECK-f40e57645e144433_20190529023443445_2094134257_original_sample_040.txt'
