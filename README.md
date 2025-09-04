@@ -64,7 +64,7 @@ CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cach
 # 4. start training
 CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 
-# 5. resume training (add resume_from_checkpoint: "latest" to config)
+# 5. resume training (add resume_from_checkpoint: to config)
 CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 ```
 
