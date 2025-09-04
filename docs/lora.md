@@ -210,6 +210,6 @@ In this case, you cannot load by `load_lora_adapter` since it is the PEFT style.
 
 ```
 transformer.add_adapter(lora_config, adapter_name='lora_edit')  # ← 命名 LoRA
-missing, enexpected = transformer.load_state_dict(safetensors.torch.load_file(lora_weight), strict=False)
+missing, unexpected = transformer.load_state_dict(safetensors.torch.load_file(lora_weight), strict=False)
 ```
 
