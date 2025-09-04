@@ -407,6 +407,28 @@ model:
   quantize: false
 ```
 
+## Resume Training
+
+Resume training from saved checkpoints to continue interrupted sessions or extend training epochs.
+
+### Configuration
+
+Add `resume_from_checkpoint` to your config:
+
+```yaml
+train:
+  resume_from_checkpoint: "/path/to/checkpoint-5-500"  # Specific checkpoint
+```
+
+### Usage
+
+```bash
+# Resume from latest checkpoint
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+```
+
+The framework automatically restores LoRA weights, optimizer state, scheduler state, and training progress (epoch/step count).
+
 ## Using Pretrained LoRA Weights
 
 You can initialize training with pretrained LoRA weights by specifying the `pretrained_weight` parameter in your configuration.

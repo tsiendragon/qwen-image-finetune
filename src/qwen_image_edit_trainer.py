@@ -5,6 +5,7 @@ import torch
 import random
 import PIL
 import gc
+import json
 import numpy as np
 from typing import Optional, Union, List, Tuple
 from PIL import Image
@@ -48,6 +49,22 @@ def get_lora_layers(model):
     return lora_layers
 
 
+def classify(lora_weight):
+    import safetensors.torch
+    import re
+
+    sd = safetensors.torch.load_file(lora_weight)
+    keys = list(sd.keys())
+    peft = any(re.search(r"\.lora_[AB](\.|$)", k) for k in keys)
+    diff = any(".lora.down.weight" in k or ".lora.up.weight" in k for k in keys)
+    proc = any(".processor" in k for k in keys)
+    if peft and not diff:
+        return "PEFT"
+    if diff:
+        return "DIFFUSERS(attn-processor)" if proc else "DIFFUSERS"
+    return "UNKNOWN"
+
+
 class QwenImageEditTrainer:
     """Trainer class based on QwenImageEditPipeline"""
 
@@ -81,6 +98,7 @@ class QwenImageEditTrainer:
         self.vae_latent_mean = None
         self.vae_latent_std = None
         self.vae_z_dim = None
+        self.adapter_name = config.model.lora.adapter_name
 
     def load_model(self, text_encoder_device=None):
         """Load and separate components from QwenImageEditPipeline"""
@@ -211,24 +229,6 @@ class QwenImageEditTrainer:
         logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
     def quantize_model(self, model, device):
-        # """FP8 quantize model"""
-        # from optimum.quanto import quantize, qfloat8, freeze
-
-        # model = model.to('cpu')
-        # torch.cuda.empty_cache()  # save memory
-
-        # torch_dtype = self.weight_dtype
-        # all_blocks = list(model.transformer_blocks)
-        # for block in tqdm(all_blocks):
-        #     block.to('cpu', dtype=torch_dtype)
-        #     quantize(block, weights=qfloat8)
-        #     freeze(block)
-        #     # block.to("cpu")
-        # model.to('cpu', dtype=torch_dtype)
-        # quantize(model, weights=qfloat8)
-        # freeze(model)
-        # model.to(device)
-        # return model
         from src.models.quantize import quantize_model_to_fp8
         model = quantize_model_to_fp8(
             model,
@@ -253,19 +253,31 @@ class QwenImageEditTrainer:
             target_modules=self.config.model.lora.target_modules,
         )
 
-        # Configure model
-        self.transformer.to(self.accelerator.device)
-
-        self.transformer.add_adapter(lora_config)
-
-        # 如果配置中提供了预训练的LoRA权重，则加载它们
         if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
-            try:
-                self.load_lora(self.config.model.lora.pretrained_weight)
-                logging.info(f"成功加载预训练LoRA权重: {self.config.model.lora.pretrained_weight}")
-            except Exception as e:
-                logging.error(f"加载预训练LoRA权重失败: {e}")
-                logging.info("将继续使用初始化的LoRA权重进行训练")
+            lora_type = classify(self.config.model.lora.pretrained_weight)
+            # DIFFUSERS can be loaded directly, otherwise, need to add lora first
+            if lora_type != "PEFT":
+                self.load_lora(self.config.model.lora.pretrained_weight, adapter_name=self.adapter_name)
+            else:
+                # add lora first
+                # Configure model
+                import safetensors.torch
+                self.transformer.add_adapter(lora_config, adapter_name=self.adapter_name)
+                self.transformer.set_adapter(self.adapter_name)
+                missing, unexpected = self.transformer.load_state_dict(
+                    safetensors.torch.load_file(self.config.model.lora.pretrained_weight),
+                    strict=False,
+                )
+                if len(unexpected) > 0:
+                    raise ValueError(f"Unexpected keys: {unexpected}")
+                print('missing keys', len(missing), missing[0])
+                # self.load_lora(self.config.model.lora.pretrained_weight)
+            logging.info(f"set_lora: Loaded lora from {self.config.model.lora.pretrained_weight}")
+        else:
+            self.transformer.add_adapter(lora_config, adapter_name=self.adapter_name)
+            self.transformer.set_adapter(self.adapter_name)
+
+        self.transformer.to(self.accelerator.device)
 
         self.transformer.requires_grad_(False)
         self.transformer.train()
@@ -286,11 +298,11 @@ class QwenImageEditTrainer:
 
         logging.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
-    def load_lora(self, pretrained_weight):
+    def load_lora(self, pretrained_weight, adapter_name='default'):
         """Load pretrained LoRA weights"""
         if pretrained_weight is not None:
             # 使用 load_lora_adapter 方法而不是 load_adapter
-            self.transformer.load_lora_adapter(pretrained_weight)
+            self.transformer.load_lora_adapter(pretrained_weight, adapter_name=adapter_name)
             logging.info(f"Loaded LoRA weights from {pretrained_weight}")
 
     def save_lora(self, save_path):
@@ -300,7 +312,7 @@ class QwenImageEditTrainer:
             unwrapped_transformer = unwrapped_transformer._orig_mod
 
         lora_state_dict = convert_state_dict_to_diffusers(
-            get_peft_model_state_dict(unwrapped_transformer)
+            get_peft_model_state_dict(unwrapped_transformer, adapter_name=self.adapter_name)
         )
 
         QwenImageEditPipeline.save_lora_weights(
@@ -338,7 +350,10 @@ class QwenImageEditTrainer:
                 valid_versions.append(version_num)
             else:
                 logging.info(f"移除无效训练版本: {version_path}")
-                shutil.rmtree(version_path)
+                try:
+                    shutil.rmtree(version_path)
+                except Exception as e:
+                    logging.info(f"移除无效训练版本失败: {version_path}, {e}")
 
         # 确定新版本号
         if valid_versions:
@@ -713,6 +728,11 @@ class QwenImageEditTrainer:
         # 根据配置决定是否启用梯度检查点
         if self.config.train.gradient_checkpointing:
             self.transformer.enable_gradient_checkpointing()
+        if self.config.train.resume_from_checkpoint is not None:
+            # self.accelerator.load_state(self.config.train.resume_from_checkpoint)
+            self.optimizer.load_state_dict(torch.load(os.path.join(self.config.train.resume_from_checkpoint, "optimizer.bin")))
+            self.lr_scheduler.load_state_dict(torch.load(os.path.join(self.config.train.resume_from_checkpoint, "scheduler.bin")))
+            logging.info(f"Loaded optimizer and scheduler from {self.config.train.resume_from_checkpoint}")
 
         lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
             lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
@@ -727,30 +747,38 @@ class QwenImageEditTrainer:
         """Save checkpoint"""
         if not self.accelerator.is_main_process:
             return
-
-        # Manage checkpoint count
-        if self.config.train.checkpoints_total_limit is not None:
-            checkpoints = os.listdir(self.config.logging.output_dir)
-            checkpoints = [d for d in checkpoints if d.startswith("checkpoint")]
-            checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
-
-            if len(checkpoints) >= self.config.train.checkpoints_total_limit:
-                num_to_remove = len(checkpoints) - self.config.train.checkpoints_total_limit + 1
-                removing_checkpoints = checkpoints[0:num_to_remove]
-
-                for removing_checkpoint in removing_checkpoints:
-                    removing_checkpoint = os.path.join(
-                        self.config.logging.output_dir, removing_checkpoint
-                    )
-                    shutil.rmtree(removing_checkpoint)
-
         save_path = os.path.join(
             self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
         )
-        os.makedirs(save_path, exist_ok=True)
+        self.accelerator.save_state(save_path)
+        with open(os.path.join(save_path, "state.json"), "w") as f:
+            json.dump({"global_step": global_step, "epoch": epoch}, f)
 
-        # Save LoRA weights
-        self.save_lora(save_path)
+        # save_path = os.path.join(
+        #     self.config.logging.output_dir,
+        #     f"checkpoint-{epoch}-{global_step}"
+        # )
+        # os.makedirs(save_path, exist_ok=True)
+        # self.save_lora(save_path)
+        #     self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
+        # )
+        #     if len(checkpoints) >= self.config.train.checkpoints_total_limit:
+        #         num_to_remove = len(checkpoints) - self.config.train.checkpoints_total_limit + 1
+        #         removing_checkpoints = checkpoints[0:num_to_remove]
+
+        #         for removing_checkpoint in removing_checkpoints:
+        #             removing_checkpoint = os.path.join(
+        #                 self.config.logging.output_dir, removing_checkpoint
+        #             )
+        #             shutil.rmtree(removing_checkpoint)
+
+        # save_path = os.path.join(
+        #     self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
+        # )
+        # os.makedirs(save_path, exist_ok=True)
+
+        # # Save LoRA weights
+        # self.save_lora(save_path)
 
     def adjust_image_size(self, image: Union[Image.Image, List[Image.Image]]) -> Tuple[torch.Tensor, Image.Image]:
         image_size = image[0].size if isinstance(image, list) else image.size
@@ -891,6 +919,13 @@ class QwenImageEditTrainer:
         # Setup components
         self.setup_accelerator()
         self.load_model()
+        if self.config.train.resume_from_checkpoint is not None:
+            # add the checkpoint in lora.pretrained_weight config
+            self.config.model.lora.pretrained_weight = os.path.join(
+                self.config.train.resume_from_checkpoint,
+                "model.safetensors"
+            )
+            logging.info(f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}")
 
         self.set_lora()
         self.text_encoder.eval()
@@ -904,18 +939,26 @@ class QwenImageEditTrainer:
         logging.info(f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}")
         logging.info(f"  Use cache: {self.use_cache}, Cache exists: {self.cache_exist}")
 
-        # Progress bar
-        progress_bar = tqdm(
-            range(0, self.config.train.max_train_steps),
-            desc="train",
-            disable=not self.accelerator.is_local_main_process,
-        )
+
 
         # Training loop
         train_loss = 0.0
         running_loss = 0.0
-
-        for epoch in range(self.config.train.num_epochs):
+        if self.config.train.resume_from_checkpoint is not None:
+            with open(os.path.join(self.config.train.resume_from_checkpoint, "state.json")) as f:
+                st = json.load(f)
+            self.global_step = st["global_step"]
+            start_epoch = st["epoch"]
+        else:
+            self.global_step = 0
+            start_epoch = 0
+        # Progress bar
+        progress_bar = tqdm(
+            range(self.global_step, self.config.train.max_train_steps),
+            desc="train",
+            disable=not self.accelerator.is_local_main_process,
+        )
+        for epoch in range(start_epoch, self.config.train.num_epochs):
             for _, batch in enumerate(train_dataloader):
                 with self.accelerator.accumulate(self.transformer):
                     loss = self.training_step(batch)
@@ -1056,7 +1099,7 @@ class QwenImageEditTrainer:
 
         # Load LoRA weights (if available)
         if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
-            self.load_lora(self.config.model.lora.pretrained_weight)
+            self.load_lora(self.config.model.lora.pretrained_weight, adapter_name=self.adapter_name)
 
         # Set evaluation mode
         self.transformer.eval()

@@ -14,6 +14,7 @@ from PIL import Image
 import numpy as np
 from pathlib import Path
 import time
+from src.data.config import load_config_from_yaml
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent
@@ -35,7 +36,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from src.data.config import load_config_from_yaml
 
 def load_config(config_path: str):
     """加载配置文件"""

@@ -15,6 +15,6 @@ echo "Used config file: $config_file"
 # use accelerate to train (using GPU1)
 # echo "Using accelerate to train..."
 # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
-CUDA_VISIBLE_DEVICES=6,7 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
+CUDA_VISIBLE_DEVICES=5,6,7 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
 
 # NCCL_P2P_DISABLE only for RTX4090, not for A100

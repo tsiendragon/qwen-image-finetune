@@ -38,6 +38,7 @@ class LoraConfig:
         default_factory=lambda: ["to_k", "to_q", "to_v", "to_out.0"]
     )
     pretrained_weight: Optional[str] = None
+    adapter_name: Optional[str] = None
 
     def __post_init__(self):
         """验证 LoRA 配置"""
@@ -65,6 +66,11 @@ class LoraConfig:
             ):
                 raise ValueError(
                     f"pretrained_weight must be a valid file path, got {self.pretrained_weight}"
+                )
+        if self.adapter_name is not None:
+            if not isinstance(self.adapter_name, str) or not self.adapter_name:
+                raise ValueError(
+                    f"adapter_name must be a non-empty string, got {self.adapter_name}"
                 )
 
 
@@ -278,6 +284,7 @@ class TrainConfig:
     # otherwise, the model will be loaded on all the gpus
     vae_encoder_device: Optional[str] = None
     text_encoder_device: Optional[str] = None
+    resume_from_checkpoint: Optional[str] = None
 
     def __post_init__(self):
         """验证训练配置"""
@@ -333,6 +340,10 @@ class TrainConfig:
         # check text_encoder_device
         if self.text_encoder_device is not None and not isinstance(self.text_encoder_device, str):
             raise ValueError("text_encoder_device must be a non-negative string or None")
+        # check resume_from_checkpoint
+        if self.resume_from_checkpoint is not None:
+            if not isinstance(self.resume_from_checkpoint, str) or not os.path.exists(self.resume_from_checkpoint):
+                raise ValueError("resume_from_checkpoint must be a non-negative string or None")
 
 
 @dataclass
@@ -415,6 +426,7 @@ class Config:
                 "low_memory": self.train.low_memory,
                 "vae_encoder_device": self.train.vae_encoder_device,
                 "text_encoder_device": self.train.text_encoder_device,
+                "resume_from_checkpoint": self.train.resume_from_checkpoint,
             }
         )
 
