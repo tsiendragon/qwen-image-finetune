@@ -347,6 +347,23 @@ class TrainConfig:
 
 
 @dataclass
+class LossConfig:
+    """损失相关配置"""
+    mask_loss: bool = False  # if true, add mask loss
+    forground_weight: float = 2.0  # Text region emphasis
+    background_weight: float = 1.0   # Background region weight
+
+    def __post_init__(self):
+        """验证损失配置"""
+        if not isinstance(self.mask_loss, bool):
+            raise ValueError(f"mask_loss must be a boolean, got {self.mask_loss}")
+        if not isinstance(self.forground_weight, (int, float)) or self.forground_weight < 0:
+            raise ValueError(f"forground_weight must be a non-negative number, got {self.forground_weight}")
+        if not isinstance(self.background_weight, (int, float)) or self.background_weight < 0:
+            raise ValueError(f"background_weight must be a non-negative number, got {self.background_weight}")
+
+
+@dataclass
 class Config:
     """完整配置类"""
 
@@ -358,6 +375,7 @@ class Config:
     train: TrainConfig = field(default_factory=TrainConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     predict: PredictConfig = field(default_factory=PredictConfig)
+    loss: LossConfig = field(default_factory=LossConfig)
 
     def to_flat_dict(self) -> Dict[str, Any]:
         """将配置转换为扁平字典格式，与 train.py 中的 args 兼容"""
@@ -438,6 +456,15 @@ class Config:
             }
         )
 
+        # Loss 配置
+        flat_config.update(
+            {
+                "mask_loss": self.loss.mask_loss,
+                "forground_weight": self.loss.forground_weight,
+                "background_weight": self.loss.background_weight,
+            }
+        )
+
         return flat_config
 
 
@@ -490,6 +517,7 @@ def load_config_from_yaml(yaml_path: str) -> Config:
         train=TrainConfig(**config_dict.get("train", {})),
         cache=CacheConfig(**config_dict.get("cache", {})),
         predict=PredictConfig(**config_dict.get("predict", {})),
+        loss=LossConfig(**config_dict.get("loss", {})),
     )
 
     return config
@@ -559,6 +587,11 @@ def create_sample_config(output_path: str = "config_sample.yaml") -> None:
                 "text_encoder": "cuda:2",
                 "transformer": "cuda:3",
             }
+        },
+        "loss": {
+            "mask_loss": False,
+            "forground_weight": 2.0,
+            "background_weight": 1.0,
         },
     }
 

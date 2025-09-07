@@ -3,6 +3,7 @@ import random
 import torch
 from torch.utils.data import Dataset, DataLoader
 import glob
+import numpy as np
 import cv2
 import importlib
 from typing import Optional, Dict, List, Any
@@ -194,14 +195,18 @@ class ImageDataset(Dataset):
         Returns:
             处理后的图像数组 (C, H, W)
         """
-        img = cv2.imread(image_path)
-        img = img[:, :, ::-1]  # BGR to RGB
+        if isinstance(image_path, str):
+            img = cv2.imread(image_path)
+            img = img[:, :, ::-1]  # BGR to RGB
+        else:
+            img = image_path
 
         # 应用裁剪和调整大小
         img = self.apply_crop_and_resize(img, crop_bbox)
 
         # 转换为CHW格式
-        img = img.transpose(2, 0, 1)
+        if len(img.shape) == 3:
+            img = img.transpose(2, 0, 1) # ，C,H,W
         return img
 
     def _find_directories(self):
@@ -286,6 +291,8 @@ class ImageDataset(Dataset):
                         control_file = control_path
                         break
 
+                mask_file = os.path.join(control_dir, base_name + '_mask.png')
+
                 # 检查是否存在对应的caption文件
                 caption_file = os.path.join(images_dir, base_name + '.txt')
 
@@ -294,7 +301,8 @@ class ImageDataset(Dataset):
                         'image': image_file,
                         'control': control_file,
                         'caption': caption_file,
-                        'dataset_index': i  # 记录来自哪个数据集
+                        'dataset_index': i,  # 记录来自哪个数据集,
+                        'mask_file': mask_file,
                     })
                 else:
                     print(f"Warning: Skipping {image_file} - missing control image or caption file")
@@ -343,6 +351,13 @@ class ImageDataset(Dataset):
         # 加载控制图像（使用相同的裁剪边界框）
         control_numpy = self.preprocess(file_info['control'], crop_bbox)
 
+        has_mask = False
+        if os.path.exists(file_info['mask_file']):
+            mask_numpy = self.preprocess(cv2.imread(file_info['mask_file'], 0), crop_bbox)
+            has_mask = True
+
+
+
         if self.use_cache:
             image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])
             control_hash = self.cache_manager.get_file_hash_for_image(file_info['control'])
@@ -386,6 +401,8 @@ class ImageDataset(Dataset):
                     'empty_prompt_hash': empty_prompt_hash
                 }
             }
+            if has_mask:
+                data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
             self.check_none_output(data)
             return data
         else:
@@ -406,6 +423,8 @@ class ImageDataset(Dataset):
                     'prompt_hash': prompt_hash,
                     'empty_prompt_hash': empty_prompt_hash
                 }
+            if has_mask:
+                data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
             self.check_none_output(data)
             return data
 
@@ -514,7 +533,7 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             continue
 
         # 如果是tensor类型的数据，尝试stack
-        if key in ['image', 'control', 'pixel_latent', 'control_latent', 'prompt_embed', 'prompt_embeds_mask']:
+        if key in ['image', 'control', 'mask', 'pixel_latent', 'control_latent', 'prompt_embed', 'prompt_embeds_mask']:
             try:
                 # 过滤掉None值
                 non_none_values = [v for v in values if v is not None]

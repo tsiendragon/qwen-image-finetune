@@ -14,11 +14,16 @@ from PIL import Image
 import numpy as np
 from pathlib import Path
 import time
-from src.data.config import load_config_from_yaml
-
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent
+print('project_root',project_root)
 sys.path.insert(0, str(project_root))
+try:
+    from src.data.config import load_config_from_yaml
+except ImportError as e:
+    print(f"导入错误: {e}")
+    print("请确保在项目根目录运行此脚本")
+    sys.exit(1)
 
 # 导入项目模块 (需要在path设置后)
 try:

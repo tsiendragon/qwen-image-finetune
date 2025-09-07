@@ -3,6 +3,7 @@ import os
 import shutil
 import torch
 import random
+import torch.nn.functional as F  # NOQA
 import PIL
 import gc
 import json
@@ -29,6 +30,15 @@ from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
 from src.utils.logger import get_logger
 from src.data.cache_manager import check_cache_exists
 import logging
+from src.loss.edit_mask_loss import map_mask_to_latent
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s [%(filename)s:%(lineno)d] %(funcName)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+
 logger = get_logger(__name__, log_level="INFO")
 
 
@@ -63,6 +73,16 @@ def classify(lora_weight):
     if diff:
         return "DIFFUSERS(attn-processor)" if proc else "DIFFUSERS"
     return "UNKNOWN"
+
+
+def resize_bhw(x, h, w, mode="bilinear"):
+    x = x.unsqueeze(1)                        # [B, 1, H, W]
+    x = F.interpolate(
+        x, size=(h, w), mode=mode,
+        align_corners=False if mode in {"bilinear", "bicubic"} else None,
+        antialias=True if mode in {"bilinear", "bicubic"} and (h < x.shape[-2] or w < x.shape[-1]) else False,
+    )
+    return x.squeeze(1)
 
 
 class QwenImageEditTrainer:
@@ -100,6 +120,17 @@ class QwenImageEditTrainer:
         self.vae_z_dim = None
         self.adapter_name = config.model.lora.adapter_name
 
+    def set_criterion(self):
+        import torch.nn as nn
+        if self.config.loss.mask_loss:
+            from src.loss.edit_mask_loss import MaskEditLoss
+            self.criterion = MaskEditLoss(
+                forground_weight=self.config.loss.forground_weight,
+                background_weight=self.config.loss.background_weight)
+        else:
+            self.criterion = nn.MSELoss()
+        self.criterion.to(self.accelerator.device)
+
     def load_model(self, text_encoder_device=None):
         """Load and separate components from QwenImageEditPipeline"""
         logging.info("Loading QwenImageEditPipeline and separating components...")
@@ -112,7 +143,7 @@ class QwenImageEditTrainer:
             vae=None,
         )
         pipe.to('cpu')
-        print('excution device', pipe._execution_device)
+        logging.info(f"excution device: {pipe._execution_device}")
 
         # Separate individual components
 
@@ -126,7 +157,7 @@ class QwenImageEditTrainer:
             "Qwen/Qwen-Image-Edit",  # use original one
             weight_dtype=self.weight_dtype
         )
-        print('text_encoder device', self.text_encoder.device)
+        logging.info(f"text_encoder device: {self.text_encoder.device}")
         # self.transformer = pipe.transformer this is same as the following, verified
         from src.models.load_model import load_transformer
         self.transformer = load_transformer(
@@ -239,12 +270,25 @@ class QwenImageEditTrainer:
         model = model.to(device)
         return model
 
+    def add_lora_adapter(self):
+        """Add LoRA adapter to transformer"""
+        lora_config = LoraConfig(
+            r=self.config.model.lora.r,
+            lora_alpha=self.config.model.lora.lora_alpha,
+            init_lora_weights=self.config.model.lora.init_lora_weights,
+            target_modules=self.config.model.lora.target_modules,
+        )
+        self.transformer.add_adapter(lora_config, adapter_name=self.adapter_name)
+        self.transformer.set_adapter(self.adapter_name)
+
     def set_lora(self):
         """Set LoRA configuration"""
         if self.quantize:
             self.transformer = self.quantize_model(self.transformer, self.accelerator.device)
         else:
             self.transformer.to(self.accelerator.device)
+
+
 
         lora_config = LoraConfig(
             r=self.config.model.lora.r,
@@ -257,7 +301,8 @@ class QwenImageEditTrainer:
             lora_type = classify(self.config.model.lora.pretrained_weight)
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
-                self.load_lora(self.config.model.lora.pretrained_weight, adapter_name=self.adapter_name)
+                self.transformer.load_lora_adapter(self.config.model.lora.pretrained_weight, adapter_name=self.adapter_name)
+                logging.info(f"set_lora: {lora_type} Loaded lora from {self.config.model.lora.pretrained_weight} for {self.adapter_name}")
             else:
                 # add lora first
                 # Configure model
@@ -270,7 +315,8 @@ class QwenImageEditTrainer:
                 )
                 if len(unexpected) > 0:
                     raise ValueError(f"Unexpected keys: {unexpected}")
-                print('missing keys', len(missing), missing[0])
+                logging.info(f"set_lora: {lora_type} Loaded lora from {self.config.model.lora.pretrained_weight} for {self.adapter_name}")
+                logging.info(f"missing keys: {len(missing)}, {missing[0]}")
                 # self.load_lora(self.config.model.lora.pretrained_weight)
             logging.info(f"set_lora: Loaded lora from {self.config.model.lora.pretrained_weight}")
         else:
@@ -300,10 +346,21 @@ class QwenImageEditTrainer:
 
     def load_lora(self, pretrained_weight, adapter_name='default'):
         """Load pretrained LoRA weights"""
-        if pretrained_weight is not None:
-            # 使用 load_lora_adapter 方法而不是 load_adapter
+        lora_type = classify(self.config.model.lora.pretrained_weight)
+        # DIFFUSERS can be loaded directly, otherwise, need to add lora first
+        if lora_type != "PEFT":
             self.transformer.load_lora_adapter(pretrained_weight, adapter_name=adapter_name)
             logging.info(f"Loaded LoRA weights from {pretrained_weight}")
+        else:
+            import safetensors.torch
+            self.add_lora_adapter()
+            missing, unexpected = self.transformer.load_state_dict(
+                safetensors.torch.load_file(pretrained_weight), strict=False,
+            )
+            if len(unexpected) > 0:
+                raise ValueError(f"Unexpected keys: {unexpected}")
+            logging.info(f"set_lora: {lora_type} Loaded lora from {self.config.model.lora.pretrained_weight} for {self.adapter_name}")
+            logging.info(f"missing keys: {len(missing)}, {missing[0]}")
 
     def save_lora(self, save_path):
         """Save LoRA weights"""
@@ -540,13 +597,21 @@ class QwenImageEditTrainer:
 
         _, _, height, width = self.adjust_image_size(image)
 
+        if self.config.loss.mask_loss:
+            edit_mask = batch["mask"]  # torch.tensor: B,H,W
+            edit_mask = resize_bhw(edit_mask, height, width)
+            edit_mask = map_mask_to_latent(edit_mask)
+        else:
+            edit_mask = None
+
         return self._compute_loss(
                 pixel_latents,
                 control_latents,
                 prompt_embeds,
                 prompt_embeds_mask,
                 height,
-                width
+                width,
+                edit_mask=edit_mask,
             )
 
     def _training_step_compute(self, batch):
@@ -562,6 +627,13 @@ class QwenImageEditTrainer:
 
         control_tensor, prompt_image_processed, height_control, width_control = self.adjust_image_size(control)
         image_tensor, _, height_image, width_image = self.adjust_image_size(image)
+
+        if self.config.loss.mask_loss:
+            edit_mask = batch["mask"]  # torch.tensor: B,H,W
+            edit_mask = resize_bhw(edit_mask, height_image, width_image)
+            edit_mask = map_mask_to_latent(edit_mask)
+        else:
+            edit_mask = None
 
         # Encode prompt
         new_prompts = []
@@ -610,10 +682,18 @@ class QwenImageEditTrainer:
             prompt_embeds,
             prompt_embeds_mask,
             height_image,
-            width_image
+            width_image,
+            edit_mask=edit_mask,
         )
 
-    def _compute_loss(self, pixel_latents, control_latents, prompt_embeds, prompt_embeds_mask, height, width):
+    def _compute_loss(self,
+            pixel_latents,
+            control_latents,
+            prompt_embeds,
+            prompt_embeds_mask,
+            height, width,
+            edit_mask=None
+        ):
         """calculate the flowmatching loss
         pixel_latents: is the packed latent, shape is
           [batch_size, (height // 2) * (width // 2), num_channels_latents * 4]
@@ -678,14 +758,21 @@ class QwenImageEditTrainer:
         target = noise - pixel_latents
         # pred shape [2, 4104, 64], target shape [2, 4104, 64]
         # target = target.permute(0, 2, 1, 3, 4)
+        loss = self.forward_loss(model_pred, target, weighting, edit_mask)
+        return loss
 
-        loss = torch.mean(
-            (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(
-                target.shape[0], -1
-            ),
-            1,
-        )
-        loss = loss.mean()
+    def forward_loss(self, model_pred, target, weighting, edit_mask=None):
+        if edit_mask is None:
+            loss = torch.mean(
+                (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(
+                    target.shape[0], -1
+                ),
+                1,
+            )
+            loss = loss.mean()
+        else:
+            # shape torch.Size([4, 864, 1216]) torch.Size([4, 4104, 64]) torch.Size([4, 4104, 64]) torch.Size([4, 1, 1])
+            loss = self.criterion(edit_mask, model_pred, target, weighting)
         return loss
 
     def _get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
@@ -813,6 +900,7 @@ class QwenImageEditTrainer:
         control_tensor, prompt_image_processed, height_control, width_control = self.adjust_image_size(control)
         image_tensor, _, height_image, width_image = self.adjust_image_size(image)
 
+
         file_hashes = data["file_hashes"]
         image_hash = file_hashes["image_hash"]
         control_hash = file_hashes["control_hash"]
@@ -932,6 +1020,7 @@ class QwenImageEditTrainer:
         self.vae.eval()
         self.configure_optimizers()
         self.set_model_devices(mode="train")
+        self.set_criterion()
         train_dataloader = self.accelerator_prepare(train_dataloader)
 
         logging.info("***** Running training *****")
@@ -1176,16 +1265,12 @@ class QwenImageEditTrainer:
         device_transformer = self.config.predict.devices['transformer']
         device_vae = self.config.predict.devices['vae']
 
-        print('calculated size', calculated_height, calculated_width)
-
         # 3. 预处理图像 (遵循原始pipeline逻辑)
         if image is not None and not (isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels):
             image = [self.image_processor.resize(xx, calculated_height, calculated_width) for xx in image]
             prompt_image_processed = image
-            print('prompt_image_processed', [xxx.size for xxx in prompt_image_processed])
             image = self.image_processor.preprocess(image, calculated_height, calculated_width)
             image = image.unsqueeze(2)
-            print('image', image.size)
 
         has_neg_prompt = negative_prompt is not None
         do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
@@ -1203,12 +1288,12 @@ class QwenImageEditTrainer:
                 device=device_text_encoder,
             )
             prompt_embeds_mask = prompt_embeds_mask.to(torch.int64)
-            print('prompt_embeds_mask', prompt_embeds_mask.dtype)
+            logging.info(f"prompt_embeds_mask shape: {prompt_embeds_mask.shape}")
 
         if do_true_cfg:
             # 清理显存以确保有足够空间进行 CFG
             torch.cuda.empty_cache()
-            print('negative_prompt', negative_prompt)
+            logging.info(f"negative_prompt: {negative_prompt}")
 
             # 临时将 positive prompt embeddings 移到 CPU 以节省显存
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
@@ -1221,13 +1306,13 @@ class QwenImageEditTrainer:
             # 将 positive embeddings 移回 GPU
 
             # 检查 negative prompt embeddings 是否有梯度
-            print(f"negative_prompt_embeds.requires_grad: {negative_prompt_embeds.requires_grad}")
-            print(f"negative_prompt_embeds_mask.requires_grad: {negative_prompt_embeds_mask.requires_grad}")
-            print('negative_prompt_embeds', negative_prompt_embeds.shape, negative_prompt_embeds.dtype)
-            print('negative_prompt_embeds_mask', negative_prompt_embeds_mask.shape, negative_prompt_embeds_mask.dtype)
+            logging.info(f"negative_prompt_embeds.requires_grad: {negative_prompt_embeds.requires_grad}")
+            logging.info(f"negative_prompt_embeds_mask.requires_grad: {negative_prompt_embeds_mask.requires_grad}")
+            logging.info(f"negative_prompt_embeds shape: {negative_prompt_embeds.shape}, dtype: {negative_prompt_embeds.dtype}")
+            logging.info(f"negative_prompt_embeds_mask shape: {negative_prompt_embeds_mask.shape}, dtype: {negative_prompt_embeds_mask.dtype}")
 
-        print('mask shape', prompt_embeds_mask.shape, prompt_embeds_mask.dtype)
-        print('prompt_embeds shape', prompt_embeds.shape, prompt_embeds.dtype)
+        logging.info(f"mask shape: {prompt_embeds_mask.shape}, dtype: {prompt_embeds_mask.dtype}")
+        logging.info(f"prompt_embeds shape: {prompt_embeds.shape}, dtype: {prompt_embeds.dtype}")
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
         if image_latents is not None:
@@ -1251,10 +1336,10 @@ class QwenImageEditTrainer:
                 generator=None,
                 latents=None,
             )
-        print('image latent got grad', image_latents.requires_grad)
-        print('latents shape', latents.shape)
-        print('num_channels_latents', num_channels_latents)
-        print('image-latent shape', image_latents.shape)
+        logging.info(f"image latent got grad: {image_latents.requires_grad}")
+        logging.info(f"latents shape: {latents.shape}")
+        logging.info(f"num_channels_latents: {num_channels_latents}")
+        logging.info(f"image-latent shape: {image_latents.shape}")
 
         img_shapes = [
             [
@@ -1263,12 +1348,12 @@ class QwenImageEditTrainer:
             ]
         ] * batch_size
 
-        print('shape of img_shapes', img_shapes)
-        print('self.vae_scale_factor', self.vae_scale_factor)
-        print('height', height)
-        print('width', width)
-        print('calculated_height', calculated_height)
-        print('calculated_width', calculated_width)
+        logging.info(f"shape of img_shapes: {img_shapes}")
+        logging.info(f"self.vae_scale_factor: {self.vae_scale_factor}")
+        logging.info(f"height: {height}")
+        logging.info(f"width: {width}")
+        logging.info(f"calculated_height: {calculated_height}")
+        logging.info(f"calculated_width: {calculated_width}")
 
         # 6. 准备时间步 (遵循原始pipeline逻辑)
         import numpy as np
@@ -1300,11 +1385,11 @@ class QwenImageEditTrainer:
             guidance = guidance.expand(latents.shape[0])
         else:
             guidance = None
-        print(
-            'prompt_embeds_mask.sum(dim=1)',
-            prompt_embeds_mask.sum(dim=1),
-            prompt_embeds_mask[:2],
-            prompt_embeds_mask.sum(dim=1).tolist()
+        logging.info(
+            f"prompt_embeds_mask.sum(dim=1): {prompt_embeds_mask.sum(dim=1)}",
+            f"prompt_embeds_mask[:2]: {prompt_embeds_mask[:2]}",
+            f"prompt_embeds_mask[:2]: {prompt_embeds_mask[:2]}",
+            f"prompt_embeds_mask.sum(dim=1).tolist(): {prompt_embeds_mask.sum(dim=1).tolist()}"
         )
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
         negative_txt_seq_lens = (
@@ -1325,9 +1410,9 @@ class QwenImageEditTrainer:
             negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer, dtype=torch.int64)
             negative_prompt_embeds = negative_prompt_embeds.to(device_transformer, dtype=self.weight_dtype)
 
-        print('timesteps', timesteps)
-        print('num_inference_steps', num_inference_steps)
-        print('sigmas', sigmas)
+        logging.info(f"timesteps: {timesteps}")
+        logging.info(f"num_inference_steps: {num_inference_steps}")
+        logging.info(f"sigmas: {sigmas}")
         with torch.inference_mode():
             # progress_bar = tqdm(enumerate(timesteps), total=num_inference_steps, desc="Generating")
             # for i, t in progress_bar:
@@ -1348,14 +1433,14 @@ class QwenImageEditTrainer:
 
                 # Usecache_context (如果transformer支持)
                 if i == 0:
-                    print('latent_model_input', latent_model_input.shape)
-                    print('timestep', timestep)
-                    print('guidance', guidance)
-                    print('prompt_embeds_mask', prompt_embeds_mask.shape)
-                    print('prompt_embeds', prompt_embeds.shape)
-                    print('img_shapes', img_shapes)
-                    print('txt_seq_lens', txt_seq_lens)
-                    print('attention_kwargs', self.attention_kwargs)
+                    logging.info(f"latent_model_input: {latent_model_input.shape}")
+                    logging.info(f"timestep: {timestep}")
+                    logging.info(f"guidance: {guidance}")
+                    logging.info(f"prompt_embeds_mask: {prompt_embeds_mask.shape}")
+                    logging.info(f"prompt_embeds: {prompt_embeds.shape}")
+                    logging.info(f"img_shapes: {img_shapes}")
+                    logging.info(f"txt_seq_lens: {txt_seq_lens}")
+                    logging.info(f"attention_kwargs: {self.attention_kwargs}")
                 with self.transformer.cache_context("cond"):
                     noise_pred = self.transformer(
                         hidden_states=latent_model_input,

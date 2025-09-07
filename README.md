@@ -9,6 +9,7 @@ This repository provides a comprehensive framework for fine-tuning Qwen Vision-L
 ## Key Features
 
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
+- **Edit Mask Loss Support**: Advanced mask-weighted loss function for focused training on edit regions
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
 - **Resume Training**: Seamless training resumption from checkpoints with full state recovery
 - **Multi-GPU Support**: Distributed training capabilities with gradient accumulation
@@ -220,6 +221,10 @@ result[0]
 result[0].save("output_segmentation.png")
 print("Generated face segmentation saved as output_segmentation.png")
 ```
+## Edit Mask Loss
+
+[Edit Mask Loss feature documentation in `docs/prd/image_edit_mask_loss.md`](docs/prd/image_edit_mask_loss.md)
+
 ## Speed Optimization
 
 [Speed Optimization including quantilizationand flash attention in `docs/speed_optimization.md`](docs/speed_optimization.md)
@@ -230,6 +235,7 @@ print("Generated face segmentation saved as output_segmentation.png")
 ## 🎯 Key Features Covered
 
 ### Training Optimization
+- **Edit Mask Loss**: Advanced mask-weighted loss computation for focused training on edit regions
 - **Embedding Cache System**: 2-3x training acceleration
 - **LoRA Fine-tuning**: Memory-efficient parameter updates
 - **Multi-GPU Support**: Distributed training capabilities
