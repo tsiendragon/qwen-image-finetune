@@ -1,45 +1,51 @@
 # Image Edit Mask Loss Enhancement
 
 ## Overview
-Add an optional mask-weighted loss component to improve text editing performance by focusing training on text regions while maintaining backward compatibility.
+This document describes an optional mask-weighted loss component designed to improve image editing performance by focusing training attention on edit regions while maintaining full backward compatibility with existing training pipelines.
 
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+  <img src="../images/image-3.png" alt="Source Image" style="width: 30%; height: auto;">
+  <img src="../images/image-4.png" alt="Target Image" style="width: 30%; height: auto;">
+  <img src="../images/edit_region_mask.png" alt="Edit Region Mask" style="width: 30%; height: auto;">
+</div>
 ## Problem Statement
-Current text editing training treats all image regions equally, leading to suboptimal performance on text-specific edits where only text regions differ between source and target images.
+Current image editing training treats all image regions equally during loss computation, leading to suboptimal performance in scenarios where only specific edit regions differ between source and target images. This uniform weighting dilutes the training signal from critical edit areas, resulting in slower convergence and reduced editing quality.
 
 ## Solution Architecture
 
 ### 1. Mask Processing Pipeline
+
+The mask processing pipeline transforms image-space binary masks into latent-space sequence weights that align with the model's packed latent representation.
 
 #### Step-by-Step Transformation (Example: 832×576 → 1024 sequence)
 
 ```
 Step 1: Input Image Space Mask
 ├─ Shape: [B, 832, 576]
-├─ Format: Binary mask (0=background, 1=text_region)
-├─ Source: OCR detection or manual annotation
-└─ Example: Text regions marked as 1, background as 0
+├─ Format: Binary mask (0=background, 1=edit_region)
+└─ Purpose: Edit regions marked as 1, background as 0
 
 Step 2: VAE Downsampling Simulation
 ├─ Operation: F.avg_pool2d(mask, kernel_size=8, stride=8)
 ├─ Shape: [B, 832, 576] → [B, 104, 72]
-├─ Rationale: Match VAE encoder 8x compression
-├─ Preservation: avg_pool maintains text region density
+├─ Rationale: Match VAE encoder's 8x spatial compression
+├─ Preservation: Average pooling maintains edit region density
 └─ Result: Latent-space aligned mask
 
 Step 3: Packing Simulation (2×2 Patch Merge)
-├─ Operation: unfold(2,2) + reshape + max_pooling
+├─ Operation: reshape + permute + max_pooling
 ├─ Shape: [B, 104, 72] → [B, 52, 36] → [B, 1872]
 ├─ Process:
-│   ├─ unfold: [B, 104, 72] → [B, 52, 36, 4]
-│   ├─ max: Take max value per 2×2 patch → [B, 52, 36]
-│   └─ flatten: [B, 52, 36] → [B, 1872]
+│   ├─ Reshape: [B, 104, 72] → [B, 52, 2, 36, 2] → [B, 52, 36, 4]
+│   ├─ Max pooling: Take max value per 2×2 patch → [B, 52, 36]
+│   └─ Flatten: [B, 52, 36] → [B, 1872]
 ├─ Rationale: Simulate transformer's 2×2 patchify operation
-└─ Final: seq_len = (104÷2) × (72÷2) = 52 × 36 = 1872
+└─ Result: seq_len = (104÷2) × (72÷2) = 52 × 36 = 1872
 
 Step 4: Alignment with Packed Latents
 ├─ Image latent: [B, 16, 104, 72] → pack → [B, 1872, 64]
 ├─ Mask latent: [B, 832, 576] → process → [B, 1872]
-├─ Alignment: Both have seq_len = 1872
+├─ Alignment: Both sequences have matching length (seq_len = 1872)
 └─ Usage: mask[i] weights latent[i, :] across all 64 channels
 ```
 
@@ -64,10 +70,11 @@ def map_mask_to_latent(image_mask: Tensor) -> Tensor:
 
     # Step 2: Packing simulation
     # [B, latent_h, latent_w] → [B, latent_h//2, latent_w//2, 4]
-    patches = mask_latent.unfold(1, 2, 2).unfold(2, 2, 2)
-    patches = patches.contiguous().view(B, latent_h//2, latent_w//2, 4)
+    # Reshape to separate 2x2 patches, then fold
+    patches = mask_latent.reshape(B, latent_h//2, 2, latent_w//2, 2)
+    patches = patches.permute(0, 1, 3, 2, 4).contiguous().view(B, latent_h//2, latent_w//2, 4)
 
-    # Step 3: Patch-wise maximum (preserve text regions)
+    # Step 3: Patch-wise maximum (preserve edit regions)
     # [B, latent_h//2, latent_w//2, 4] → [B, latent_h//2, latent_w//2]
     packed_mask = patches.max(dim=-1)[0]
 
@@ -78,96 +85,95 @@ def map_mask_to_latent(image_mask: Tensor) -> Tensor:
 ```
 
 ### 2. Dual Loss Computation
-- **Original Loss**: Standard flow matching loss (unchanged)
-- **Mask Loss**: Weighted loss emphasizing text regions
+- **Original Loss**: Standard flow matching loss (unchanged for backward compatibility)
+- **Mask Loss**: Weighted loss emphasizing edit regions with higher importance
 - **Combined Loss**: `final_loss = (1-α) × original_loss + α × mask_loss`
 
 ### 3. Implementation Strategy
 
 #### Configuration (Incremental)
 ```yaml
-mask_loss:
-  enabled: false          # Feature toggle
-  weight: 0.3             # α in combined loss
-  text_region_weight: 2.0 # Text region emphasis
-  background_weight: 1.0  # Background region weight
+loss:
+    mask_loss: false          # Enable mask-weighted loss computation
+    foreground_weight: 2.0    # Weight multiplier for edit regions
+    background_weight: 1.0    # Weight multiplier for background regions
 
 data:
   init_args:
-    use_text_mask: false  # Enable mask loading
-    mask_dir_name: "text_masks"
+    use_edit_mask: false      # Enable edit mask loading from dataset
 ```
 
 #### Core Function Signature
 ```python
-def _compute_loss_with_mask(
-    self,
-    pixel_latents, control_latents,
-    prompt_embeds, prompt_embeds_mask,
-    height, width,
-    text_mask=None  # Optional [B, seq_len] mask
-) -> torch.Tensor
+class MaskEditLoss:
+    def __init__(self, foreground_weight=2.0, background_weight=1.0):
+        self.foreground_weight = foreground_weight
+        self.background_weight = background_weight
+
+    def forward(self, mask, model_pred, target, weighting=None):
+        """
+        Compute mask-weighted loss for image editing training.
+
+        Args:
+            mask: [B, seq_len] - Binary mask (1=edit region, 0=background)
+            model_pred: [B, seq_len, channels] - Model predictions
+            target: [B, seq_len, channels] - Target values
+            weighting: [B, seq_len, 1] - Optional timestep weighting
+
+        Returns:
+            torch.Tensor - Weighted loss value
+        """
+        # Compute element-wise MSE loss
+        element_loss = (model_pred.float() - target.float()) ** 2
+
+        # Apply optional timestep weighting
+        if weighting is not None:
+            element_loss = weighting.float() * element_loss
+
+        # Create weight mask: higher weights for edit regions
+        # mask: [B, seq_len] -> weight_mask: [B, seq_len, 1]
+        weight_mask = (mask * self.foreground_weight + (1 - mask) * self.background_weight)
+        weight_mask = weight_mask.unsqueeze(-1)  # [B, seq_len, 1]
+
+        # Apply mask weighting
+        weighted_loss = element_loss * weight_mask
+
+        # Aggregate loss: mean over sequence dimension, then batch dimension
+        loss = torch.mean(weighted_loss.reshape(target.shape[0], -1), 1).mean()
+        return loss
+```
+## Dataset Structure with Edit Masks
+
+The dataset structure supports optional edit masks alongside existing image pairs and text prompts:
+
+```bash
+data/your_dataset/
+├── control_images/          # Input/control images
+│   ├── image_001.png
+│   ├── image_002.png
+│   └── ...
+└── training_images/         # Target images, text prompts, and edit masks
+    ├── image_001.png        # Target image
+    ├── image_001.txt        # Text prompt for image_001
+    ├── image_001_mask.png   # Edit mask for image_001 (optional)
+    ├── image_002.png
+    ├── image_002.txt
+    ├── image_002_mask.png   # Edit mask for image_002 (optional)
+    └── ...
 ```
 
-#### Loss Computation Logic
-```python
-# Standard loss (unchanged)
-element_loss = (model_pred - target) ** 2
+## Configuration
 
-if text_mask is not None:
-    # Apply region-specific weights
-    weight_mask = (text_mask * text_weight +
-                   (1 - text_mask) * background_weight)
-    weighted_loss = element_loss * weight_mask.unsqueeze(-1)
-    mask_loss = weighted_loss.mean()
+The mask loss feature is controlled by a new configuration block. When this configuration is missing, the system falls back to traditional MSE loss computation:
 
-    # Combine losses
-    final_loss = (1 - mask_weight) * original_loss + mask_weight * mask_loss
-else:
-    final_loss = original_loss  # Fallback to original behavior
+```yaml
+loss:
+  mask_loss: true               # Enable mask-weighted loss computation
+  foreground_weight: 2.0        # Weight multiplier for edit regions
+  background_weight: 1.0        # Weight multiplier for background regions
 ```
 
-## Implementation Plan
-
-### Phase 1: Core Infrastructure
-- [ ] Add mask preprocessing utilities
-- [ ] Implement mask-to-latent mapping
-- [ ] Create dual loss computation function
-
-### Phase 2: Data Pipeline Integration
-- [ ] Extend dataset to support optional mask loading
-- [ ] Update training step with mask parameter
-- [ ] Add configuration options
-
-### Phase 3: Testing & Validation
-- [ ] Backward compatibility verification
-- [ ] Performance benchmarking
-- [ ] Documentation updates
-
-## Key Features
-
-### Backward Compatibility
-- **Zero Impact**: When `mask_loss.enabled=false`, behavior identical to original
-- **Optional Data**: Mask files not required; graceful degradation when missing
-- **Incremental Adoption**: Can be enabled per-dataset or per-experiment
-
-### Flexible Configuration
-- **Adjustable Weights**: Fine-tune text vs background emphasis
-- **Loss Mixing Ratio**: Control contribution of mask loss vs original loss
-- **Dataset Agnostic**: Works with existing data structure
-
-### Performance Considerations
-- **Minimal Overhead**: Mask processing only when enabled
-- **Memory Efficient**: Mask stored as compact binary format
-- **GPU Friendly**: All operations vectorized for parallel processing
-
-## Expected Outcomes
-- **Improved Text Editing**: Better preservation and modification of text regions
-- **Maintained Generalization**: Background editing capabilities unchanged
-- **Training Stability**: Gradual loss weighting prevents training disruption
-- **Easy Experimentation**: Quick enable/disable for A/B testing
-
-## Data Requirements
-- **Mask Format**: Binary images (0=background, 255=text) matching source image resolution
-- **File Structure**: `dataset/text_masks/filename.jpg` parallel to existing structure
-- **Generation**: Can be created via OCR, manual annotation, or automated text detection
+**Key Benefits:**
+- **Focused Training**: Higher weights on edit regions improve convergence on critical areas
+- **Backward Compatibility**: Existing training pipelines work unchanged when `mask_loss: false`
+- **Flexible Weighting**: Configurable foreground/background weight ratios for different editing scenarios

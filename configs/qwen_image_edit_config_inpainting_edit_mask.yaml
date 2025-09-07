@@ -16,22 +16,22 @@ data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     # 支持单个数据集路径
-    # dataset_path: "/raid/lilong/data/kyc_gen/aligned/"
     # 支持多个数据集路径（推荐使用）
     dataset_path:
-      - /data/lilong/ktp/ktp/dataset1/
-      - /data/lilong/ktp/ktp/dataset1_crop/
+      - /data/lilong/ktp/ktp_v1.4/dataset1/
+      - /data/lilong/ktp/ktp_v1.4/dataset1_crop/
     image_size: [832, 576]
     caption_dropout_rate: 0.1
     prompt_image_dropout_rate: 0.1
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
+    use_edit_mask: true  # if true, dataset output edit mask
   batch_size: 4
   num_workers: 2
   shuffle: true
 
 logging:
-  output_dir: "/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/"
+  output_dir: "/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting_mask/"
   logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "lora_test3"
@@ -63,12 +63,12 @@ train:
   max_grad_norm: 1.0
   mixed_precision: "bf16"
   gradient_checkpointing: True  # 启用梯度检查点以节省显存
-  resume_from_checkpoint: /data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/lora_test3/v2/checkpoint-0-50
+  resume_from_checkpoint: /data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/lora_test3/v3/checkpoint-4-4600/
 
 cache:
   vae_encoder_device: cuda:6
   text_encoder_device: cuda:7
-  cache_dir: "/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting/cache"
+  cache_dir: "/data/lilong/kyc_gen/logs/id_card_qwen_image_lora_inpainting_mask/cache"
   use_cache: true
 
 predict:
@@ -78,3 +78,7 @@ predict:
     transformer: cuda:7
 
 
+loss:
+  mask_loss: True # if true, add mask loss
+  forground_weight: 1.5 # Text region emphasis
+  background_weight: 0.5  # Background region weight
