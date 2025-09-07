@@ -16,7 +16,7 @@ This document outlines the implementation plan for integrating Flux Kontext LoRA
 ```
 src/
 ├── base_trainer.py (new - abstract base class)
-├── qwen_image_edit_trainer.py (existing - inherits from BaseTrainer)
+├── qwen_image_edit_trainer.py (existing - unchanged)
 ├── flux_kontext_trainer.py (new - inherits from BaseTrainer)
 ├── models/
 │   ├── load_model.py (existing - unchanged)

@@ -9,6 +9,9 @@ import shutil
 import torch
 import PIL
 import gc
+import torch.nn.functional as F
+import inspect
+
 import numpy as np
 from typing import Optional, Union, List, Tuple
 from PIL import Image
@@ -23,6 +26,7 @@ from diffusers.training_utils import (
 )
 from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
+from diffusers.utils.torch_utils import randn_tensor
 from peft.utils import get_peft_model_state_dict
 from peft import LoraConfig
 
@@ -38,6 +42,80 @@ from src.data.cache_manager import check_cache_exists
 import logging
 
 logger = get_logger(__name__, log_level="INFO")
+
+
+def calculate_shift(
+    image_seq_len,
+    base_seq_len: int = 256,
+    max_seq_len: int = 4096,
+    base_shift: float = 0.5,
+    max_shift: float = 1.15,
+):
+    m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+    b = base_shift - m * base_seq_len
+    mu = image_seq_len * m + b
+    return mu
+
+
+# Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
+def retrieve_timesteps(
+    scheduler,
+    num_inference_steps: Optional[int] = None,
+    device: Optional[Union[str, torch.device]] = None,
+    timesteps: Optional[List[int]] = None,
+    sigmas: Optional[List[float]] = None,
+    **kwargs,
+):
+    r"""
+    Calls the scheduler's `set_timesteps` method and retrieves timesteps from the scheduler after the call. Handles
+    custom timesteps. Any kwargs will be supplied to `scheduler.set_timesteps`.
+
+    Args:
+        scheduler (`SchedulerMixin`):
+            The scheduler to get timesteps from.
+        num_inference_steps (`int`):
+            The number of diffusion steps used when generating samples with a pre-trained model. If used, `timesteps`
+            must be `None`.
+        device (`str` or `torch.device`, *optional*):
+            The device to which the timesteps should be moved to. If `None`, the timesteps are not moved.
+        timesteps (`List[int]`, *optional*):
+            Custom timesteps used to override the timestep spacing strategy of the scheduler. If `timesteps` is passed,
+            `num_inference_steps` and `sigmas` must be `None`.
+        sigmas (`List[float]`, *optional*):
+            Custom sigmas used to override the timestep spacing strategy of the scheduler. If `sigmas` is passed,
+            `num_inference_steps` and `timesteps` must be `None`.
+
+    Returns:
+        `Tuple[torch.Tensor, int]`: A tuple where the first element is the timestep schedule from the scheduler and the
+        second element is the number of inference steps.
+    """
+    if timesteps is not None and sigmas is not None:
+        raise ValueError("Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values")
+    if timesteps is not None:
+        accepts_timesteps = "timesteps" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
+        if not accepts_timesteps:
+            raise ValueError(
+                f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
+                f" timestep schedules. Please check whether you are using the correct scheduler."
+            )
+        scheduler.set_timesteps(timesteps=timesteps, device=device, **kwargs)
+        timesteps = scheduler.timesteps
+        num_inference_steps = len(timesteps)
+    elif sigmas is not None:
+        accept_sigmas = "sigmas" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
+        if not accept_sigmas:
+            raise ValueError(
+                f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
+                f" sigmas schedules. Please check whether you are using the correct scheduler."
+            )
+        scheduler.set_timesteps(sigmas=sigmas, device=device, **kwargs)
+        timesteps = scheduler.timesteps
+        num_inference_steps = len(timesteps)
+    else:
+        scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
+        timesteps = scheduler.timesteps
+    return timesteps, num_inference_steps
+
 
 
 def get_lora_layers(model):
@@ -95,8 +173,11 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self._attention_kwargs = None
         self._current_timestep = None
         self._interrupt = False
-
         self.log_model_info()
+
+    def __repr__(self) -> str:
+        msg = f"FluxKontextLoraTrainer(config={self.config})"
+        return msg
 
     def load_model(self, text_encoder_device=None, text_encoder_2_device=None):
         """
@@ -132,16 +213,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         )
 
         # Set VAE-related parameters (following QwenImageEditTrainer pattern)
-        if hasattr(self.vae.config, 'block_out_channels'):
-            self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
-        else:
-            self.vae_scale_factor = 8  # Default value
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
 
         # Set Flux-specific VAE configuration
-        if hasattr(self.vae.config, 'latent_channels'):
-            self.vae_z_dim = self.vae.config.latent_channels
-        else:
-            self.vae_z_dim = 16  # Typical Flux latent channels
+        self.vae_z_dim = self.vae.config.latent_channels if getattr(self, "vae", None) else 16
 
         # Additional Flux-specific attributes
         self.latent_channels = self.vae_z_dim
@@ -150,7 +225,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.text_encoder.requires_grad_(False)
         self.text_encoder_2.requires_grad_(False)
         self.vae.requires_grad_(False)
-        self.transformer.requires_grad_(False)
+        self.num_channels_latents = self.transformer.config.in_channels // 4 if getattr(self, "transformer", None) else 16
+        self.tokenizer_max_length = 77  # clip encoder maximal token length
+        self.max_sequence_length = 512  #  T5 encoder maximal token length
+
         torch.cuda.empty_cache()
 
         logging.info(f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}")
@@ -477,17 +555,183 @@ class FluxKontextLoraTrainer(BaseTrainer):
             sigma = sigma.unsqueeze(-1)
         return sigma
 
+    def preprocess_image(self, image: torch.Tensor) -> torch.Tensor:
+        """Preprocess image for Flux Kontext VAE.
+        image: RGB tensor input [B,C,H,W]
+        Logic is
+        1. Resize it make it devisible by 16
+        2. Input should be RGB format
+        3. Convert to [0,1] range by devide 255
+        4. Input shape should be [B,3,H,W]
+        """
+        # get proper image shape
+        h, w = image.shape[2:]
+        h = h // 16 * 16
+        w = w // 16 * 16
+        image = image.to(self.weight_dtype)
+        image = F.interpolate(image, size=(h, w), mode='bilinear', align_corners=False)
+        image = image/255
+        image = image.astype(self.weight_dtype)
+        return image
+
+    def get_clip_prompt_embeds(self, prompt: str, device: str, )-> torch.Tensor:
+        """
+        Get CLIP prompt embeddings.
+        """
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        batch_size = len(prompt)
+        text_inputs = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer_max_length,
+            truncation=True,
+            return_overflowing_tokens=False,
+            return_length=False,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids
+        prompt_embeds = self.text_encoder(text_input_ids.to(device), output_hidden_states=False)
+        # Use pooled output of CLIPTextModel
+        prompt_embeds = prompt_embeds.pooler_output
+        prompt_embeds = prompt_embeds.to(dtype=self.text_encoder.dtype, device=device)
+        # duplicate text embeddings for each generation per prompt, using mps friendly method
+        prompt_embeds = prompt_embeds.view(batch_size, -1)
+        return prompt_embeds
+
+    def get_t5_prompt_embeds(self, prompt: str, device: str, max_sequence_length: int = 512) -> torch.Tensor:
+        dtype = self.text_encoder.dtype
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        text_inputs = self.tokenizer_2(
+            prompt,
+            padding="max_length",
+            max_length=max_sequence_length,
+            truncation=True,
+            return_length=False,
+            return_overflowing_tokens=False,
+            return_tensors="pt",
+        )
+        text_input_ids = text_inputs.input_ids
+        prompt_embeds = self.text_encoder_2(text_input_ids.to(device), output_hidden_states=False)[0]
+        dtype = self.text_encoder_2.dtype
+        prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
+        return prompt_embeds
+
+    def encode_prompt(
+            self,
+            prompt: Union[str, List[str]],
+            prompt_2: Optional[Union[str, List[str]]] = None,
+            device_text_encoder: Optional[torch.device] = None,
+            device_text_encoder_2: Optional[torch.device] = None,
+            max_sequence_length: int = 512) -> List[torch.Tensor]:
+        """
+        Encode prompts using both CLIP and T5 encoders.
+        """
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        prompt_2 = prompt_2 or prompt
+        prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
+        # We only use the pooled prompt output from the CLIPTextModel
+        pooled_prompt_embeds = self.get_clip_prompt_embeds(
+            prompt=prompt,
+            device=device_text_encoder,
+        )
+        prompt_embeds = self.get_t5_prompt_embeds(
+            prompt=prompt_2,
+            max_sequence_length=max_sequence_length,
+            device=device_text_encoder_2,
+        )
+        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device_text_encoder_2, dtype=self.weight_dtype)
+        return pooled_prompt_embeds, prompt_embeds, text_ids
+
+    @staticmethod
+    # Copied from diffusers.pipelines.flux.pipeline_flux.FluxPipeline._pack_latents
+    def _pack_latents(latents, batch_size, num_channels_latents, height, width):
+        latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
+        latents = latents.permute(0, 2, 4, 1, 3, 5)
+        latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
+        return latents
+
+    @staticmethod
+    # Copied from diffusers.pipelines.flux.pipeline_flux.FluxPipeline._unpack_latents
+    def _unpack_latents(latents, height, width, vae_scale_factor):
+        batch_size, num_patches, channels = latents.shape
+        # VAE applies 8x compression on images but we must also account for packing which requires
+        # latent height and width to be divisible by 2.
+        height = 2 * (int(height) // (vae_scale_factor * 2))
+        width = 2 * (int(width) // (vae_scale_factor * 2))
+        latents = latents.view(batch_size, height // 2, width // 2, channels // 4, 2, 2)
+        latents = latents.permute(0, 3, 1, 4, 2, 5)
+        latents = latents.reshape(batch_size, channels // (2 * 2), height, width)
+        return latents
+
+    @staticmethod
+    # Copied from diffusers.pipelines.flux.pipeline_flux.FluxPipeline._prepare_latent_image_ids
+    def _prepare_latent_image_ids(batch_size, height, width, device, dtype):
+        latent_image_ids = torch.zeros(height, width, 3)
+        latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(height)[:, None]
+        latent_image_ids[..., 2] = latent_image_ids[..., 2] + torch.arange(width)[None, :]
+        latent_image_id_height, latent_image_id_width, latent_image_id_channels = latent_image_ids.shape
+        latent_image_ids = latent_image_ids.reshape(
+            latent_image_id_height * latent_image_id_width, latent_image_id_channels
+        )
+        return latent_image_ids.to(device=device, dtype=dtype)
+
+    def prepare_latents(
+        self,
+        image: Optional[torch.Tensor],
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ):
+
+        # VAE applies 8x compression on images but we must also account for packing which requires
+        # latent height and width to be divisible by 2.
+        height, width = image.shape[2:]
+        shape = (batch_size, num_channels_latents, height, width)
+
+        image_latents = image_ids = None
+
+        image = image.to(device=device, dtype=dtype)
+        image_latents = self.encode_vae_image(image=image)
+
+        image_latent_height, image_latent_width = image_latents.shape[2:]
+        image_latents = self._pack_latents(
+            image_latents, batch_size, num_channels_latents, image_latent_height, image_latent_width
+        )
+        print('image latent shape after pack', image_latents.shape)
+        image_ids = self._prepare_latent_image_ids(
+            batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
+        )
+        print('image_ids',image_ids.shape, image_ids)
+        # image ids are the same as latent ids with the first dimension set to 1 instead of 0
+        image_ids[..., 0] = 1  # for reference image ids
+        latent_ids = self._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
+        latents = randn_tensor(shape, device=device, dtype=dtype)
+        latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
+        return latents, image_latents, latent_ids, image_ids
+
+    def encode_vae_image(self, image: torch.Tensor):
+        image_latents = self.vae.encode(image)
+        image_latents = image_latents.latent_dist.mode()
+        image_latents = (image_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
+        return image_latents
+
     def predict(
         self,
         prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]],
         prompt: Union[str, List[str]],
+        prompt_2: Optional[Union[str, List[str]]] = None,
         negative_prompt: Union[None, str, List[str]] = None,
+        negative_prompt_2: Optional[Union[str, List[str]]] = None,
         num_inference_steps: int = 20,
-        guidance_scale: float = 4.0,
+        guidance_scale: float = 1.0,
         height: Optional[int] = None,
         width: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
         weight_dtype: torch.dtype = torch.bfloat16,
+        true_cfg_scale: float = 1.0,
         **kwargs
     ) -> Union[np.ndarray, List[np.ndarray]]:
         """
@@ -499,7 +743,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             prompt: Text prompt(s) for generation
             negative_prompt: Negative text prompt(s) for CFG
             num_inference_steps: Number of denoising steps
-            guidance_scale: Classifier-free guidance scale
+            guidance_scale: Classifier-free guidance scale for guided distilled model
             height: Output image height (if None, calculated from input)
             width: Output image width (if None, calculated from input)
             generator: Random generator for reproducible results
@@ -515,35 +759,30 @@ class FluxKontextLoraTrainer(BaseTrainer):
         assert prompt is not None, "prompt is required"
 
         # 1. Process input format
-        if isinstance(prompt_image, PIL.Image.Image):
-            image = [prompt_image]
-            batch_size = 1
-        else:
-            image = prompt_image
-            batch_size = len(image)
+        # convert imgage to tensor
+        if not isinstance(prompt_image, list):
+            prompt_image = [prompt_image]
+        image = []
+        for img in prompt_image:
+            if isinstance(img, PIL.Image.Image):
+                img = np.array(img).astype(np.float32)
+            if isinstance(img, np.ndarray):
+                img = torch.from_numpy(img.astype(np.float32))
+            img = img.permute(2, 0, 1)  # [H,W,C] ->  [C,H,W]
+            image.append(img)
+        image = torch.stack(image, dim=0)
+        image = self.preprocess_image(image)
 
+        batch_size = image.shape[0]
         if isinstance(prompt, str):
             prompt = [prompt] * batch_size
         elif len(prompt) != batch_size:
             raise ValueError(f"Number of prompts ({len(prompt)}) must match number of " +
                              f"images ({batch_size})")
-
         self.weight_dtype = weight_dtype
 
         # 2. Calculate image dimensions
-        if height is None or width is None:
-            original_size = image[0].size
-            # Flux typically uses 1024x1024 or maintains aspect ratio
-            if height is None and width is None:
-                height = width = 1024
-            elif height is None:
-                height = int(width * original_size[1] / original_size[0])
-            elif width is None:
-                width = int(height * original_size[0] / original_size[1])
-
-        # Ensure dimensions are multiples of 16 (VAE downsampling factor)
-        height = (height // 16) * 16
-        width = (width // 16) * 16
+        height, width = image.shape[2:]  # use original image size
 
         # 3. Get device configurations
         device_vae = self.config.predict.devices.get('vae', 'cuda:0')
@@ -554,244 +793,119 @@ class FluxKontextLoraTrainer(BaseTrainer):
         logging.info(f"Using devices - VAE: {device_vae}, Text Encoders: {device_text_encoder}/" +
                      f"{device_text_encoder_2}, Transformer: {device_transformer}")
 
-        # 4. Preprocess images
-        processed_images = []
-        for img in image:
-            img_resized = img.resize((width, height), PIL.Image.LANCZOS)
-            processed_images.append(img_resized)
+        self.vae = self.vae.to(device_vae)
+        self.text_encoder = self.text_encoder.to(device_text_encoder)
+        self.text_encoder_2 = self.text_encoder_2.to(device_text_encoder_2)
+        self.transformer = self.transformer.to(device_transformer)
 
-        # 5. Encode prompts (dual encoder: CLIP + T5)
-        do_classifier_free_guidance = guidance_scale > 1.0 and negative_prompt is not None
-
-        # Encode positive prompts
-        clip_prompt_embeds, t5_prompt_embeds = self.encode_flux_prompt(
-            prompt, processed_images, device_text_encoder, device_text_encoder_2
+        # 4. Encode prompts (dual encoder: CLIP + T5)
+        prompt_embeds, pooled_prompt_embeds, text_ids = self.encode_prompt(
+            prompt=prompt,
+            prompt_2=negative_prompt,
+            device_text_encoder=device_text_encoder,
+            device_text_encoder_2=device_text_encoder_2,
         )
-
-        # Encode negative prompts for CFG
-        if do_classifier_free_guidance:
-            if negative_prompt is None:
-                negative_prompt = [""] * batch_size
-            elif isinstance(negative_prompt, str):
-                negative_prompt = [negative_prompt] * batch_size
-
-            clip_negative_embeds, t5_negative_embeds = self.encode_flux_prompt(
-                negative_prompt, processed_images, device_text_encoder, device_text_encoder_2
+        if true_cfg_scale > 1.0:
+            (
+                negative_prompt_embeds,
+                negative_pooled_prompt_embeds,
+                negative_text_ids,
+            ) = self.encode_prompt(
+                prompt=negative_prompt,
+                prompt_2=negative_prompt_2,
+                device_text_encoder=device_text_encoder,
+                device_text_encoder_2=device_text_encoder_2,
+                max_sequence_length=self.max_sequence_length,
             )
 
-            # Concatenate for CFG
-            clip_prompt_embeds = torch.cat([clip_negative_embeds, clip_prompt_embeds])
-            t5_prompt_embeds = torch.cat([t5_negative_embeds, t5_prompt_embeds])
+        # 5. Prepare latents
+        latents, image_latents, latent_ids, image_ids = self.prepare_latents(
+            image,
+            batch_size,
+            16,
+            height,
+            width,
+            self.weight_dtype,
+            device_vae,
+        )
+        latent_ids = torch.cat([latent_ids, image_ids], dim=0)  # dim 0 is sequence dimension
 
-        # 6. Prepare latents
-        latents = self.prepare_flux_latents(
-            batch_size, height, width, device_transformer, generator, weight_dtype
+        # 6. timesteps
+        sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+        # sigmas [1.   0.95 0.9  0.85 0.8  0.75 0.7  0.65 0.6  0.55 0.5  0.45 0.4  0.35
+        #  0.3  0.25 0.2  0.15 0.1  0.05]
+        # image_seq_len 4081
+        image_seq_len = latents.shape[1]
+        mu = calculate_shift(
+            image_seq_len,
+            self.scheduler.config.get("base_image_seq_len", 256),
+            self.scheduler.config.get("max_image_seq_len", 4096),
+            self.scheduler.config.get("base_shift", 0.5),
+            self.scheduler.config.get("max_shift", 1.15),
+        )
+        # mu: 1.1474609375
+        timesteps, num_inference_steps = retrieve_timesteps(
+            self.scheduler,
+            num_inference_steps,
+            device_transformer,
+            sigmas=sigmas,
+            mu=mu,
         )
 
-        # Encode input images to latents for conditioning
-        image_latents = self.encode_flux_images(processed_images, device_vae, weight_dtype)
-
-        # 7. Prepare scheduler
-        self.scheduler.set_timesteps(num_inference_steps, device=device_transformer)
-        timesteps = self.scheduler.timesteps
+        # 7. Guidance
+        if guidance_scale > 1.0 and self.transformer.config.guidance_embeds:
+            guidance = torch.full([1], guidance_scale, device=device_transformer, dtype=torch.float32)
+            guidance = guidance.expand(latents.shape[0])
+        else:
+            guidance = None
 
         # 8. Denoising loop
         with torch.inference_mode():
-            for i, t in enumerate(tqdm(timesteps, desc="Flux Kontext Generation")):
-                # Prepare model input
-                if do_classifier_free_guidance:
-                    latent_model_input = torch.cat([latents] * 2)
-                    image_latent_input = torch.cat([image_latents] * 2)
-                else:
-                    latent_model_input = latents
-                    image_latent_input = image_latents
-
-                # Scale model input
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-
-                # Prepare conditioning
-                conditioning = torch.cat([image_latent_input, latent_model_input], dim=1)
-
-                # Forward pass through transformer
+            for _, t in enumerate(tqdm(timesteps, total=num_inference_steps, desc="Flux Kontext Generation")):
+                latent_model_input = latents
+                if image_latents is not None:
+                    latent_model_input = torch.cat([latents, image_latents], dim=1)
+                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                # latent_model_input torch.Size([1, 8137, 64])
                 noise_pred = self.transformer(
-                    hidden_states=conditioning,
-                    timestep=t,
-                    encoder_hidden_states=clip_prompt_embeds,
-                    pooled_projections=t5_prompt_embeds,
-                    return_dict=False
+                    hidden_states=latent_model_input,
+                    timestep=timestep / 1000,
+                    guidance=guidance,
+                    pooled_projections=pooled_prompt_embeds,
+                    encoder_hidden_states=prompt_embeds,
+                    txt_ids=text_ids,
+                    img_ids=latent_ids,
+                    joint_attention_kwargs={},
+                    return_dict=False,
                 )[0]
+                # noise_pred torch.Size([1, 8137, 64])
+                noise_pred = noise_pred[:, : latents.size(1)]
+                # noise_pred after choose first 4081 torch.Size([1, 4081, 64])
+                if true_cfg_scale > 1.0:
+                    neg_noise_pred = self.transformer(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=guidance,
+                        pooled_projections=negative_pooled_prompt_embeds,
+                        encoder_hidden_states=negative_prompt_embeds,
+                        txt_ids=negative_text_ids,
+                        img_ids=latent_ids,
+                        joint_attention_kwargs={},
+                        return_dict=False,
+                    )[0]
+                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+                    noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 
-                # Perform CFG
-                if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                # Compute previous sample
+                # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
-        # 9. Decode latents to images
-        self.vae.to(device_vae)
-        latents = latents.to(device_vae, dtype=self.vae.dtype)
+        latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
+        # latents after unpack torch.Size([1, 16, 106, 154])
+        latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
+        image = self.vae.decode(latents, return_dict=False)[0]
+        image = self.image_processor.postprocess(image, output_type='pil')
+        return image
 
-        # Scale latents back to original range
-        latents = latents / self.vae.config.scaling_factor
-
-        # Decode with VAE
-        with torch.inference_mode():
-            images = self.vae.decode(latents, return_dict=False)[0]
-
-        # 10. Post-process images
-        images = (images / 2 + 0.5).clamp(0, 1)  # Denormalize
-        images = images.cpu().permute(0, 2, 3, 1).float().numpy()  # BCHW -> BHWC
-
-        # Convert to PIL images
-        pil_images = []
-        for img_array in images:
-            img_array = (img_array * 255).astype(np.uint8)
-            pil_img = PIL.Image.fromarray(img_array)
-            pil_images.append(pil_img)
-
-        logging.info(f"Successfully generated {len(pil_images)} images")
-
-        if batch_size == 1:
-            return pil_images[0]
-        else:
-            return pil_images
-
-    def encode_flux_prompt(
-        self,
-        prompt: List[str],
-        images: List[PIL.Image.Image],
-        device_text_encoder: str,
-        device_text_encoder_2: str
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Encode prompts using both CLIP and T5 encoders for Flux Kontext.
-
-        Args:
-            prompt: List of text prompts
-            images: List of conditioning images (for potential image-aware encoding)
-            device_text_encoder: Device for CLIP encoder
-            device_text_encoder_2: Device for T5 encoder
-
-        Returns:
-            Tuple of (clip_embeddings, t5_embeddings)
-        """
-
-        # Encode with CLIP text encoder
-        self.text_encoder.to(device_text_encoder)
-        clip_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt"
-        )
-
-        with torch.inference_mode():
-            clip_embeddings = self.text_encoder(
-                clip_inputs.input_ids.to(device_text_encoder)
-            )[0]  # [batch_size, seq_len, hidden_size]
-
-        # Encode with T5 text encoder
-        self.text_encoder_2.to(device_text_encoder_2)
-        t5_inputs = self.tokenizer_2(
-            prompt,
-            padding="max_length",
-            max_length=512,  # T5 typical max length
-            truncation=True,
-            return_tensors="pt"
-        )
-
-        with torch.inference_mode():
-            t5_embeddings = self.text_encoder_2(
-                t5_inputs.input_ids.to(device_text_encoder_2)
-            )[0]  # [batch_size, seq_len, hidden_size]
-
-        return clip_embeddings, t5_embeddings
-
-    def prepare_flux_latents(
-        self,
-        batch_size: int,
-        height: int,
-        width: int,
-        device: str,
-        generator: Optional[torch.Generator],
-        dtype: torch.dtype
-    ) -> torch.Tensor:
-        """
-        Prepare random latents for Flux generation.
-
-        Args:
-            batch_size: Number of images to generate
-            height: Height of output images
-            width: Width of output images
-            device: Device to create latents on
-            generator: Random generator for reproducible results
-            dtype: Data type for latents
-
-        Returns:
-            Random latents tensor
-        """
-        # Flux uses 16x downsampling factor
-        latent_height = height // 8  # VAE downsampling
-        latent_width = width // 8
-
-        # Flux latent channels (typically 4 for VAE)
-        latent_channels = getattr(self.transformer.config, 'in_channels', 16) // 2  # Divide by 2
-
-        shape = (batch_size, latent_channels, latent_height, latent_width)
-
-        if generator is not None:
-            latents = torch.randn(shape, generator=generator, device=device, dtype=dtype)
-        else:
-            latents = torch.randn(shape, device=device, dtype=dtype)
-
-        # Scale latents by scheduler's init noise sigma
-        if hasattr(self.scheduler, 'init_noise_sigma'):
-            latents = latents * self.scheduler.init_noise_sigma
-
-        return latents
-
-    def encode_flux_images(
-        self,
-        images: List[PIL.Image.Image],
-        device: str,
-        dtype: torch.dtype
-    ) -> torch.Tensor:
-        """
-        Encode input images to latent space using VAE.
-
-        Args:
-            images: List of PIL images
-            device: Device for VAE
-            dtype: Data type for computation
-
-        Returns:
-            Encoded image latents
-        """
-        self.vae.to(device)
-
-        # Convert PIL images to tensor
-        image_tensors = []
-        for img in images:
-            # Convert to tensor and normalize to [-1, 1]
-            img_array = np.array(img).astype(np.float32) / 255.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)  # HWC -> CHW
-            img_tensor = img_tensor * 2.0 - 1.0  # [0,1] -> [-1,1]
-            image_tensors.append(img_tensor)
-
-        # Stack into batch
-        image_batch = torch.stack(image_tensors).to(device, dtype=dtype)
-
-        # Encode with VAE
-        with torch.inference_mode():
-            image_latents = self.vae.encode(image_batch).latent_dist.sample()
-            image_latents = image_latents * self.vae.config.scaling_factor
-
-        return image_latents
-
-    # Additional methods following QwenImageEditTrainer patterns
     def set_model_devices(self, mode="train"):
         """Set model device allocation (same signature as QwenImageEditTrainer)."""
         if mode == "train":
@@ -839,64 +953,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             self.text_encoder.to(devices['text_encoder'])
             self.text_encoder_2.to(devices.get('text_encoder_2', devices['text_encoder']))
             self.transformer.to(devices['transformer'])
-
-    def encode_prompt(self, prompt, image=None, device=None):
-        """
-        Main prompt encoding interface that combines CLIP and T5.
-        Follows QwenImageEditTrainer.encode_prompt() signature.
-        """
-        # Encode with both encoders
-        clip_embeds, clip_mask = self.encode_clip_prompt(prompt, device=device)
-        t5_embeds, t5_mask = self.encode_t5_prompt(prompt, device=device)
-
-        # Combine embeddings
-        combined_embeds, combined_mask = self.combine_text_embeddings(
-            clip_embeds, t5_embeds, clip_mask, t5_mask
-        )
-
-        return combined_embeds, combined_mask
-
-    def encode_clip_prompt(self, prompt: Union[str, List[str]], device=None):
-        """Get CLIP text embeddings."""
-        if isinstance(prompt, str):
-            prompt = [prompt]
-
-        # Tokenize
-        inputs = self.tokenizer(
-            prompt,
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        ).to(device or self.text_encoder.device)
-
-        # Encode
-        with torch.no_grad():
-            outputs = self.text_encoder(**inputs)
-            embeddings = outputs.last_hidden_state
-            attention_mask = inputs.attention_mask
-
-        return embeddings, attention_mask
-
-    def encode_t5_prompt(self, prompt: Union[str, List[str]], device=None):
-        """Get T5 text embeddings."""
-        if isinstance(prompt, str):
-            prompt = [prompt]
-
-        # Tokenize
-        inputs = self.tokenizer_2(
-            prompt,
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        ).to(device or self.text_encoder_2.device)
-
-        # Encode
-        with torch.no_grad():
-            outputs = self.text_encoder_2(**inputs)
-            embeddings = outputs.last_hidden_state
-            attention_mask = inputs.attention_mask
-
-        return embeddings, attention_mask
 
     def set_lora(self):
         """Set LoRA configuration (same structure as QwenImageEditTrainer)."""
