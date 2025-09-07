@@ -79,7 +79,7 @@ def load_flux_kontext_clip(
 
     if not use_pipeline:
         txt = CLIPTextModel.from_pretrained(
-            model_path, torch_dtype=weight_dtype, device_map=device_map
+            model_path, subfolder="text_encoder", torch_dtype=weight_dtype, device_map=device_map
         )
         return txt
     else:
@@ -124,7 +124,7 @@ def load_flux_kontext_t5(
         from transformers import T5EncoderModel
 
         return T5EncoderModel.from_pretrained(
-            model_path, torch_dtype=weight_dtype, device_map=device_map
+            model_path, subfolder="text_encoder_2", torch_dtype=weight_dtype, device_map=device_map
         )
     else:
         # Load the full pipeline temporarily to extract T5 encoder
@@ -192,12 +192,11 @@ def load_flux_kontext_tokenizers(model_path: str, use_pipeline: bool = False):
 
     if not use_pipeline:
         from transformers import CLIPTokenizer, T5TokenizerFast
-
-        return CLIPTokenizer.from_pretrained(
-            model_path
-        ), T5TokenizerFast.from_pretrained(model_path)
+        tok_clip = CLIPTokenizer.from_pretrained(model_path, subfolder="tokenizer")
+        tok_t5 = T5TokenizerFast.from_pretrained(model_path, subfolder="tokenizer_2")
+        return tok_clip, tok_t5
     else:
-        # Load the full pipeline temporarily to extract tokenizers
+    # Load the full pipeline temporarily to extract tokenizers
         pipe = FluxKontextPipeline.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
@@ -207,7 +206,7 @@ def load_flux_kontext_tokenizers(model_path: str, use_pipeline: bool = False):
         tokenizer = pipe.tokenizer  # CLIP tokenizer
         tokenizer_2 = pipe.tokenizer_2  # T5 tokenizer
 
-        # Clean up pipeline reference
+    # Clean up pipeline reference
         del pipe
         torch.cuda.empty_cache()
 
@@ -242,3 +241,39 @@ def load_flux_kontext_scheduler(model_path: str):
 
     logger.info("Successfully loaded Flux Kontext scheduler")
     return scheduler
+
+
+if __name__ == "__main__":
+    tokenizer1, tokenizer2 = load_flux_kontext_tokenizers("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
+    print(tokenizer1, tokenizer2, type(tokenizer1), type(tokenizer2))
+    vae = load_flux_kontext_vae("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
+    print('vae', type(vae))
+
+    from transformers import CLIPTokenizer, CLIPTextModel, T5TokenizerFast, T5EncoderModel
+
+    ckpt = "black-forest-labs/FLUX.1-Kontext-dev"
+    tok_clip = CLIPTokenizer.from_pretrained(ckpt, subfolder="tokenizer")
+    tok_t5 = T5TokenizerFast.from_pretrained(ckpt, subfolder="tokenizer_2")
+
+    enc_clip = CLIPTextModel.from_pretrained(ckpt, subfolder="text_encoder", torch_dtype=torch.bfloat16)
+    enc_t5 = T5EncoderModel.from_pretrained(ckpt, subfolder="text_encoder_2", torch_dtype=torch.bfloat16)
+    print('type', type(tok_clip), type(tok_t5), type(enc_clip), type(enc_t5))
+
+    t5 = load_flux_kontext_t5("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
+    print('t5', type(t5))
+    clip = load_flux_kontext_clip("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
+    print('clip', type(clip))
+    transformer = load_flux_kontext_transformer("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
+    print('transformer', type(transformer))
+    vae = load_flux_kontext_vae("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
+    print('vae', type(vae))
+    tokenizer1, tokenizer2 = load_flux_kontext_tokenizers("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
+    print('tokenizer1', type(tokenizer1), type(tokenizer2))
+    scheduler = load_flux_kontext_scheduler("black-forest-labs/FLUX.1-Kontext-dev")
+    print('scheduler', type(scheduler))
+
+    # comapre from different load methods
+    from src.utils.model_compare import compare_models
+    vae1 = load_flux_kontext_vae("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
+    vae2 = load_flux_kontext_vae("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=True)
+

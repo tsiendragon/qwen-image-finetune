@@ -447,4 +447,4 @@ if __name__ == "__main__":
     )
 
     # Or run full comparison
-    # full_results = run_full_flux_comparison(model_path, verbose=True)\
+    full_results = run_full_flux_comparison(model_path, verbose=True)
