@@ -2,11 +2,22 @@
 
 ## Overview
 
-This document provides a comprehensive analysis of the Flux Kontext model architecture, including its components, data flow, and implementation details for integration with our training framework.
+This document provides a comprehensive analysis of the Flux Kontext model architecture, including its components, data flow, and implementation details for integration with our training framework. Flux Kontext is a state-of-the-art diffusion model that combines image and text understanding through a sophisticated transformer-based architecture.
+
+## Table of Contents
+
+1. [Model Architecture Overview](#model-architecture-overview)
+2. [Input Processing Components](#input-processing-components)
+3. [Latent Space Processing](#latent-space-processing)
+4. [Core Transformer Architecture](#core-transformer-architecture)
+5. [Flow Matching Scheduler](#flow-matching-scheduler)
+6. [Data Flow Analysis](#data-flow-analysis)
 
 ## Model Architecture Overview
 
 ### High-Level Architecture
+
+The Flux Kontext model follows a multi-stage pipeline that processes both image and text inputs through specialized encoders before feeding them into a unified transformer architecture.
 
 ```mermaid
 graph TB
@@ -39,13 +50,14 @@ graph TB
     end
 ```
 
-### Component Breakdown
+## Input Processing Components
 
+### Image Resolution Handling
+Flux Kontext supports a range of predefined resolutions optimized for the model's architecture:
 
-#### image process
 ```python
 PREFERRED_KONTEXT_RESOLUTIONS = [
-    (672, 1568),
+    (672, 1568),   # Ultra-wide portrait
     (688, 1504),
     (720, 1456),
     (752, 1392),
@@ -53,7 +65,7 @@ PREFERRED_KONTEXT_RESOLUTIONS = [
     (832, 1248),
     (880, 1184),
     (944, 1104),
-    (1024, 1024),
+    (1024, 1024),  # Square format
     (1104, 944),
     (1184, 880),
     (1248, 832),
@@ -61,19 +73,24 @@ PREFERRED_KONTEXT_RESOLUTIONS = [
     (1392, 752),
     (1456, 720),
     (1504, 688),
-    (1568, 672),
+    (1568, 672),   # Ultra-wide landscape
 ]
 ```
-FLux got its own resolution preferred.
-We could use one of the resolution in it, also can use any other resolution that can be devisible by `16`. Prompt image size could be different than the generated image resolution. It depends on the requirement of your task.
 
-In the training, the size of the image to the VAE can also be different for source and target.
+**Key Resolution Characteristics:**
+- **Flexibility**: While preferred resolutions are optimized, any resolution divisible by 16 is supported
+- **Training Adaptability**: Source and target images can have different resolutions during training
+- **Pipeline Control**: The FluxKontext pipeline provides parameters (`height`, `width`, `max_area`, `_auto_resize`) for dynamic resolution adjustment
+- **Task-Dependent**: Resolution choice depends on specific use case requirements
 
-In the FLuxKontext Pipeline, you could adjust  `height`, `width`, `max_area` and `_auto_resize` to control the size.
 
+### Text Encoding System (Dual Encoder Architecture)
 
-#### Prompt Encoding (Dual Encoder)
-```
+Flux Kontext employs a sophisticated dual-encoder system that combines CLIP and T5 encoders to capture both high-level semantic concepts and detailed textual nuances.
+
+#### Encoding Process Overview
+
+```python
 (
     prompt_embeds,
     pooled_prompt_embeds,
@@ -89,410 +106,788 @@ In the FLuxKontext Pipeline, you could adjust  `height`, `width`, `max_area` and
     lora_scale=lora_scale,
 )
 ```
-Before going to the diffuser, the prompt are encoded by the clip and T5 to get the prompt embedding and a pooled prompt embedding. For a given example, the shape of the output be
+
+**Output Tensor Shapes:**
+```python
+# T5 embeddings: Rich contextual representations
+prompt_embeds.shape        # torch.Size([1, 512, 4096])
+
+# CLIP embeddings: Pooled semantic features
+pooled_prompt_embeds.shape # torch.Size([1, 768])
+
+# Position encoding coordinates for 3D RoPE
+text_ids.shape            # torch.Size([512, 3])
 ```
-# shape of prompt_embeds torch.Size([1, 512, 4096])
-# shape of pooled_prompt_embeds torch.Size([1, 768])
-# shape of text_ids torch.Size([512, 3])
-```
-Generally, clip only get the high level semantic meanining, and T5 can have the very detailed semantic meaning. Once should notice that the clip cannot handle too much long prompt, it will clip the prompt to a maximum length of the token, say `77` tokens. This leads us to design different prompt for clip and T5. If you have pass the prompt_2, then prompt_2 is feeded into T5 and prompt is feeded into clip, otherwise, it should use same prompt for T5 and clip. But if your prompt is too long, then clip may have strange behavior.
+
+#### Encoder Specialization
+
+**CLIP Encoder:**
+- **Purpose**: Captures high-level semantic concepts and visual-textual alignment
+- **Limitation**: Maximum token length of 77 tokens (truncates longer prompts)
+- **Strength**: Fast inference and optimized for visual concepts
+
+**T5 Encoder:**
+- **Purpose**: Provides detailed semantic understanding and complex prompt interpretation
+- **Capacity**: Handles up to 512 tokens (much longer than CLIP)
+- **Strength**: Superior text comprehension for complex descriptions
+
+#### Prompt Strategy
+
+The dual-encoder system supports flexible prompt handling:
+
+- **Single Prompt**: When only `prompt` is provided, both encoders use the same text
+- **Dual Prompts**: When `prompt_2` is specified:
+  - `prompt` → CLIP encoder (should be concise, ≤77 tokens)
+  - `prompt_2` → T5 encoder (can be detailed, ≤512 tokens)
+- **Best Practice**: Use concise, visual-focused descriptions for CLIP and detailed, contextual descriptions for T5
+
+#### Implementation Details
 
 ```python
-# We only use the pooled prompt output from the CLIPTextModel
+# CLIP encoder processing
 pooled_prompt_embeds = self.get_clip_prompt_embeds(
     prompt=prompt,
 )
+
+# T5 encoder processing
 prompt_embeds = self.get_t5_prompt_embeds(
     prompt=prompt_2,
-    max_sequence_length=max_sequence_length, # usually 512
+    max_sequence_length=max_sequence_length,  # typically 512
 )
-# shape of prompt_embeds: [batchsize, 512, 4096]
-text_ids = torch.zeros(prompt_embeds.shape[1], 3)
-# shape of text_ids [512,3]
+
+# Generate position encoding coordinates for 3D RoPE
+text_ids = torch.zeros(prompt_embeds.shape[1], 3)  # Shape: [512, 3]
 ```
 
-直说：**`text_ids` 不是 token id，也不是 attention mask**。在 Flux 里它是给**3D RoPE 位置编码**用的“**坐标索引**”（shape 通常为 `(seq_len, 3)`）。做法是把文本侧的 `txt_ids` 与图像侧的 `img_ids` 在序列维上拼起来，送进 `FluxPosEmbed` 生成旋转位置编码，再用于注意力计算。([Hugging Face][1])
+#### Understanding `text_ids`: 3D RoPE Position Encoding
 
-关键点：
+**Important**: `text_ids` are **not token IDs or attention masks**. They serve as coordinate indices for Flux's 3D Rotary Position Embedding (RoPE) system.
 
-* **文本侧的 `text_ids` 被设为全 0**（见你粘的代码）：等价于“不对文本再施加 RoPE”，因为文本已经由 T5/CLIP 编码器自带位置信息；而 **图像侧 `img_ids`** 则携带 2D 网格坐标（如 `(row, col)`），两者拼接后一起生成位置编码。([GitHub][2], [Hugging Face][1])
-* Flux 的 RoPE 是 **三轴** 的（一般可视作 *t/h/w*），配置里常见 `axes_dims_rope = (16, 56, 56)`，三者之和等于每个注意力头的维度（例如 128）。这解释了为什么 `text_ids`/`img_ids` 的最后一维是 3。([Hugging Face][1], [Ollama][3])
-* 官方 diffusers 文档/实现展示了这一路径：`txt_ids` 与 `img_ids` → 拼接成 `ids` → `pos_embed(ids)` → 作为 `image_rotary_emb` 进入 transformer。([Hugging Face][4])
+**Key Concepts:**
 
-因此：**`text_ids` 的作用是为“文本 token 序列部分”占位提供 RoPE 坐标**（默认全 0），以便和图像 token 的坐标一起生成统一的旋转位置编码；正常使用时**无需改动它**，除非你在做自定义的文本侧 RoPE 策略或研究实现细节。([zhouyifan.net][5])
+1. **Purpose**: `text_ids` provide spatial coordinates for the 3D RoPE mechanism
+   - Shape: `(sequence_length, 3)` where 3 represents `[domain, height, width]` coordinates
+   - Text tokens use all-zero coordinates since T5/CLIP encoders already provide positional information
 
-[1]: https://huggingface.co/spaces/InstantX/flux-IP-adapter/blob/main/transformer_flux.py "transformer_flux.py · InstantX/flux-IP-adapter at main"
-[2]: https://raw.githubusercontent.com/huggingface/diffusers/main/examples/community/pipeline_flux_with_cfg.py "raw.githubusercontent.com"
-[3]: https://ollama.hf-mirror.com/Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro-2.0/blob/ee7b07538d5c07499f4b92ae4c210a44a18ebf18/controlnet_flux.py?utm_source=chatgpt.com "Shakker-Labs/FLUX.1-dev-ControlNet-Union-Pro-2.0 at ..."
-[4]: https://huggingface.co/docs/diffusers/en/api/pipelines/flux "Flux"
-[5]: https://zhouyifan.net/2024/09/03/20240809-flux1/ "Stable Diffusion 3「精神续作」FLUX.1 源码深度前瞻解读 | 周弈帆的博客"
+2. **3D RoPE Architecture**:
+   - Flux uses three-axis RoPE (typically configured as `axes_dims_rope = (16, 56, 56)`)
+   - The sum equals the attention head dimension (e.g., 128)
+   - Enables unified position encoding for both text and image tokens
+
+3. **Integration Process**:
+   ```
+   text_ids + image_ids → concatenated_ids → FluxPosEmbed → rotary_embeddings → transformer
+   ```
+
+4. **Domain Separation**:
+   - **Text domain**: `text_ids` set to zeros `[0, 0, 0]`
+   - **Image domain**: `image_ids` contain 2D grid coordinates `[1, row, col]`
+   - This allows the model to distinguish between text and image tokens
+
+**Practical Implications:**
+- Text tokens don't require additional positional encoding (handled by pre-trained encoders)
+- Image tokens receive explicit 2D spatial positioning
+- The unified coordinate system enables cross-modal attention between text and image regions
 
 
-##### clip prompt embedding
-- **Model**: OpenAI CLIP-based text encoder
-- **Purpose**: Primary text understanding and image-text alignment
-- **Input**: Tokenized text prompts
-- **Output**: Dense text embeddings
-- **Characteristics**:
-  - Fast inference
-  - Good for general image-text understanding
-  - Optimized for visual concepts
-  - shape [batchsize, 768]
+#### CLIP Text Encoder Implementation
+
+**Architecture**: OpenAI CLIP-based text encoder optimized for visual-semantic alignment
+
+**Specifications**:
+- **Model**: Pre-trained `CLIPTextModel`
+- **Tokenizer**: `CLIPTokenizer`
+- **Max Length**: 77 tokens
+- **Output Shape**: `[batch_size, 768]` (pooled embeddings)
+
+**Processing Pipeline**:
+
+```python
+def get_clip_prompt_embeds(self, prompt: Union[str, List[str]]):
+    # 1. Tokenization
+    text_inputs = self.tokenizer(
+        prompt,
+        padding="max_length",
+        max_length=self.tokenizer_max_length,  # 77 tokens
+        truncation=True,
+        return_overflowing_tokens=False,
+        return_length=False,
+        return_tensors="pt",
+    )
+
+    # 2. Text encoding
+    prompt_embeds = self.text_encoder(
+        text_input_ids.to(device),
+        output_hidden_states=False
+    )
+
+    # 3. Extract pooled representation
+    prompt_embeds = prompt_embeds.pooler_output  # [batch_size, 768]
+
+    return prompt_embeds
 ```
-def get_clip_prompt_embeds(
-    self,
-    prompt: Union[str, List[str]],
-):
-```
-The clip prompt embedding go through
-1. tokenizer
-```
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=self.tokenizer_max_length,
-            truncation=True,
-            return_overflowing_tokens=False,
-            return_length=False,
-            return_tensors="pt",
-        )
-```
-It is from `CLIPTokenizer`
-2. text encoder
-```
-prompt_embeds = self.text_encoder(text_input_ids.to(device), output_hidden_states=False)
-```
-from `CLIPTextModel` which is the preatained open-ai clip model
-3. get pooled embedding
-```
-prompt_embeds = prompt_embeds.pooler_output
-```
-Obtain the fixed shape pooled embedding `[batchsize, 768]`
 
+**Key Characteristics**:
+- **Speed**: Fast inference due to smaller model size
+- **Specialization**: Optimized for visual concepts and image-text alignment
+- **Limitation**: Token truncation at 77 tokens may lose information for long prompts
 
+#### T5 Text Encoder Implementation
 
-##### T5 prompt embedding
-- **Model**: Google T5-based text encoder (likely T5-XXL)
-- **Purpose**: Enhanced text understanding and complex prompt interpretation
-- **Input**: Tokenized text prompts. The T5-XXL will also truncate the input tokens, but usually the 512 tokens, which is quite large then clip 77.
-- **Output**: Rich contextual embeddings
-- **Characteristics**:
-  - Superior text understanding
-  - Better handling of complex prompts
-  - Higher memory requirements
-  - output shape [batchsize, 512, 4096]  # 512 is the seqeunce
+**Architecture**: Google T5-XXL encoder model for comprehensive text understanding
+
+**Specifications**:
+- **Model**: `T5EncoderModel` (T5-XXL variant)
+- **Tokenizer**: `T5TokenizerFast`
+- **Max Length**: 512 tokens (7x longer than CLIP)
+- **Output Shape**: `[batch_size, 512, 4096]` (sequence embeddings)
+
+**Processing Pipeline**:
+
 ```python
 def get_t5_prompt_embeds(
     self,
     prompt: Union[str, List[str]] = None,
     max_sequence_length: int = 512,
 ):
+    # 1. Tokenization with extended context
     text_inputs = self.tokenizer_2(
         prompt,
         padding="max_length",
-        max_length=max_sequence_length,
+        max_length=max_sequence_length,  # 512 tokens
         truncation=True,
         return_length=False,
         return_overflowing_tokens=False,
         return_tensors="pt",
     )
-    prompt_embeds = self.text_encoder_2(text_input_ids, output_hidden_states=False)[0]
+
+    # 2. Generate rich contextual embeddings
+    prompt_embeds = self.text_encoder_2(
+        text_input_ids,
+        output_hidden_states=False
+    )[0]  # [batch_size, 512, 4096]
+
+    return prompt_embeds
 ```
-The tokenizer if `T5TokenizerFast`. The model is from `T5EncoderModel` from google.
+
+**Key Characteristics**:
+- **Capacity**: Handles complex, detailed prompts up to 512 tokens
+- **Quality**: Superior semantic understanding and contextual reasoning
+- **Resource**: Higher memory and computational requirements
+- **Output**: Rich sequence-level embeddings for fine-grained text-image alignment
+
+## Latent Space Processing
 
 ### Visual Encoding System (VAE)
 
-Now comes to the a kernel step, prepare the latent used for diffusion models
+The VAE (Variational Autoencoder) system is responsible for converting images between pixel space and latent space, enabling efficient diffusion processing in a compressed representation.
+
+#### Latent Preparation Overview
+
+The core latent preparation process handles both input images and noise initialization:
+
 ```python
 latents, image_latents, latent_ids, image_ids = self.prepare_latents(
-            image,
-            batch_size * num_images_per_prompt,
-            num_channels_latents,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device,
-            generator,
-            latents,
-        )
+    image,
+    batch_size * num_images_per_prompt,
+    num_channels_latents,  # 16 channels
+    height,
+    width,
+    prompt_embeds.dtype,
+    device,
+    generator,
+    latents,
+)
 ```
 
+#### Detailed Implementation
+
 ```python
-    def prepare_latents(
-        self,
-        image: Optional[torch.Tensor],
-        batch_size: int,
-        num_channels_latents: int, # 16, fixed
-        height: int,
-        width: int,
-        latents: Optional[torch.Tensor] = None,
-    ):
-        # VAE applies 8x compression on images but we must also account for packing which requires
-        # VAE encoder convert image from shape [3,H,W] -> [16,H/8,W/8]
-        # latent height and width to be divisible by 2.
-        # self.vae_scale_factor = 8
-        height = 2 * (int(height) // (self.vae_scale_factor * 2))
-        width = 2 * (int(width) // (self.vae_scale_factor * 2))
-        shape = (batch_size, num_channels_latents, height, width)
-        # [3,H,W] -> [16,H/8,W/8]
+def prepare_latents(
+    self,
+    image: Optional[torch.Tensor],
+    batch_size: int,
+    num_channels_latents: int,  # Fixed at 16 channels
+    height: int,
+    width: int,
+    latents: Optional[torch.Tensor] = None,
+):
+    # Ensure dimensions are compatible with VAE and packing requirements
+    # VAE applies 8x compression: [3,H,W] -> [16,H/8,W/8]
+    # Additional 2x factor required for latent packing
+    height = 2 * (int(height) // (self.vae_scale_factor * 2))  # vae_scale_factor = 8
+    width = 2 * (int(width) // (self.vae_scale_factor * 2))
 
-        image_latents = image_ids = None
-        image_latents = self.encode_vae_image(image=image)
-        # iamge shape [1, 3, 704, 1024] -> latent shape [1, 16, 88, 128] 8x downsampling
+    # Define target latent shape
+    shape = (batch_size, num_channels_latents, height, width)
 
+    # Process input image through VAE encoder
+    image_latents = self.encode_vae_image(image=image)
+    # Example: [1, 3, 704, 1024] -> [1, 16, 88, 128] (8x downsampling)
 
-        image_latents = torch.cat([image_latents], dim=0)
+    # Pack image latents for transformer processing
+    image_latent_height, image_latent_width = image_latents.shape[2:]
+    image_latents = self._pack_latents(
+        image_latents, batch_size, num_channels_latents,
+        image_latent_height, image_latent_width
+    )
+    # Example: [1, 16, 88, 128] -> [1, 2816, 64] (space-to-depth packing)
 
-        image_latent_height, image_latent_width = image_latents.shape[2:]
-        image_latents = self._pack_latents(
-            image_latents, batch_size, num_channels_latents, image_latent_height, image_latent_width
-        )
-        #  [1, 16, 88, 128] -> [1, 2816, 64]
-        image_ids = self._prepare_latent_image_ids(
-            batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
-        )
-        # [1, 2816, 64]
-        #  tensor(
-        # [[ 0.,  0.,  0.],
-        # [ 0.,  0.,  1.],
-        # [ 0.,  0.,  2.],
-        # ...,
-        # [ 0., 43., 61.],
-        # [ 0., 43., 62.],
-        # [ 0., 43., 63.]],
-        #
-        # image ids are the same as latent ids with the first dimension set to 1 instead of 0
-        image_ids[..., 0] = 1
+    # Generate position IDs for image tokens
+    image_ids = self._prepare_latent_image_ids(
+        batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
+    )
+    # Set domain identifier: 1 for image domain
+    image_ids[..., 0] = 1
 
-        latent_ids = self._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
+    # Generate position IDs for noise latents
+    latent_ids = self._prepare_latent_image_ids(
+        batch_size, height // 2, width // 2, device, dtype
+    )
 
-        if latents is None:
-            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-            latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
-        else:
-            latents = latents.to(device=device, dtype=dtype)
+    # Initialize or prepare noise latents
+    if latents is None:
+        latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+        latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
+    else:
+        latents = latents.to(device=device, dtype=dtype)
 
-        return latents, image_latents, latent_ids, image_ids
+    return latents, image_latents, latent_ids, image_ids
 ```
-#### preprocess
-the image to the VAE encode is already processs to proper size which is divisable by 16
-the width and shape determined the random latent (initial noise for diffusion model). It could be different than the image to VAE encode (prompt image embedding), but should also be divisible by 16.
 
+**Key Processing Steps**:
 
+1. **Dimension Alignment**: Ensures height/width compatibility with 8x VAE compression and 2x packing
+2. **VAE Encoding**: Converts RGB images to 16-channel latent representations
+3. **Latent Packing**: Applies space-to-depth transformation for efficient transformer processing
+4. **Position ID Generation**: Creates coordinate systems for both image and noise latents
+5. **Domain Separation**: Distinguishes image tokens (domain=1) from noise tokens (domain=0)
+#### VAE Image Encoding
 
-#### encode_vae_image
-Can be simplied as
+**Preprocessing Requirements**:
+- Input images must be preprocessed to dimensions divisible by 16
+- Target latent dimensions can differ from input image dimensions (both must be divisible by 16)
+- This flexibility allows for different source and target resolutions during training
+
+**Core Encoding Process**:
 
 ```python
-self.vae.encode(image[i : i + 1]).latent_dist.mode()
+def encode_vae_image(self, image):
+    return self.vae.encode(image).latent_dist.mode()
 ```
-短答：**为了一致、可复现、少噪声的条件编码**。Flux 在把图像送入 VAE encoder 时默认取 **posterior 的众数（`mode()`，对高斯就是均值）**，而不是随机采样——这样同一张参考图总是得到**相同的 latents**，不额外引入随机噪声；扩散过程本身已经会加噪并建模随机性。Diffusers 的多条 img2img / inpaint / ControlNet 管线也都是这么做的（`latent_dist.mode()`），保持图像条件稳定、结果更可控。([GitHub][1])
 
-要点（直说）
+**Why Use `.mode()` Instead of Sampling?**
 
-* **确定性/复现性**：使用 `mode()`（均值）→ 同一输入图像映射到同一 latent，编辑/参照生成更稳定；这在官方示例与训练脚本中也作为默认做法（如 InstructPix2Pix 直接用 `vae.encode(...).latent_dist.mode()` 取“原图嵌入”）。([Medium][2])
-* **避免“双重噪声”**：扩散采样已经注入随机性，VAE 再随机采样只会引入额外方差、带来抖动；而 SD/Flux 系列的 VAE **posterior 方差通常很小**，均值和一次随机样本几乎无差别，取均值更稳。([fast.ai Course Forums][3], [Reddit][4])
-* **生态一致性**：Diffusers 通用的 `retrieve_latents` 就提供两种模式：`"sample"`（随机）和`"argmax"`（取 `mode()`）；多条官方管线默认走后者以保证稳定条件。([Diffchecker][5])
+The VAE encoding uses the **mode (mean) of the posterior distribution** rather than random sampling for several critical reasons:
 
-如果你**确实需要随机性**（例如做微小风格扰动/数据增强），可以显式改为采样：
+1. **Deterministic Behavior**:
+   - Same input image always produces identical latents
+   - Ensures reproducible results across runs
+   - Essential for stable conditioning in img2img/editing tasks
 
+2. **Noise Management**:
+   - Diffusion process already introduces controlled randomness
+   - Additional VAE sampling would create unwanted variance
+   - VAE posterior variance is typically small in trained models
+
+3. **Stability & Control**:
+   - Provides consistent baseline for image-to-image transformations
+   - Reduces artifacts and improves generation quality
+   - Standard practice across diffusion model implementations
+
+**Alternative Sampling (if needed)**:
 ```python
-latents = vae.encode(image).latent_dist.sample(generator)  # 而不是 .mode()
-# 或者
+# For data augmentation or style variation
+latents = vae.encode(image).latent_dist.sample(generator)
+# or
 latents = retrieve_latents(encoder_output, generator, sample_mode="sample")
 ```
 
-但在大多数 **img2img / 参考图编辑 / inpaint** 场景，**取 `mode()` 更稳、更可控**。([GitHub][1])
+**Recommendation**: Use `.mode()` for production applications; consider sampling only for research or data augmentation purposes.
 
-[1]: https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/controlnet/pipeline_controlnet_sd_xl_img2img.py?utm_source=chatgpt.com "pipeline_controlnet_sd_xl_img2i..."
-[2]: https://medium.com/p/def0b2583c89?utm_source=chatgpt.com "INSTRUCT-PIX2PIX STABLE DIFFUSION DIFFUSION MODEL"
-[3]: https://forums.fast.ai/t/lesson-9-official-topic/100562?page=14&utm_source=chatgpt.com "Lesson 9 official topic - Page 14 - Part 2 2022/23"
-[4]: https://www.reddit.com/r/StableDiffusion/comments/1ag5h5s/the_vae_used_for_stable_diffusion_1x2x_and_other/?utm_source=chatgpt.com "The VAE used for Stable Diffusion 1.x/2.x and other models ..."
-[5]: https://www.diffchecker.com/m2pNMQaT/?utm_source=chatgpt.com "diffusers sdxl t2i vs i2i"
+#### Latent Packing: Space-to-Depth Transformation
 
-#### pack latent
-一句话：这是把 VAE latent 的 `[B,C,H,W]` 做 **space-to-depth(2×2)** 的“打包/分块”，得到以 **2×2 像素块为一个 token** 的序列，供 Flux 的 Transformer 处理与做 3D-RoPE 定位。
+**Purpose**: Converts VAE latents from `[B,C,H,W]` format to sequence format `[B, seq_len, feat_dim]` by grouping 2×2 pixel patches into individual tokens for transformer processing.
 
-| 步骤  | 代码                               | 形状变化                     | 含义                         |
-| --- | -------------------------------- | ------------------------ | -------------------------- |
-| 输入  | —                                | `[B, C, H, W]`           | VAE 编码后的图像 latent          |
-| 分块  | `view(B, C, H//2, 2, W//2, 2)`   | `[B, C, H/2, 2, W/2, 2]` | 把每个 2×2 邻域显式拆出             |
-| 轴重排 | `permute(0, 2, 4, 1, 3, 5)`      | `[B, H/2, W/2, C, 2, 2]` | 把“块网格 (H/2×W/2)”放到前面       |
-| 拉平  | `reshape(B, (H//2)*(W//2), C*4)` | `[B, (H/2·W/2), 4C]`     | 每个 2×2 块 → 1 个 token，特征维×4 |
+**Transformation Process**:
 
-直观理解：
+| Step | Operation | Shape Change | Description |
+|------|-----------|--------------|-------------|
+| Input | — | `[B, C, H, W]` | VAE-encoded image latents |
+| Reshape | `view(B, C, H//2, 2, W//2, 2)` | `[B, C, H/2, 2, W/2, 2]` | Explicitly separate 2×2 neighborhoods |
+| Permute | `permute(0, 2, 4, 1, 3, 5)` | `[B, H/2, W/2, C, 2, 2]` | Move spatial grid to front dimensions |
+| Flatten | `reshape(B, (H//2)*(W//2), C*4)` | `[B, (H/2·W/2), 4C]` | Each 2×2 patch → 1 token, 4× feature dim |
 
-* 等价于 **`PixelUnshuffle(2)` + 把空间维展平成序列**。
-* 这么做把**序列长度 L 降为原来的 1/4**（注意力开销 \~O(L²) 降幅巨大），同时把**每个 token 的通道维增为 4C**，保留局部 2×2 信息密度。
-* 生成的网格 `(H/2, W/2)` 正好用于构建 `image_ids`（行、列坐标 + 域标记）做 **3D RoPE** 定位；文本 token 的 `text_ids` 与之在序列维拼接，实现统一的位置编码。
+**Key Benefits**:
 
-例子（你注释里的数）：`[1,16,88,128] -> [1, 2816, 64]`
+1. **Efficiency**: Reduces sequence length by 4× (from H×W to H/2×W/2)
+   - Attention complexity scales as O(L²), so 4× reduction = 16× speedup
+   - Maintains information density by increasing feature dimensions
 
-* `seq_len = 88/2 * 128/2 = 44 * 64 = 2816`
-* `feat_dim = 16 * 4 = 64`
+2. **Spatial Coherence**: Preserves local 2×2 patch relationships
+   - Equivalent to `PixelUnshuffle(2)` followed by spatial flattening
+   - Each token represents a coherent spatial region
 
-注意事项：
+3. **Position Encoding**: Creates grid coordinates `(H/2, W/2)` for 3D RoPE
+   - Enables precise spatial positioning in transformer attention
+   - Integrates seamlessly with text token positioning
 
-* 需要 `H`、`W` **是偶数**；否则会 shape 不整除。这也是为什么原来的 w,h 需要被 16 整除
-* `view` 依赖内存连续；若上游非连续，优先用 `.reshape(...)`（更稳）。
+**Example Transformation**:
+```
+Input:  [1, 16, 88, 128] (VAE latents)
+Output: [1, 2816, 64]    (packed tokens)
 
-#### image id
+Where:
+- seq_len = (88/2) × (128/2) = 44 × 64 = 2816 tokens
+- feat_dim = 16 × 4 = 64 features per token
+```
 
-一句话：**`image_ids` 是给 Flux 的 3D RoPE 位置编码用的“网格坐标 + 域标记”**，告诉 Transformer 每个**图像 latent 补丁**在二维网格里的行列位置，并标明这是“图像域”的 token，而不是纯噪声 latent 或文本。([Hugging Face][1])
+**Requirements**:
+- Height and width must be even numbers (divisible by 2)
+- Input tensors must be memory-contiguous for `view()` operation
+- Use `reshape()` instead of `view()` if memory layout is uncertain
 
-要点：
+#### Image Position IDs Generation
 
-* **怎么生成**：对 VAE latent 先按 2×2 打包成补丁（例：`[1,16,88,128] → [1,2816,64]`），再用补丁网格尺寸 `(H/2, W/2)` 构建 `(row, col)` 坐标，形成张量 **`[H/2, W/2, 3]`**，最后展平成 **`[(H/2·W/2), 3]`**。后三维里的 **第2维=行索引，第3维=列索引**。([Hugging Face][1])
-* **域标记**：把 **第1维设为 1**（image domain）；对应的 `latent_ids` 用同样网格但域标记默认为 0。这样模型能区分“初始图像补丁”和“要生成/去噪的 latent 补丁”。([Hugging Face][1])
-* **如何使用**：生成好 `latent_ids` 后，若是 img2img/编辑流程，会把 `image_ids` **在序列维拼到** `latent_ids` 后面，一起喂给位置嵌入与注意力层，保证空间对齐与跨域注意力。([Hugging Face][1])
+**Purpose**: `image_ids` provide grid coordinates and domain markers for Flux's 3D RoPE position encoding system, enabling the transformer to understand spatial relationships between image patches.
 
-别混淆：`image_ids` **不是 token ids / attention mask**；它只携带**位置与域信息**，供 **FluxPosEmbed/3D RoPE** 计算旋转位置编码使用。([Hugging Face][1])
+**Core Concept**:
+`image_ids` are **not token IDs or attention masks**. They serve as coordinate indices that carry **position and domain information** for the FluxPosEmbed/3D RoPE system.
 
-[1]: https://huggingface.co/spaces/kontext-community/FLUX.1-Kontext-multi-image/blob/main/pipeline_flux_kontext.py "pipeline_flux_kontext.py · kontext-community/FLUX.1-Kontext-multi-image at main"
+#### Generation Process
 
-直说：它在**为每个 latent 补丁生成 2D 网格坐标**，供 Flux 的 **3D RoPE 位置编码**用。
+**Step 1: Grid Construction**
+```python
+def _prepare_latent_image_ids(batch_size, height, width, device, dtype):
+    # Create coordinate grid [H, W, 3] where 3 = [domain, row, col]
+    ids = torch.zeros(height, width, 3, device=device, dtype=dtype)
 
-* 先建张量 `[H, W, 3]`，全 0。三个通道语义是：`[domain, row, col]`。
-* 用 `torch.arange(height)[:, None]` 写入第 2 通道 ⇒ 每行的 **行索引**（0…H-1）。
-* 用 `torch.arange(width)[None, :]` 写入第 3 通道 ⇒ 每列的 **列索引**（0…W-1）。
-* `domain` 通道保持 0（表示“latent 域”）；若是参考图像的 `image_ids` 一般把它设为 1，用于区分域。
-* 最后把网格展平成 `[(H·W), 3]` 并转到指定 `device/dtype`；后续再按 batch 维度进行 `repeat`/拼接，与 `text_ids`、`image_ids`一起送入 RoPE。
+    # Fill row indices (0 to H-1)
+    ids[:, :, 1] = torch.arange(height, device=device, dtype=dtype)[:, None]
 
-直观例子：对位置 `(i, j)`，得到的 ID 就是 `[0, i, j]`。这让 transformer 在注意力里“知道”每个 token 对应的**行、列**（以及属于**哪个域**）。
+    # Fill column indices (0 to W-1)
+    ids[:, :, 2] = torch.arange(width, device=device, dtype=dtype)[None, :]
 
-### Diffusion Step
+    # Flatten spatial dimensions: [H, W, 3] -> [(H*W), 3]
+    ids = ids.reshape(-1, 3)
 
-#### Timesteps
+    return ids.repeat(batch_size, 1, 1)  # [batch_size, H*W, 3]
+```
+
+**Step 2: Domain Assignment**
+- **Latent domain**: `latent_ids[..., 0] = 0` (noise/generation tokens)
+- **Image domain**: `image_ids[..., 0] = 1` (reference image tokens)
+
+#### Coordinate System
+
+For each spatial position `(i, j)` in the packed latent grid:
+- **Latent tokens**: `[0, i, j]` (domain=0, row=i, col=j)
+- **Image tokens**: `[1, i, j]` (domain=1, row=i, col=j)
+
+#### Integration with 3D RoPE
+
+**Sequence Concatenation**:
+```
+text_ids + latent_ids + image_ids → concatenated_ids → FluxPosEmbed → rotary_embeddings
+```
+
+**Domain Separation Benefits**:
+1. **Cross-modal attention**: Text tokens can attend to specific image regions
+2. **Spatial awareness**: Model understands relative positions between patches
+3. **Domain distinction**: Clear separation between text, noise, and image tokens
+4. **Unified encoding**: Single position embedding system for all modalities
+
+#### Example Output
+
+For a `44×64` packed grid:
+```python
+# Sample image_ids entries:
+[[1., 0., 0.],   # domain=1, row=0, col=0
+ [1., 0., 1.],   # domain=1, row=0, col=1
+ [1., 0., 2.],   # domain=1, row=0, col=2
+ ...
+ [1., 43., 63.]] # domain=1, row=43, col=63
+```
+
+This coordinate system enables the transformer to perform spatially-aware attention across text and image modalities.
+
+### Diffusion Process
+
+#### Timestep Scheduling
+
+The Flux diffusion process uses a sophisticated timestep scheduling system that adapts to image resolution and sequence length for optimal denoising performance.
+
+**Implementation Overview**:
 
 ```python
-       sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
-        # sigmas [1.   0.95 0.9  0.85 0.8  0.75 0.7  0.65 0.6  0.55 0.5  0.45 0.4  0.35
-        #  0.3  0.25 0.2  0.15 0.1  0.05]
-        # image_seq_len 4081
-        image_seq_len = latents.shape[1]
-        mu = calculate_shift(
-            image_seq_len,
-            self.scheduler.config.get("base_image_seq_len", 256),
-            self.scheduler.config.get("max_image_seq_len", 4096),
-            self.scheduler.config.get("base_shift", 0.5),
-            self.scheduler.config.get("max_shift", 1.15),
-        )
-        # mu: 1.1474609375
-        timesteps, num_inference_steps = retrieve_timesteps(
-            self.scheduler,
-            num_inference_steps,
-            device,
-            sigmas=sigmas,
-            mu=mu,
-        )
-        # timesteps tensor([1000.0000,  983.5671,  965.9304,  946.9526,  926.4745,  904.3112,
-        #         880.2457,  854.0219,  825.3360,  793.8240,  759.0469,  720.4692,
-        #         677.4321,  629.1149,  574.4824,  512.2097,  440.5739,  357.2913,
-        #         259.2705,  142.2193], device='cuda:0')
+# Generate noise schedule
+sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+# Example: [1.0, 0.95, 0.9, 0.85, ..., 0.1, 0.05] for 20 steps
+
+# Calculate resolution-dependent shift parameter
+image_seq_len = latents.shape[1]  # e.g., 4081 tokens
+mu = calculate_shift(
+    image_seq_len,
+    base_image_seq_len=256,    # Base sequence length
+    max_image_seq_len=4096,    # Maximum sequence length
+    base_shift=0.5,            # Minimum shift value
+    max_shift=1.15,            # Maximum shift value
+)
+# Result: mu ≈ 1.1474609375 for high-resolution images
+
+# Generate adaptive timesteps
+timesteps, num_inference_steps = retrieve_timesteps(
+    scheduler=self.scheduler,
+    num_inference_steps=num_inference_steps,
+    device=device,
+    sigmas=sigmas,
+    mu=mu,
+)
+# Output: tensor([1000.0, 983.6, 965.9, ..., 259.3, 142.2])
 ```
-**Flux 的 `timesteps` 由两件事共同决定**——你给定的**噪声日程 `sigmas`**，以及按分辨率/序列长度自适应的**时间偏移系数 `mu`**。二者传进 `FlowMatchEulerDiscreteScheduler.set_timesteps(...)` 后，被映射成你看到的那串从 \~1000 递减到 \~140 的离散时间步。
+#### Scheduling Components
 
-要点拆解
+**1. Noise Schedule (`sigmas`)**
+- **Purpose**: Defines the noise strength at each denoising step
+- **Default**: Linear schedule from 1.0 to 1/num_steps
+- **Alternatives**: Karras, exponential, or custom schedules supported
+- **Effect**: Controls the overall denoising trajectory
 
-* **`sigmas`（噪声强度表）**
-  你的代码用线性表：`np.linspace(1.0, 1/steps, steps)`；调度器也支持内置的 Karras/指数等方案。这些值规定了每一步的噪声级。([Hugging Face][1])
-* **`mu`（分辨率相关的“时间位移”）**
-  先按**序列长度**算一个位移量，随后在 `set_timesteps` 里对 `sigmas` 进行**分辨率相关的时序平移/拉伸**：
+**2. Resolution-Adaptive Shift (`mu`)**
 
-  $$
-  \mu \;=\; m \cdot \text{image\_seq\_len} + b,\quad
-  m=\frac{\text{max\_shift}-\text{base\_shift}}{\text{max\_seq\_len}-\text{base\_seq\_len}},\;
-  b=\text{base\_shift}-m\cdot \text{base\_seq\_len}.
-  $$
+The shift parameter adapts the timestep schedule based on image resolution:
 
-  这样当序列从 `base_image_seq_len` 增到 `max_image_seq_len` 时，`mu` 会从 `base_shift` 线性过渡到 `max_shift`。你例子里 `image_seq_len≈4081` 得到 `mu≈1.14746` 接近上限。([GitHub][2])
-* **调度器如何用它们**
-  `retrieve_timesteps(...)` 内部调用 `scheduler.set_timesteps(num_inference_steps, sigmas=sigmas, mu=mu, ...)`；调度器据此产生**离散的训练时间刻度**（默认总长 1000）用于每一步反推噪声。**`mu` 控制“分辨率依赖的 timestep shifting”力度**：分辨率/序列越大，位移越强，从而调整去噪过程的侧重；官方文档也给了各参数在一致性/变化程度上的直观作用。([Hugging Face][1])
+```python
+def calculate_shift(image_seq_len, base_seq_len, max_seq_len, base_shift, max_shift):
+    """
+    Calculate resolution-dependent timestep shift.
 
-换句话说：
-**`sigmas` 定形，`mu` 校准**（随分辨率而变），最终由 `FlowMatchEulerDiscreteScheduler` 把二者映射成你看到的 `timesteps` 序列，用于每一步的去噪更新。想自定义行为，可以改 `sigmas`（如用 Karras）或直接传入自定义 `timesteps`/`shift`。([Hugging Face][3])
+    Formula: μ = m × image_seq_len + b
+    Where:
+        m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+        b = base_shift - m × base_seq_len
+    """
+    m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+    b = base_shift - m * base_seq_len
+    return m * image_seq_len + b
+```
 
-[1]: https://huggingface.co/docs/diffusers/en/api/schedulers/flow_match_euler_discrete "FlowMatchEulerDiscreteScheduler"
-[2]: https://raw.githubusercontent.com/linoytsaban/diffusers/rf-inversion/examples/community/pipeline_flux_rf_inversion.py?utm_source=chatgpt.com "https://raw.githubusercontent.com/linoytsaban/diff..."
-[3]: https://huggingface.co/docs/diffusers/en/api/pipelines/flux?utm_source=chatgpt.com "Flux"
+**Shift Behavior**:
+- **Low resolution** (seq_len ≈ 256): μ ≈ 0.5 (base_shift)
+- **High resolution** (seq_len ≈ 4096): μ ≈ 1.15 (max_shift)
+- **Linear interpolation** for intermediate resolutions
 
-#### guidance
-####
+**3. Scheduler Integration**
 
-## 3. Core Transformer Architecture
+The `FlowMatchEulerDiscreteScheduler` combines sigmas and mu to generate the final timestep sequence:
+
+```python
+scheduler.set_timesteps(
+    num_inference_steps=num_inference_steps,
+    sigmas=sigmas,
+    mu=mu,
+    device=device
+)
+```
+
+**Result**: Adaptive timestep sequence that:
+- Starts from ~1000 (high noise)
+- Decreases to ~140 (low noise)
+- Adjusts denoising emphasis based on image resolution
+- Optimizes quality vs. speed trade-offs
+
+#### Benefits of Adaptive Scheduling
+
+1. **Resolution Optimization**: Higher resolutions get more aggressive denoising schedules
+2. **Quality Consistency**: Maintains generation quality across different image sizes
+3. **Computational Efficiency**: Balances steps vs. quality based on content complexity
+4. **Flexibility**: Supports custom schedules for specialized use cases
+
+#### Guidance System
+
+**Purpose**: The guidance system in Flux provides fine-grained control over prompt adherence, similar to Classifier-Free Guidance (CFG) but implemented as an embedded conditioning mechanism.
+
+#### Architecture & Implementation
+
+**Processing Pipeline**:
+```
+guidance_scale → sinusoidal_embedding → guidance_embedder →
+(+ timestep_embedding) → (+ text_projection) → conditioning_vector
+```
+
+**Integration with Transformer**:
+- The conditioning vector modulates each transformer block through AdaLN (Adaptive Layer Normalization)
+- Enables dynamic adjustment of prompt following strength per layer
+- Provides more nuanced control than traditional CFG approaches
+
+#### Guidance Effects
+
+**Higher Values (3.5-7.0)**:
+- **Pros**: Stronger prompt adherence, more predictable results
+- **Cons**: Risk of over-fitting, potential artifacts, reduced diversity
+
+**Lower Values (1.0-2.5)**:
+- **Pros**: More creative freedom, natural variations, diverse outputs
+- **Cons**: Weaker prompt following, less predictable results
+
+**Recommended Range**: 2.0-4.0 for balanced results
+
+#### Model Compatibility
+
+**Guidance-Distilled Models** (FLUX.1-dev, FLUX.1-pro):
+- **Support**: Full guidance embedding functionality
+- **Default**: guidance_scale=3.5
+- **Range**: 1.0-10.0 (practical range 1.0-7.0)
+
+**Schnell/Non-Distilled Models**:
+- **Support**: Limited or no guidance embedding support
+- **Behavior**: guidance_embeds parameter ignored
+- **Alternative**: Use traditional CFG if supported
+
+#### Technical Background
+
+**Distillation Approach**:
+- Replaces traditional two-pass CFG with single-pass guided generation
+- Embeds guidance strength as learnable conditioning signal
+- Reduces computational overhead while maintaining control
+
+**Usage Example**:
+```python
+# Standard usage
+pipeline(
+    prompt="A serene mountain landscape",
+    guidance_scale=3.5,  # Balanced prompt adherence
+    num_inference_steps=20
+)
+
+# High creativity
+pipeline(
+    prompt="Abstract art with flowing colors",
+    guidance_scale=1.5,  # More creative freedom
+    num_inference_steps=25
+)
+```
+
+**Best Practices**:
+- Start with default guidance_scale=3.5
+- Increase for more prompt adherence (up to 7.0)
+- Decrease for more creative variation (down to 1.0)
+- Adjust based on prompt complexity and desired output style
+
+## Core Transformer Architecture
 
 ### Flux Transformer Design
-- **Architecture**: Transformer-based diffusion model
-- **Input**: Concatenated image and text latents
-- **Attention Mechanism**: Multi-head self-attention with cross-attention
-- **Layers**: Typically 19-38 transformer blocks
-- **Hidden Size**: 3072-4096 dimensions
-- **Attention Heads**: 24-32 heads
 
-### Transformer Block Structure
+The Flux transformer represents the core computational engine that processes multimodal inputs (text + image) through a unified attention mechanism.
+
+**Architecture Specifications**:
+- **Model Type**: Multimodal Diffusion Transformer (MMDiT)
+- **Input Processing**: Unified sequence of text and image tokens
+- **Attention Pattern**: Self-attention with 3D RoPE position encoding
+- **Scale**: 19-38 transformer blocks (model dependent)
+- **Dimensions**: 3072-4096 hidden size, 24-32 attention heads
+
+### Transformer Block Architecture
+
+**Core Components**:
+
 ```python
-class FluxTransformerBlock:
-    def __init__(self, hidden_size, num_heads):
-        self.norm1 = LayerNorm(hidden_size)
-        self.self_attn = MultiHeadAttention(hidden_size, num_heads)
-        self.norm2 = LayerNorm(hidden_size)
-        self.cross_attn = MultiHeadAttention(hidden_size, num_heads)
-        self.norm3 = LayerNorm(hidden_size)
-        self.mlp = FeedForward(hidden_size)
+class FluxTransformerBlock(nn.Module):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0):
+        super().__init__()
+        # Adaptive Layer Normalization with conditioning
+        self.norm1 = AdaLayerNormZero(hidden_size)
 
-    def forward(self, x, encoder_hidden_states):
-        # Self-attention on image latents
-        residual = x
-        x = self.norm1(x)
-        x = self.self_attn(x) + residual
+        # Multi-head self-attention with 3D RoPE
+        self.self_attn = MultiHeadAttention(
+            hidden_size,
+            num_heads,
+            rotary_emb=True  # 3D RoPE support
+        )
 
-        # Cross-attention with text embeddings
-        residual = x
-        x = self.norm2(x)
-        x = self.cross_attn(x, encoder_hidden_states) + residual
+        # Second normalization layer
+        self.norm2 = AdaLayerNormZero(hidden_size)
 
         # Feed-forward network
-        residual = x
-        x = self.norm3(x)
-        x = self.mlp(x) + residual
+        self.mlp = FeedForward(
+            hidden_size,
+            int(hidden_size * mlp_ratio)
+        )
+
+    def forward(self, x, conditioning, rotary_emb):
+        # Self-attention with adaptive normalization
+        norm_x, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(x, conditioning)
+
+        # Apply rotary position embeddings and self-attention
+        attn_output = self.self_attn(norm_x, rotary_emb=rotary_emb)
+        x = x + gate_msa.unsqueeze(1) * attn_output
+
+        # Feed-forward with adaptive normalization
+        norm_x = self.norm2(x, shift_mlp, scale_mlp)
+        mlp_output = self.mlp(norm_x)
+        x = x + gate_mlp.unsqueeze(1) * mlp_output
 
         return x
 ```
 
-### LoRA Target Modules
-The following modules are typically targeted for LoRA fine-tuning:
-- `to_q`: Query projection in attention
-- `to_k`: Key projection in attention
-- `to_v`: Value projection in attention
-- `to_out.0`: Output projection in attention
+### Key Architectural Features
 
-## 4. Flow Matching Scheduler
+**1. Adaptive Layer Normalization (AdaLN-Zero)**:
+- Conditions normalization on timestep and guidance embeddings
+- Enables dynamic modulation of attention and MLP outputs
+- Provides fine-grained control over generation process
+
+**2. 3D Rotary Position Embedding**:
+- Unified position encoding for text and image tokens
+- Spatial awareness for image patches
+- Domain separation between modalities
+
+**3. Unified Attention Mechanism**:
+- Single attention operation across all token types
+- Cross-modal interactions between text and image
+- Efficient processing of multimodal sequences
+
+### Fine-Tuning Target Modules
+
+**LoRA-Compatible Layers**:
+- **`to_q`**: Query projection matrices in attention layers
+- **`to_k`**: Key projection matrices in attention layers
+- **`to_v`**: Value projection matrices in attention layers
+- **`to_out.0`**: Output projection matrices in attention layers
+
+**Typical LoRA Configuration**:
+```python
+lora_config = {
+    "target_modules": ["to_q", "to_k", "to_v", "to_out.0"],
+    "rank": 64,           # LoRA rank (8-128 typical range)
+    "alpha": 64,          # LoRA scaling factor
+    "dropout": 0.1,       # LoRA dropout rate
+}
+```
+
+**Benefits of LoRA Fine-tuning**:
+- **Efficiency**: Only 1-5% of original parameters
+- **Quality**: Maintains generation quality with targeted adaptation
+- **Flexibility**: Easy to swap between different adaptations
+- **Storage**: Minimal storage overhead for multiple models
+
+## Flow Matching Scheduler
 
 ### Scheduler Architecture
-- **Type**: Flow Matching (Rectified Flow)
-- **Noise Schedule**: Linear or cosine schedule
-- **Timesteps**: Typically 50-1000 steps
-- **Sampling**: Euler or DPM-Solver methods
 
-### Flow Matching Process
+Flux uses a **Flow Matching (Rectified Flow)** approach that differs from traditional DDPM/DDIM schedulers by learning direct paths between noise and data distributions.
+
+**Key Characteristics**:
+- **Type**: FlowMatchEulerDiscreteScheduler (Rectified Flow)
+- **Prediction Target**: Velocity field (not noise or x₀)
+- **Sampling Method**: Euler integration with adaptive timesteps
+- **Efficiency**: Fewer steps required compared to DDPM (typically 20-50 steps)
+
+### Flow Matching Theory
+
+**Core Concept**: Instead of learning to denoise, the model learns to predict velocity fields that define straight-line paths from noise to data.
+
+**Mathematical Framework**:
+```
+dx/dt = v_θ(x_t, t, c)
+```
+Where:
+- `x_t`: Current latent state at time t
+- `v_θ`: Learned velocity field (transformer output)
+- `c`: Conditioning (text embeddings, guidance)
+- `t`: Continuous time parameter [0,1]
+
+### Implementation
+
+**Single Denoising Step**:
 ```python
-def flow_matching_step(x_t, t, model, text_embeds):
+def flow_matching_step(x_t, t, model, conditioning):
     """
-    Single step of flow matching denoising.
-    """
-    # Predict velocity field
-    v_pred = model(x_t, t, text_embeds)
+    Single step of flow matching denoising using Euler integration.
 
-    # Update latents using flow equation
-    dt = scheduler.get_timestep_spacing()
+    Args:
+        x_t: Current latent state [B, seq_len, dim]
+        t: Current timestep (scalar or tensor)
+        model: Flux transformer model
+        conditioning: Text embeddings and guidance
+
+    Returns:
+        x_next: Updated latent state
+    """
+    # Predict velocity field at current state
+    v_pred = model(
+        hidden_states=x_t,
+        timestep=t,
+        encoder_hidden_states=conditioning['text_embeds'],
+        pooled_projections=conditioning['pooled_embeds'],
+        guidance=conditioning['guidance']
+    )
+
+    # Euler integration step
+    dt = scheduler.get_timestep_spacing(t)
     x_next = x_t + dt * v_pred
 
     return x_next
 ```
 
+**Complete Sampling Loop**:
+```python
+def sample_flow_matching(
+    model,
+    noise,
+    conditioning,
+    num_steps=20,
+    guidance_scale=3.5
+):
+    """Complete flow matching sampling process."""
+    x = noise
+    timesteps = scheduler.timesteps
+
+    for i, t in enumerate(timesteps):
+        # Prepare conditioning with guidance
+        cond = {
+            'text_embeds': conditioning['text_embeds'],
+            'pooled_embeds': conditioning['pooled_embeds'],
+            'guidance': torch.tensor([guidance_scale])
+        }
+
+        # Single denoising step
+        x = flow_matching_step(x, t, model, cond)
+
+        # Optional: Apply scheduler-specific corrections
+        if hasattr(scheduler, 'scale_model_input'):
+            x = scheduler.scale_model_input(x, t)
+
+    return x
+```
+
+### Advantages of Flow Matching
+
+**1. Efficiency**:
+- Straight-line paths require fewer sampling steps
+- Faster convergence compared to curved DDPM trajectories
+- Typical generation: 20-50 steps vs 1000+ for DDPM
+
+**2. Stability**:
+- More stable training dynamics
+- Reduced mode collapse issues
+- Better handling of high-resolution generation
+
+**3. Quality**:
+- Smoother interpolation between noise and data
+- Better preservation of fine details
+- More consistent generation quality
+
+**4. Flexibility**:
+- Easy integration with guidance mechanisms
+- Compatible with various sampling methods
+- Supports adaptive step sizing
+
 ## Data Flow Analysis
 
 ### Training Data Flow
+
+The training process involves multiple components working in coordination to learn the velocity field for flow matching:
 
 ```mermaid
 sequenceDiagram
@@ -500,43 +895,165 @@ sequenceDiagram
     participant VAE_Enc as VAE Encoder
     participant CLIP_Enc as CLIP Encoder
     participant T5_Enc as T5 Encoder
-    participant Transformer
-    participant Loss
+    participant Packing as Latent Packing
+    participant Transformer as Flux Transformer
+    participant Loss as Flow Matching Loss
 
-    Dataset->>VAE_Enc: RGB Images
+    Dataset->>VAE_Enc: RGB Images [B,3,H,W]
     Dataset->>CLIP_Enc: Text Prompts
-    Dataset->>T5_Enc: Text Prompts
+    Dataset->>T5_Enc: Text Prompts (detailed)
 
-    VAE_Enc->>Transformer: Image Latents
-    CLIP_Enc->>Transformer: CLIP Embeddings
-    T5_Enc->>Transformer: T5 Embeddings
+    VAE_Enc->>Packing: Image Latents [B,16,H/8,W/8]
+    Packing->>Transformer: Packed Latents [B,seq_len,64]
 
-    Note over Transformer: Add noise + timestep
-    Transformer->>Loss: Predicted Noise/Velocity
-    Loss->>Transformer: Gradients (LoRA only)
+    CLIP_Enc->>Transformer: Pooled Embeddings [B,768]
+    T5_Enc->>Transformer: Sequence Embeddings [B,512,4096]
+
+    Note over Transformer: Add noise + timestep<br/>Generate position IDs<br/>Apply 3D RoPE
+
+    Transformer->>Loss: Predicted Velocity Field
+    Note over Loss: Compare with target velocity<br/>(noise → clean direction)
+    Loss->>Transformer: Gradients (LoRA parameters only)
 ```
 
+**Training Process Details**:
+
+1. **Data Preparation**: Images and prompts are processed through respective encoders
+2. **Latent Packing**: VAE latents are packed into 2×2 patches for efficient processing
+3. **Position Encoding**: 3D RoPE coordinates generated for all tokens (text + image)
+4. **Noise Addition**: Random noise added to clean latents with random timesteps
+5. **Velocity Prediction**: Transformer predicts velocity field to move from noisy to clean state
+6. **Loss Computation**: Flow matching loss computed between predicted and target velocities
+7. **Gradient Update**: Only LoRA parameters updated, base model frozen
+
 ### Inference Data Flow
+
+The inference process generates images through iterative denoising using the learned velocity field:
 
 ```mermaid
 sequenceDiagram
     participant User
     participant CLIP_Enc as CLIP Encoder
     participant T5_Enc as T5 Encoder
-    participant Transformer
+    participant Packing as Latent Packing
+    participant Transformer as Flux Transformer
+    participant Scheduler as Flow Scheduler
     participant VAE_Dec as VAE Decoder
 
-    User->>CLIP_Enc: Text Prompt
-    User->>T5_Enc: Text Prompt
+    User->>CLIP_Enc: Text Prompt (concise)
+    User->>T5_Enc: Text Prompt (detailed)
 
-    Note over Transformer: Initialize noise
+    CLIP_Enc->>Transformer: Pooled Embeddings [B,768]
+    T5_Enc->>Transformer: Sequence Embeddings [B,512,4096]
 
-    loop Denoising Steps
-        CLIP_Enc->>Transformer: CLIP Embeddings
-        T5_Enc->>Transformer: T5 Embeddings
-        Note over Transformer: Denoise step
+    Note over Transformer: Initialize random noise<br/>Generate position IDs<br/>Set guidance scale
+
+    loop Flow Matching Steps (20-50 iterations)
+        Scheduler->>Transformer: Current timestep
+        Note over Transformer: Apply 3D RoPE<br/>Predict velocity field
+        Transformer->>Scheduler: Velocity prediction
+        Scheduler->>Scheduler: Euler integration step<br/>x_next = x_t + dt * v_pred
     end
 
-    Transformer->>VAE_Dec: Clean Latents
-    VAE_Dec->>User: Generated Image
+    Scheduler->>Packing: Clean latents [B,seq_len,64]
+    Packing->>VAE_Dec: Unpacked latents [B,16,H/8,W/8]
+    VAE_Dec->>User: Generated Image [B,3,H,W]
 ```
+
+**Inference Process Details**:
+
+1. **Text Encoding**: Dual encoding with CLIP (semantic) and T5 (detailed)
+2. **Noise Initialization**: Random Gaussian noise in latent space
+3. **Iterative Denoising**: Flow matching steps with adaptive timestep scheduling
+4. **Velocity Integration**: Euler method integration of predicted velocity fields
+5. **Latent Unpacking**: Convert sequence tokens back to spatial latent format
+6. **Image Decoding**: VAE decoder converts latents to RGB images
+
+### Key Data Flow Characteristics
+
+**Multimodal Integration**:
+- Text and image tokens processed in unified transformer
+- 3D RoPE enables spatial awareness across modalities
+- Cross-modal attention allows text-guided image generation
+
+**Efficiency Optimizations**:
+- Latent packing reduces sequence length by 4×
+- Flow matching requires fewer denoising steps (20-50 vs 1000+)
+- LoRA fine-tuning updates only 1-5% of parameters
+
+**Quality Preservation**:
+- VAE mode() encoding ensures deterministic image conditioning
+- Adaptive timestep scheduling optimizes for different resolutions
+- Guidance system provides controllable prompt adherence
+
+## Summary and Key Insights
+
+### Architectural Innovations
+
+**1. Multimodal Transformer Design**:
+- Unified processing of text and image tokens in single transformer
+- 3D RoPE position encoding enables spatial awareness across modalities
+- AdaLN-Zero conditioning provides fine-grained control over generation
+
+**2. Efficient Latent Processing**:
+- Space-to-depth packing reduces attention complexity by 16×
+- VAE compression (8×) combined with patch packing (4×) for efficiency
+- Deterministic encoding ensures reproducible conditioning
+
+**3. Flow Matching Framework**:
+- Direct velocity field prediction instead of noise prediction
+- Straight-line paths from noise to data reduce sampling steps
+- Adaptive timestep scheduling based on image resolution
+
+**4. Dual Text Encoding**:
+- CLIP for semantic alignment (77 tokens max)
+- T5 for detailed understanding (512 tokens max)
+- Complementary strengths for comprehensive text processing
+
+### Training and Fine-Tuning Considerations
+
+**LoRA Integration**:
+- Target attention projection layers (to_q, to_k, to_v, to_out.0)
+- Typical rank 64 with alpha 64 for balanced adaptation
+- Only 1-5% parameter overhead while maintaining quality
+
+**Resolution Handling**:
+- Flexible resolution support (any multiple of 16)
+- Preferred resolutions optimized for model architecture
+- Adaptive scheduling adjusts denoising based on image complexity
+
+**Guidance Control**:
+- Embedded guidance system replaces traditional CFG
+- Single-pass generation with controllable prompt adherence
+- Model-dependent support (dev/pro vs schnell variants)
+
+### Implementation Best Practices
+
+**For Training**:
+- Use mixed precision for memory efficiency
+- Implement gradient checkpointing for large models
+- Consider sequence length when setting batch sizes
+- Monitor velocity prediction quality during training
+
+**For Inference**:
+- Start with 20-50 steps for good quality/speed balance
+- Use guidance_scale 2.0-4.0 for most applications
+- Leverage dual prompts for complex descriptions
+- Consider resolution-appropriate step counts
+
+**For Fine-Tuning**:
+- Focus on attention layers for LoRA adaptation
+- Use appropriate rank based on adaptation complexity
+- Monitor for overfitting with small datasets
+- Validate across different guidance scales
+
+### Future Directions
+
+The Flux Kontext architecture represents a significant advancement in multimodal diffusion models, with potential extensions including:
+
+- **Enhanced Conditioning**: Additional modalities (audio, video, 3D)
+- **Efficiency Improvements**: Further compression techniques and faster sampling
+- **Scale Expansion**: Larger models with improved capabilities
+- **Specialized Adaptations**: Domain-specific fine-tuning approaches
+
+This architecture provides a robust foundation for high-quality text-to-image generation while maintaining efficiency and controllability through its innovative design choices.
