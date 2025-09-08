@@ -1383,12 +1383,6 @@ class QwenImageEditTrainer:
             guidance = guidance.expand(latents.shape[0])
         else:
             guidance = None
-        logging.info(
-            f"prompt_embeds_mask.sum(dim=1): {prompt_embeds_mask.sum(dim=1)}",
-            f"prompt_embeds_mask[:2]: {prompt_embeds_mask[:2]}",
-            f"prompt_embeds_mask[:2]: {prompt_embeds_mask[:2]}",
-            f"prompt_embeds_mask.sum(dim=1).tolist(): {prompt_embeds_mask.sum(dim=1).tolist()}"
-        )
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
         negative_txt_seq_lens = (
             negative_prompt_embeds_mask.sum(dim=1).tolist()
