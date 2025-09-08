@@ -70,6 +70,11 @@ class ImageDataset(Dataset):
             print("缓存未启用")
 
         self.cache_exists = check_cache_exists(self.cache_dir) if self.cache_dir else False
+        if self.cache_exists:
+            cache_subfolders = glob.glob(self.cache_dir+"/*")
+            self.cache_keys = [os.path.basename(cache_subfolder) for cache_subfolder in cache_subfolders]
+        else:
+            self.cache_keys = []
 
         self.images_dirs, self.control_dirs = self._find_directories()
 
@@ -206,7 +211,7 @@ class ImageDataset(Dataset):
 
         # 转换为CHW格式
         if len(img.shape) == 3:
-            img = img.transpose(2, 0, 1) # ，C,H,W
+            img = img.transpose(2, 0, 1)  # ，C,H,W
         return img
 
     def _find_directories(self):
@@ -356,8 +361,6 @@ class ImageDataset(Dataset):
             mask_numpy = self.preprocess(cv2.imread(file_info['mask_file'], 0), crop_bbox)
             has_mask = True
 
-
-
         if self.use_cache:
             image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])
             control_hash = self.cache_manager.get_file_hash_for_image(file_info['control'])
@@ -367,44 +370,59 @@ class ImageDataset(Dataset):
         if self.cache_exists and self.use_cache:
             # 如果启用缓存，尝试加载缓存的嵌入
             # 检查缓存是否存在
-            cached_data = {}
-            for cache_type, file_hash in [
-                ('pixel_latent', image_hash),
-                ('control_latent', control_hash),
-                ('prompt_embed', prompt_hash),
-                ('prompt_embeds_mask', prompt_hash),
-                ('empty_prompt_embed', empty_prompt_hash),
-                ('empty_prompt_embeds_mask', empty_prompt_hash),
-            ]:
-                cached_embedding = self.cache_manager.load_cache(cache_type, file_hash)
-                cached_data[cache_type] = cached_embedding
-            if random.random() < self.data_config.get('cache_drop_rate', 0.0):
-                prompt_embed = cached_data['empty_prompt_embed']
-                prompt_embeds_mask = cached_data['empty_prompt_embeds_mask']
-            else:
-                prompt_embed = cached_data['prompt_embed']
-                prompt_embeds_mask = cached_data['prompt_embeds_mask']
-            # 如果所有缓存都存在，返回缓存数据
-            data = {
-                'cached': True,
-                'image': image_numpy,
-                'control': control_numpy,
-                'pixel_latent': cached_data['pixel_latent'],
-                'control_latent': cached_data['control_latent'],
-                'prompt_embed': prompt_embed,
-                'prompt_embeds_mask': prompt_embeds_mask,
-                'prompt': prompt,
-                'file_hashes': {
-                    'image_hash': image_hash,
-                    'control_hash': control_hash,
-                    'prompt_hash': prompt_hash,
-                    'empty_prompt_hash': empty_prompt_hash
+            # TODO: original implementation
+            cache_file = os.path.join(self.cache_dir, 'pixel_latent', f"{image_hash}.pt")
+            old_style = os.path.exists(cache_file)
+
+            if old_style:
+                cached_data = {}
+                for cache_type, file_hash in [
+                    ('pixel_latent', image_hash),
+                    ('control_latent', control_hash),
+                    ('prompt_embed', prompt_hash),
+                    ('prompt_embeds_mask', prompt_hash),
+                    ('empty_prompt_embed', empty_prompt_hash),
+                    ('empty_prompt_embeds_mask', empty_prompt_hash),
+                ]:
+                    cached_embedding = self.cache_manager.load_cache(cache_type, file_hash)
+                    cached_data[cache_type] = cached_embedding
+                if random.random() < self.data_config.get('cache_drop_rate', 0.0):
+                    for key in self.data_config.get('prompt_empty_drop_keys', []):
+                        empty_key = f'empty_{key}'
+                        cached_data[key] = cached_data[empty_key]
+
+                # 如果所有缓存都存在，返回缓存数据
+                data = {
+                    'cached': True,
+                    'image': image_numpy,
+                    'control': control_numpy,
+                    'pixel_latent': cached_data['pixel_latent'],
+                    'control_latent': cached_data['control_latent'],
+                    'prompt_embed': cached_data['prompt_embed'],
+                    'prompt_embeds_mask': cached_data['prompt_embeds_mask'],
+                    'prompt': prompt,
+                    'file_hashes': {
+                        'image_hash': image_hash,
+                        'control_hash': control_hash,
+                        'prompt_hash': prompt_hash,
+                        'empty_prompt_hash': empty_prompt_hash
+                    }
                 }
-            }
-            if has_mask:
-                data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
-            self.check_none_output(data)
-            return data
+                if has_mask:
+                    data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
+                self.check_none_output(data)
+                return data
+            else:
+                data = {}
+                for cache_type in self.cache_keys:
+                    cache_path = os.path.join(self.cache_dir, cache_type, f"{prompt_hash}.pt")
+                    loaded_data = torch.load(cache_path, map_location='cpu', weights_only=False)
+                    # 确保加载的数据没有梯度信息
+                    loaded_data = loaded_data.detach()
+                    data[cache_type] = loaded_data
+                self.check_none_output(data)
+                return data
+
         else:
 
             # 如果没有缓存或缓存不完整，返回原始数据

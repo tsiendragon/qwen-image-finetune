@@ -288,8 +288,6 @@ class QwenImageEditTrainer:
         else:
             self.transformer.to(self.accelerator.device)
 
-
-
         lora_config = LoraConfig(
             r=self.config.model.lora.r,
             lora_alpha=self.config.model.lora.lora_alpha,

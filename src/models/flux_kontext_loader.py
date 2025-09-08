@@ -147,7 +147,7 @@ def load_flux_kontext_t5(
 
 def load_flux_kontext_transformer(
     repo: str = "black-forest-labs/FLUX.1-Kontext-dev",
-    dtype: torch.dtype = torch.bfloat16,
+    weight_dtype: torch.dtype = torch.bfloat16,
     device_map: Optional[str] = "cuda",  # or "auto"
     variant: Optional[str] = None,  # e.g. "fp16", "bf16", or custom
     use_pipeline: bool = False,
@@ -161,14 +161,14 @@ def load_flux_kontext_transformer(
         return FluxTransformer2DModel.from_pretrained(
             repo,
             subfolder="transformer",
-            torch_dtype=dtype,
+            torch_dtype=weight_dtype,
             device_map=device_map,
             use_safetensors=True,
             variant=variant,
         )
     else:
         pipe = FluxKontextPipeline.from_pretrained(
-            repo, torch_dtype=dtype, use_safetensors=True
+            repo, torch_dtype=weight_dtype, use_safetensors=True
         )
 
         transformer = pipe.transformer
@@ -196,7 +196,7 @@ def load_flux_kontext_tokenizers(model_path: str, use_pipeline: bool = False):
         tok_t5 = T5TokenizerFast.from_pretrained(model_path, subfolder="tokenizer_2")
         return tok_clip, tok_t5
     else:
-    # Load the full pipeline temporarily to extract tokenizers
+        # Load the full pipeline temporarily to extract tokenizers
         pipe = FluxKontextPipeline.from_pretrained(
             model_path,
             torch_dtype=torch.bfloat16,
@@ -271,9 +271,3 @@ if __name__ == "__main__":
     print('tokenizer1', type(tokenizer1), type(tokenizer2))
     scheduler = load_flux_kontext_scheduler("black-forest-labs/FLUX.1-Kontext-dev")
     print('scheduler', type(scheduler))
-
-    # comapre from different load methods
-    from src.utils.model_compare import compare_models
-    vae1 = load_flux_kontext_vae("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=False)
-    vae2 = load_flux_kontext_vae("black-forest-labs/FLUX.1-Kontext-dev", use_pipeline=True)
-

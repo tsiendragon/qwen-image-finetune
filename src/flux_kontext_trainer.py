@@ -38,8 +38,10 @@ from src.models.flux_kontext_loader import (
     load_flux_kontext_tokenizers, load_flux_kontext_scheduler
 )
 from src.utils.logger import get_logger
+from src.utils.lora_utils import classify
 from src.data.cache_manager import check_cache_exists
 import logging
+
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -117,7 +119,6 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
-
 def get_lora_layers(model):
     """Traverse the model to find all LoRA-related modules"""
     lora_layers = {}
@@ -173,13 +174,14 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self._attention_kwargs = None
         self._current_timestep = None
         self._interrupt = False
+        self.adapter_name = self.config.model.lora.adapter_name
         self.log_model_info()
 
     def __repr__(self) -> str:
         msg = f"FluxKontextLoraTrainer(config={self.config})"
         return msg
 
-    def load_model(self, text_encoder_device=None, text_encoder_2_device=None):
+    def load_model(self):
         """
         Load and separate components from FluxKontextPipeline.
         Follows QwenImageEditTrainer.load_model() pattern exactly.
@@ -227,9 +229,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.vae.requires_grad_(False)
         self.num_channels_latents = self.transformer.config.in_channels // 4 if getattr(self, "transformer", None) else 16
         self.tokenizer_max_length = 77  # clip encoder maximal token length
-        self.max_sequence_length = 512  #  T5 encoder maximal token length
+        self.max_sequence_length = 512  # T5 encoder maximal token length
 
         torch.cuda.empty_cache()
+
+        from diffusers.image_processor import VaeImageProcessor
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
 
         logging.info(f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}")
 
@@ -238,8 +243,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         Pre-compute and cache embeddings (exactly same signature as QwenImageEditTrainer).
         Implements dual text encoder caching for CLIP + T5.
         """
-        from tqdm import tqdm
-
         self.cache_manager = train_dataloader.cache_manager
         vae_encoder_device = self.config.cache.vae_encoder_device
         text_encoder_device = self.config.cache.text_encoder_device
@@ -248,10 +251,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         logging.info("Starting embedding caching process...")
 
         # Load models (following QwenImageEditTrainer pattern)
-        self.load_model(
-            text_encoder_device=text_encoder_device,
-            text_encoder_2_device=text_encoder_2_device
-        )
+        self.load_model()
         self.text_encoder.eval()
         self.text_encoder_2.eval()
         self.vae.eval()
@@ -278,64 +278,72 @@ class FluxKontextLoraTrainer(BaseTrainer):
         Follows QwenImageEditTrainer.cache_step() structure exactly.
         """
         image, control, prompt = data["image"], data["control"], data["prompt"]
+        # image: RGB，C,H,W
 
-        # Image processing (same as QwenImageEditTrainer)
-        image = image.transpose(1, 2, 0)
-        control = control.transpose(1, 2, 0)
-        image = Image.fromarray(image)
-        control = Image.fromarray(control)
+        image = torch.from_numpy(image).unsqueeze(0)  # [1,C,H,W]
+        image = self.preprocess_image(image)
+
+        control = torch.from_numpy(control).unsqueeze(0)  # [1,C,H,W]
+        control = self.preprocess_image(control)
 
         # Calculate embeddings for both encoders
-        clip_embeds, clip_mask = self.encode_clip_prompt([prompt], device=text_encoder_device)
-        t5_embeds, t5_mask = self.encode_t5_prompt([prompt], device=text_encoder_2_device)
+        pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
+            prompt=prompt,
+            prompt_2=prompt,
+            device_text_encoder=text_encoder_device,
+            device_text_encoder_2=text_encoder_2_device,
+            max_sequence_length=self.max_sequence_length,
+        )
 
-        # Empty prompt embeddings for CFG
-        empty_clip_embeds, empty_clip_mask = self.encode_clip_prompt([""], device=text_encoder_device)
-        empty_t5_embeds, empty_t5_mask = self.encode_t5_prompt([""], device=text_encoder_2_device)
+        empty_pooled_prompt_embeds, empty_prompt_embeds, _ = self.encode_prompt(
+            prompt="",
+            prompt_2="",
+            device_text_encoder=text_encoder_device,
+            device_text_encoder_2=text_encoder_2_device,
+            max_sequence_length=self.max_sequence_length,
+        )
+        height_image, width_image = image.shape[2:]
+        heigth_control, width_control = control.shape[2:]
+        _, image_latents, _, _ = self.prepare_latents(
+            image,
+            1,
+            16,
+            height_image,
+            width_image,
+            self.weight_dtype,
+            vae_encoder_device,
+        )
 
-        # VAE encoding (similar logic as QwenImageEditTrainer)
-        # Process images to tensors for VAE encoding
-        image_tensor = self._preprocess_image_for_vae(image)
-        control_tensor = self._preprocess_image_for_vae(control)
+        _, control_latents, _, _ = self.prepare_latents(
+            control,
+            1,
+            16,
+            heigth_control,
+            width_control,
+            self.weight_dtype,
+            vae_encoder_device,
+        )
 
-        # Encode with VAE
-        image_latents = self._encode_vae_image(image_tensor.unsqueeze(0).to(vae_encoder_device))
-        control_latents = self._encode_vae_image(control_tensor.unsqueeze(0).to(vae_encoder_device))
-
+        image_latents = image_latents[0].detach().cpu()
+        control_latents = control_latents[0].detach().cpu()
+        pooled_prompt_embeds = pooled_prompt_embeds[0].detach().cpu()
+        prompt_embeds = prompt_embeds[0].detach().unsqueezecpu()
+        empty_pooled_prompt_embeds = empty_pooled_prompt_embeds[0].detach().cpu()
+        empty_prompt_embeds = empty_prompt_embeds[0].detach().cpu()
         # Save to cache (following QwenImageEditTrainer pattern)
         file_hashes = data["file_hashes"]
-        self.cache_manager.save_cache("pixel_latent", file_hashes["image_hash"], image_latents[0].cpu())
-        self.cache_manager.save_cache("control_latent", file_hashes["control_hash"], control_latents[0].cpu())
-        self.cache_manager.save_cache("clip_prompt_embed", file_hashes["prompt_hash"], clip_embeds[0].cpu())
-        self.cache_manager.save_cache("clip_prompt_mask", file_hashes["prompt_hash"], clip_mask[0].cpu())
-        self.cache_manager.save_cache("t5_prompt_embed", file_hashes["prompt_hash"], t5_embeds[0].cpu())
-        self.cache_manager.save_cache("t5_prompt_mask", file_hashes["prompt_hash"], t5_mask[0].cpu())
-        self.cache_manager.save_cache("empty_clip_prompt_embed", file_hashes["empty_prompt_hash"], empty_clip_embeds[0].cpu())
-        self.cache_manager.save_cache("empty_t5_prompt_embed", file_hashes["empty_prompt_hash"], empty_t5_embeds[0].cpu())
 
-    def _preprocess_image_for_vae(self, image: PIL.Image) -> torch.Tensor:
-        """Preprocess PIL image for VAE encoding."""
-        # Convert PIL to tensor
-        image_array = np.array(image).astype(np.float32) / 255.0
-        image_tensor = torch.from_numpy(image_array).permute(2, 0, 1)  # HWC -> CHW
-        # Normalize to [-1, 1]
-        image_tensor = image_tensor * 2.0 - 1.0
-        return image_tensor
-
-    def _encode_vae_image(self, image: torch.Tensor) -> torch.Tensor:
-        """Encode image using VAE."""
-        with torch.no_grad():
-            # Ensure correct input format for Flux VAE
-            if image.dim() == 3:
-                image = image.unsqueeze(0)  # Add batch dimension
-
-            latents = self.vae.encode(image).latent_dist.sample()
-
-            # Apply scaling factor if available
-            if hasattr(self.vae.config, 'scaling_factor'):
-                latents = latents * self.vae.config.scaling_factor
-
-            return latents
+        # use same cache for all latents/embeddings
+        self.cache_manager.save_cache("pixel_latent", file_hashes["prompt_hash"], image_latents)
+        self.cache_manager.save_cache("control_latent", file_hashes["prompt_hash"], control_latents)
+        self.cache_manager.save_cache("pooled_prompt_embed", file_hashes["prompt_hash"], pooled_prompt_embeds)
+        self.cache_manager.save_cache("prompt_embed", file_hashes["prompt_hash"], prompt_embeds)
+        self.cache_manager.save_cache(
+            "empty_pooled_prompt_embed",
+            file_hashes["prompt_hash"],
+            empty_pooled_prompt_embeds
+        )
+        self.cache_manager.save_cache("empty_prompt_embed", file_hashes["prompt_hash"], empty_prompt_embeds)
 
     def fit(self, train_dataloader):
         """
@@ -570,8 +578,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
         w = w // 16 * 16
         image = image.to(self.weight_dtype)
         image = F.interpolate(image, size=(h, w), mode='bilinear', align_corners=False)
-        image = image/255
-        image = image.astype(self.weight_dtype)
+        image = image/255.0
+        # image = image.astype(self.weight_dtype)
+        image = image.to(self.weight_dtype)
         return image
 
     def get_clip_prompt_embeds(self, prompt: str, device: str, )-> torch.Tensor:
@@ -630,16 +639,17 @@ class FluxKontextLoraTrainer(BaseTrainer):
         prompt_2 = prompt_2 or prompt
         prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
         # We only use the pooled prompt output from the CLIPTextModel
-        pooled_prompt_embeds = self.get_clip_prompt_embeds(
-            prompt=prompt,
-            device=device_text_encoder,
-        )
-        prompt_embeds = self.get_t5_prompt_embeds(
-            prompt=prompt_2,
-            max_sequence_length=max_sequence_length,
-            device=device_text_encoder_2,
-        )
-        text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device_text_encoder_2, dtype=self.weight_dtype)
+        with torch.inference_mode():
+            pooled_prompt_embeds = self.get_clip_prompt_embeds(
+                prompt=prompt,
+                device=device_text_encoder,
+            )
+            prompt_embeds = self.get_t5_prompt_embeds(
+                prompt=prompt_2,
+                max_sequence_length=max_sequence_length,
+                device=device_text_encoder_2,
+            )
+            text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(device=device_text_encoder_2, dtype=self.weight_dtype)
         return pooled_prompt_embeds, prompt_embeds, text_ids
 
     @staticmethod
@@ -689,12 +699,15 @@ class FluxKontextLoraTrainer(BaseTrainer):
         # VAE applies 8x compression on images but we must also account for packing which requires
         # latent height and width to be divisible by 2.
         height, width = image.shape[2:]
+        height = 2 * (int(height) // (self.vae_scale_factor * 2))
+        width = 2 * (int(width) // (self.vae_scale_factor * 2))
         shape = (batch_size, num_channels_latents, height, width)
 
         image_latents = image_ids = None
 
         image = image.to(device=device, dtype=dtype)
-        image_latents = self.encode_vae_image(image=image)
+        with torch.inference_mode():
+            image_latents = self.encode_vae_image(image=image)
 
         image_latent_height, image_latent_width = image_latents.shape[2:]
         image_latents = self._pack_latents(
@@ -757,7 +770,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
-
+        self.weight_dtype = weight_dtype
+        if not hasattr(self, "vae") or self.vae is None:
+            logging.info("Loading model...")
+            self.load_model()
         # 1. Process input format
         # convert imgage to tensor
         if not isinstance(prompt_image, list):
@@ -779,7 +795,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         elif len(prompt) != batch_size:
             raise ValueError(f"Number of prompts ({len(prompt)}) must match number of " +
                              f"images ({batch_size})")
-        self.weight_dtype = weight_dtype
 
         # 2. Calculate image dimensions
         height, width = image.shape[2:]  # use original image size
@@ -799,16 +814,17 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.transformer = self.transformer.to(device_transformer)
 
         # 4. Encode prompts (dual encoder: CLIP + T5)
-        prompt_embeds, pooled_prompt_embeds, text_ids = self.encode_prompt(
+        pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
             prompt=prompt,
             prompt_2=negative_prompt,
             device_text_encoder=device_text_encoder,
             device_text_encoder_2=device_text_encoder_2,
+            max_sequence_length=self.max_sequence_length,
         )
-        if true_cfg_scale > 1.0:
+        if true_cfg_scale > 1.0 and negative_prompt is not None:
             (
-                negative_prompt_embeds,
                 negative_pooled_prompt_embeds,
+                negative_prompt_embeds,
                 negative_text_ids,
             ) = self.encode_prompt(
                 prompt=negative_prompt,
@@ -819,6 +835,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
 
         # 5. Prepare latents
+        print('image', image.shape)
+        print('batch_size', batch_size)
+        print('height', height)
+        print('width', width)
+        print('self.weight_dtype', self.weight_dtype)
+        print('device_vae', device_vae)
         latents, image_latents, latent_ids, image_ids = self.prepare_latents(
             image,
             batch_size,
@@ -828,6 +850,11 @@ class FluxKontextLoraTrainer(BaseTrainer):
             self.weight_dtype,
             device_vae,
         )
+        print('shape of latents', latents.shape)
+        print('shape of image_latents', image_latents.shape)
+        print('shape of latent_ids', latent_ids.shape)
+        print('shape of image_ids', image_ids.shape)
+
         latent_ids = torch.cat([latent_ids, image_ids], dim=0)  # dim 0 is sequence dimension
 
         # 6. timesteps
@@ -860,6 +887,16 @@ class FluxKontextLoraTrainer(BaseTrainer):
             guidance = None
 
         # 8. Denoising loop
+        # # move all tensors to device_transformer
+        latents = latents.to(device_transformer)
+        guidance = guidance.to(device_transformer)
+        pooled_prompt_embeds = pooled_prompt_embeds.to(device_transformer)
+        prompt_embeds = prompt_embeds.to(device_transformer)
+        text_ids = text_ids.to(device_transformer)
+        if true_cfg_scale > 1.0 and negative_prompt is not None:
+            negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(device_transformer)
+            negative_prompt_embeds = negative_prompt_embeds.to(device_transformer)
+            negative_text_ids = negative_text_ids.to(device_transformer)
         with torch.inference_mode():
             for _, t in enumerate(tqdm(timesteps, total=num_inference_steps, desc="Flux Kontext Generation")):
                 latent_model_input = latents
@@ -867,6 +904,13 @@ class FluxKontextLoraTrainer(BaseTrainer):
                     latent_model_input = torch.cat([latents, image_latents], dim=1)
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
                 # latent_model_input torch.Size([1, 8137, 64])
+                # latent_model_input shape torch.Size([1, 183040, 64])
+                # timestep tensor([1000.], device='cuda:0', dtype=torch.bfloat16)
+                # guidance None
+                # pooled_prompt_embeds torch.Size([1, 768])
+                # prompt_embeds torch.Size([1, 512, 4096])
+                # text_ids torch.Size([512, 3])
+                # latent_ids torch.Size([183040, 3])
                 noise_pred = self.transformer(
                     hidden_states=latent_model_input,
                     timestep=timestep / 1000,
@@ -881,7 +925,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 # noise_pred torch.Size([1, 8137, 64])
                 noise_pred = noise_pred[:, : latents.size(1)]
                 # noise_pred after choose first 4081 torch.Size([1, 4081, 64])
-                if true_cfg_scale > 1.0:
+                if true_cfg_scale > 1.0 and negative_prompt is not None:
                     neg_noise_pred = self.transformer(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
@@ -927,6 +971,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         elif not self.use_cache and mode == "train":
             # Non-cache mode: need all encoders
             self.vae.to(self.accelerator.device)
+            self.vae.decoder.to('cpu')
             self.text_encoder.to(self.accelerator.device)
             self.text_encoder_2.to(self.accelerator.device)
             self.transformer.to(self.accelerator.device)
@@ -934,6 +979,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         elif mode == "cache":
             # Cache mode: need encoders, don't need transformer
             self.vae = self.vae.to(self.config.cache.vae_encoder_device, non_blocking=True)
+            self.vae.decoder.to('cpu')
             self.text_encoder = self.text_encoder.to(self.config.cache.text_encoder_device, non_blocking=True)
             self.text_encoder_2 = self.text_encoder_2.to(
                 self.config.cache.get('text_encoder_2_device', self.config.cache.text_encoder_device),
@@ -954,65 +1000,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             self.text_encoder_2.to(devices.get('text_encoder_2', devices['text_encoder']))
             self.transformer.to(devices['transformer'])
 
-    def set_lora(self):
-        """Set LoRA configuration (same structure as QwenImageEditTrainer)."""
-        if self.quantize:
-            self.transformer = self.quantize_model(self.transformer, self.accelerator.device)
-        else:
-            self.transformer.to(self.accelerator.device)
-
-        # Same LoRA config structure as QwenImageEditTrainer
-        lora_config = LoraConfig(
-            r=self.config.model.lora.r,
-            lora_alpha=self.config.model.lora.lora_alpha,
-            init_lora_weights=self.config.model.lora.init_lora_weights,
-            target_modules=self.config.model.lora.target_modules,  # Flux-specific modules
-        )
-
-        self.transformer.add_adapter(lora_config)
-
-        # Load pretrained LoRA weights if specified
-        if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
-            try:
-                self.load_lora(self.config.model.lora.pretrained_weight)
-                logging.info(f"Successfully loaded pretrained LoRA weights: {self.config.model.lora.pretrained_weight}")
-            except Exception as e:
-                logging.error(f"Failed to load pretrained LoRA weights: {e}")
-                logging.info("Continuing with initialized LoRA weights")
-
-        # Same gradient setup as QwenImageEditTrainer
-        self.transformer.requires_grad_(False)
-        self.transformer.train()
-
-        # Enable gradient checkpointing if configured
-        if self.config.train.gradient_checkpointing:
-            self.transformer.enable_gradient_checkpointing()
-            logging.info("Gradient checkpointing enabled for memory efficiency")
-
-        # Train only LoRA parameters
-        trainable_params = 0
-        for name, param in self.transformer.named_parameters():
-            if "lora" in name:
-                param.requires_grad = True
-                trainable_params += param.numel()
-            else:
-                param.requires_grad = False
-
-        logging.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
-
-    def quantize_model(self, model, device):
-        """Quantize model for memory efficiency."""
-        # Placeholder for quantization logic
-        # This would implement FP8/FP4 quantization similar to QwenImageEditTrainer
-        logging.info("Quantization not implemented yet - using original model")
-        return model.to(device)
-
-    def load_lora(self, pretrained_weight):
-        """Load pretrained LoRA weights"""
-        if pretrained_weight is not None:
-            self.transformer.load_lora_adapter(pretrained_weight)
-            logging.info(f"Loaded LoRA weights from {pretrained_weight}")
-
     def save_lora(self, save_path):
         """Save LoRA weights"""
         unwrapped_transformer = self.accelerator.unwrap_model(self.transformer)
@@ -1022,16 +1009,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         lora_state_dict = convert_state_dict_to_diffusers(
             get_peft_model_state_dict(unwrapped_transformer)
         )
-
         # Use FluxKontextPipeline's save method if available, otherwise use generic method
-        try:
-            FluxKontextPipeline.save_lora_weights(
-                save_path, lora_state_dict, safe_serialization=True
+        FluxKontextPipeline.save_lora_weights(
+            save_path, lora_state_dict, safe_serialization=True
             )
-        except AttributeError:
-            # Fallback to torch.save
-            torch.save(lora_state_dict, os.path.join(save_path, "pytorch_lora_weights.safetensors"))
-
         logging.info(f"Saved LoRA weights to {save_path}")
 
     # Inherit common methods from BaseTrainer and QwenImageEditTrainer pattern

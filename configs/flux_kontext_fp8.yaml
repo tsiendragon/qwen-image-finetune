@@ -1,46 +1,46 @@
 model:
   pretrained_model_name_or_path: "AlekseyCalvin/Flux_Kontext_Dev_fp8_scaled_diffusers"
-  model_type: "flux_kontext"
-  quantize: true  # Enable quantization for FP8 model
+  rank: 16
+  quantize: False
   lora:
-    r: 16  # LoRA rank
-    lora_alpha: 16  # LoRA alpha
+    r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
+    lora_alpha: 16  # LoRA alpha, usually equal to r
     init_lora_weights: "gaussian"
-    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]  # Flux transformer attention modules
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
     pretrained_weight: null
 
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/raid/lilong/data/face_seg/"  # change to your dataset path
-    image_size: [1024, 1024]  # Flux Kontext typical resolution
-    caption_dropout_rate: 0.05
+    dataset_path: "/raid/lilong/data/face_seg/"  # change the path to your own dataset path
+    image_size: [864, 1048]  # face segmentation usually uses 512x512
+    caption_dropout_rate: 0.05  # reduce caption dropout, because the task is relatively specialized
     prompt_image_dropout_rate: 0.05
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
-    cache_drop_rate: 0.1
-    # Image processing configuration
-    random_crop: false
-    crop_size: 1024
-    crop_scale: [0.8, 1.0]
-    center_crop: true
-    center_crop_ratio: 1.0
-  batch_size: 2  # FP8 allows slightly larger batch size
+    cache_drop_rate: 0.1  # 10% probability of using empty prompt for training
+    # crop configuration - use center crop instead of random crop
+    random_crop: false  # disable random crop
+    crop_size: 1024  # square size after cropping
+    crop_scale: [0.8, 1.0]  # crop scale range
+    center_crop: true  # enable center crop
+    center_crop_ratio: 1.0  # center crop ratio, 0.9 means crop to 90% of the area
+  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 
 logging:
-  output_dir: "/raid/lilong/data/experiment/flux-kontext-fp8/"  # change to your output path
+  output_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp8/"  # change the path to your own output path
   logging_dir: "logs"
   report_to: "tensorboard"
-  tracker_project_name: "flux_kontext_fp8_lora"
+  tracker_project_name: "face_segmentation_lora"
 
 optimizer:
-  class_path: bnb.optim.Adam8bit  # 8-bit optimizer for memory efficiency
+  class_path: bnb.optim.Adam8bit  # 8bit Adam optimizer to save memory
   init_args:
-    lr: 0.0001  # same learning rate as BF16
+    lr: 0.0001  # face segmentation task uses smaller learning rate
     betas: [0.9, 0.999]
-  # Alternative: standard AdamW if memory is sufficient
+  # if memory is sufficient, you can also use standard AdamW:
   # class_path: "torch.optim.AdamW"
   # init_args:
   #   lr: 0.0001
@@ -49,24 +49,24 @@ optimizer:
   #   eps: 1e-8
 
 lr_scheduler:
-  scheduler_type: "cosine"
-  warmup_steps: 100
+  scheduler_type: "cosine"  # cosine scheduler, better for fine-grained tasks
+  warmup_steps: 50  # increase warmup steps
   num_cycles: 0.5
   power: 1.0
 
 train:
-  gradient_accumulation_steps: 4  # reduced due to larger batch size
-  max_train_steps: 5000
-  num_epochs: 50
-  checkpointing_steps: 100
-  checkpoints_total_limit: 10
+  gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
+  max_train_steps: 6000  # face segmentation data is small, reduce training steps
+  num_epochs: 100  # increase epoch number
+  checkpointing_steps: 100  # save checkpoints more frequently
+  checkpoints_total_limit: 20
   max_grad_norm: 1.0
-  mixed_precision: "bf16"  # use BF16 for computation, FP8 for storage
-  gradient_checkpointing: true
-  low_memory: true
+  mixed_precision: "bf16"
+  gradient_checkpointing: True  # enable gradient checkpointing to save memory
+  low_memory: True  # is used low_memory mode, then the model will be loaded on the specified devices
+  # otherwise, the model will be loaded on all the gpus
   vae_encoder_device: cuda:0
-  text_encoder_device: cuda:1  # CLIP encoder
-  text_encoder_2_device: cuda:1  # T5 encoder
+  text_encoder_device: cuda:1
 
 cache:
   vae_encoder_device: cuda:0
@@ -81,17 +81,3 @@ predict:
     text_encoder: cuda:1  # CLIP
     text_encoder_2: cuda:1  # T5
     transformer: cuda:0
-
-# Training resume setting
-resume_from_checkpoint: "latest"
-
-# Validation setting
-validation:
-  enabled: false
-  validation_steps: 200
-  num_validation_samples: 4
-
-# Expected memory usage: ~18GB VRAM for training with batch_size=2
-# Training speed: ~30s/it on A100 80GB (faster than BF16)
-# Model quality: High, minimal quality loss compared to BF16
-# Use case: Balanced performance and memory efficiency

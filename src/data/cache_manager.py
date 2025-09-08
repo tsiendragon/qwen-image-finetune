@@ -65,7 +65,10 @@ class EmbeddingCacheManager:
 
     def _get_cache_path(self, cache_type: str, file_hash: str) -> Path:
         """获取缓存文件路径"""
-        return self.cache_dirs[cache_type] / f"{file_hash}.pt"
+        if 'cache_type' in self.cache_dirs:
+            return self.cache_dirs[cache_type] / f"{file_hash}.pt"
+        else:
+            return os.path.join(self.cache_root, cache_type, f"{file_hash}.pt")
 
     def save_cache(self, cache_type: str, file_hash: str, data: torch.Tensor) -> None:
         """

@@ -239,8 +239,12 @@ class CacheConfig:
 
     vae_encoder_device: Optional[str] = None  # VAE 编码器设备 ID
     text_encoder_device: Optional[str] = None  # 文本编码器设备 ID
+    text_encoder_2_device: Optional[str] = None  # 文本编码器2设备 ID
     use_cache: bool = True
     cache_dir: str = "/data/lilong/experiment/id_card_qwen_image_lora/cache"
+    prompt_empty_drop_keys: List[str] = field(
+        default_factory=lambda: ["prompt_embed", "prompt_embeds_mask"]
+    )
 
     def __post_init__(self):
         """验证缓存配置"""
@@ -255,6 +259,12 @@ class CacheConfig:
             if not isinstance(self.text_encoder_device, str):
                 raise ValueError(
                     f"text_encoder_device must be a non-negative string or None, got {self.text_encoder_device}"
+                )
+
+        if self.text_encoder_2_device is not None:
+            if not isinstance(self.text_encoder_2_device, str):
+                raise ValueError(
+                    f"text_encoder_2_device must be a non-negative string or None, got {self.text_encoder_2_device}"
                 )
 
         if not isinstance(self.use_cache, bool):
