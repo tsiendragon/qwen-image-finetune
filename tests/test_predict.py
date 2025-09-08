@@ -243,6 +243,11 @@ def main():
             # 清理基础模型
             del base_trainer
             torch.cuda.empty_cache()
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            # weight some time
+            time.sleep(10)
 
             # 测试2: LoRA模型
             logger.info("\n--- 测试LoRA模型 ---")

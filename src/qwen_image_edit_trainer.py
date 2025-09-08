@@ -139,6 +139,7 @@ class QwenImageEditTrainer:
         pipe = QwenImageEditPipeline.from_pretrained(
             self.config.model.pretrained_model_name_or_path,
             torch_dtype=self.weight_dtype,
+            text_encoder=None,
             transformer=None,
             vae=None,
         )
