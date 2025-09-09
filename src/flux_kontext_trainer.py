@@ -402,6 +402,23 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.vae.eval()
         self.configure_optimizers()
         self.set_model_devices(mode="train")
+
+        self.transformer.requires_grad_(False)
+        self.transformer.train()
+
+        # Train only LoRA parameters
+        trainable_params = 0
+        total_params = 0
+        for name, param in self.transformer.named_parameters():
+            total_params += param.numel()
+            if "lora" in name:
+                param.requires_grad = True
+                trainable_params += param.numel()
+            else:
+                param.requires_grad = False
+
+        logging.info(f"Trainable/Total parameters: {trainable_params / 1e6:.2f}M / {total_params / 1e9:.2f}B")
+
         self.set_criterion()
         self.guidance = 3.5
         train_dataloader = self.accelerator_prepare(train_dataloader)
@@ -1003,9 +1020,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             img = img.permute(2, 0, 1)  # [H,W,C] ->  [C,H,W]
             image.append(img)
         image = torch.stack(image, dim=0)
-        print('image shape', image.shape)
         image = self.preprocess_image(image)
-        print('image shape after preprocess', image.shape)
 
         batch_size = image.shape[0]
         if isinstance(prompt, str):

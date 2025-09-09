@@ -4,7 +4,7 @@ Configuration module for Qwen Image Fine-tuning
 """
 
 import os
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass, field
 from omegaconf import OmegaConf
 import yaml
@@ -34,7 +34,7 @@ class LoraConfig:
     r: int = 16  # LoRA rank
     lora_alpha: int = 16  # LoRA alpha
     init_lora_weights: str = "gaussian"  # 初始化方式
-    target_modules: List[str] = field(
+    target_modules: Union[str,List[str]] = field(
         default_factory=lambda: ["to_k", "to_q", "to_v", "to_out.0"]
     )
     pretrained_weight: Optional[str] = None
@@ -55,9 +55,9 @@ class LoraConfig:
                 f"init_lora_weights must be one of ['gaussian', 'normal', 'zero'], got {self.init_lora_weights}"
             )
 
-        if not isinstance(self.target_modules, list) or not self.target_modules:
+        if not isinstance(self.target_modules, (list, str)) or not self.target_modules:
             raise ValueError(
-                f"target_modules must be a non-empty list, got {self.target_modules}"
+                f"target_modules must be a non-empty list or string, got {self.target_modules}"
             )
 
         if self.pretrained_weight is not None:
