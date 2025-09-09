@@ -100,7 +100,7 @@ def run_prediction(trainer: QwenImageEditTrainer,
     result = trainer.predict(
         prompt_image=image,
         prompt=prompt,
-        negative_prompt="blurry",
+        negative_prompt="",
         num_inference_steps=num_inference_steps,
         true_cfg_scale=cfg_scale,
         weight_dtype=torch.bfloat16

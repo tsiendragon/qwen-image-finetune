@@ -536,10 +536,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
             control_latents,
             prompt_embed,
             pooled_prompt_embed,
-            image_height,
-            image_width,
-            control_height,
-            control_width,
+            image_width=image_width,
+            image_height=image_height,
+            control_width=control_width,
+            control_height=control_height,
             edit_mask=edit_mask,
         )
 
@@ -600,10 +600,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
             control_latents,
             prompt_embeds,
             pooled_prompt_embeds,
-            image_width,
-            image_height,
-            control_width,
-            control_height,
+            image_width=image_width,
+            image_height=image_height,
+            control_width=control_width,
+            control_height=control_height,
             edit_mask=None,
         )
 
@@ -613,10 +613,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         control_latents,
         prompt_embeds,
         pooled_prompt_embeds,
-        image_width: int,
-        image_height: int,
-        control_width: int,
-        control_height: int,
+        image_width: int = 0,
+        image_height: int = 0,
+        control_width: int = 0,
+        control_height: int = 0,
         edit_mask=None,
     ) -> torch.Tensor:
         """Calculate the flow matching loss (same structure as QwenImageEditTrainer).
@@ -660,6 +660,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
             image_width = int(image_width) // (self.vae_scale_factor * 2)
             image_height = int(image_height) // (self.vae_scale_factor * 2)
+
             latent_ids = self._prepare_latent_image_ids(
                 batch_size,
                 image_height,
@@ -1060,10 +1061,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 device_text_encoder_2=device_text_encoder_2,
                 max_sequence_length=self.max_sequence_length,
             )
-            logging.info('negative_prompt_embeds shape', negative_prompt_embeds.shape)
-            logging.info('negative_text_ids shape', negative_text_ids.shape)
-            logging.info('negative_text_ids', negative_text_ids)
-            logging.info('negative_pooled_prompt_embeds shape', negative_pooled_prompt_embeds.shape)
+            logging.info(f'negative_prompt_embeds shape {negative_prompt_embeds.shape}')
+            logging.info(f'negative_text_ids shape {negative_text_ids.shape}')
+            logging.info(f'negative_text_ids {negative_text_ids}')
+            logging.info(f'negative_pooled_prompt_embeds shape {negative_pooled_prompt_embeds.shape}')
 
         # 5. Prepare latents
         print("image", image.shape)
@@ -1131,6 +1132,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
             negative_prompt_embeds = negative_prompt_embeds.to(device_transformer)
             negative_text_ids = negative_text_ids.to(device_transformer)
+
+        self.scheduler.set_begin_index(0)
         with torch.inference_mode():
             for _, t in enumerate(
                 tqdm(

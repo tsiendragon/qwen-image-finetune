@@ -26,7 +26,7 @@ data:
     crop_scale: [0.8, 1.0]  # crop scale range
     center_crop: true  # enable center crop
     center_crop_ratio: 1.0  # center crop ratio, 0.9 means crop to 90% of the area
-  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  batch_size: 8  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 

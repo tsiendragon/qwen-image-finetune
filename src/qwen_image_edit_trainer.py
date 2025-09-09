@@ -1051,6 +1051,7 @@ class QwenImageEditTrainer:
             desc="train",
             disable=not self.accelerator.is_local_main_process,
         )
+
         for epoch in range(start_epoch, self.config.train.num_epochs):
             for _, batch in enumerate(train_dataloader):
                 with self.accelerator.accumulate(self.transformer):

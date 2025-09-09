@@ -36,6 +36,7 @@ PROMPT_TEXT='/data/lilong/ktp/test_dataset/training_images/test_009_OCR_KTP_CHEC
 PROMPT_TEXT='/home/lilong/repos/qwen-image-finetune/tests/outputs/20250905_025133/prompt.txt'
 
 LORA_WEIGHT='/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/face_segmentation_lora/v0/checkpoint-19-200/model.safetensors'
+LORA_WEIGHT='/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/face_segmentation_lora/v1/checkpoint-99-300/model.safetensors'
 IMAGE_PATH='/mnt/nas/public2/lilong/repos/qwen-image-finetune/data/test_person.png'
 PROMPT_TEXT='/mnt/nas/public2/lilong/repos/qwen-image-finetune/data/test_prompt.txt'
 
