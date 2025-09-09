@@ -185,10 +185,20 @@ def main():
     logger.info(f"输入图像: {args.image}")
     logger.info(f"提示词文件: {args.prompt}")
 
+
     try:
         # 加载配置文件
         config_path = project_root / args.config
         base_config = load_config(config_path)
+
+        trainer_type = base_config.train.trainer
+        if trainer_type == 'QwenImageEdit':
+            from src.qwen_image_edit_trainer import QwenImageEditTrainer  as Trainer
+        elif trainer_type == 'FluxKontext':
+            from src.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
+        else:
+            raise ValueError(f"Invalid trainer type: {trainer_type}")
+
 
         # 加载测试数据
         if args.prompt_text:
@@ -226,7 +236,7 @@ def main():
             logger.info("\n--- 测试基础模型 ---")
             base_config_predict = create_config_for_predict(base_config, None)
 
-            base_trainer = QwenImageEditTrainer(base_config_predict)
+            base_trainer = Trainer(base_config_predict)
             base_trainer.setup_predict()
 
             base_result = run_prediction(
@@ -249,7 +259,7 @@ def main():
             lora_config_predict = create_config_for_predict(base_config, args.lora_weight)
             print('with lora weight', args.lora_weight)
 
-            lora_trainer = QwenImageEditTrainer(lora_config_predict)
+            lora_trainer = Trainer(lora_config_predict)
             lora_trainer.setup_predict()
 
             lora_result = run_prediction(
@@ -279,7 +289,7 @@ def main():
 
             predict_config = create_config_for_predict(base_config, args.lora_weight)
 
-            trainer = QwenImageEditTrainer(predict_config)
+            trainer = Trainer(predict_config)
             trainer.setup_predict()
 
             result = run_prediction(

@@ -67,11 +67,10 @@ class LoraConfig:
                 raise ValueError(
                     f"pretrained_weight must be a valid file path, got {self.pretrained_weight}"
                 )
-        if self.adapter_name is not None:
-            if not isinstance(self.adapter_name, str) or not self.adapter_name:
-                raise ValueError(
-                    f"adapter_name must be a non-empty string, got {self.adapter_name}"
-                )
+        if not isinstance(self.adapter_name, str) or not self.adapter_name:
+            raise ValueError(
+                f"adapter_name must be a non-empty string, got {self.adapter_name}"
+            )
 
 
 @dataclass
@@ -295,6 +294,7 @@ class TrainConfig:
     vae_encoder_device: Optional[str] = None
     text_encoder_device: Optional[str] = None
     resume_from_checkpoint: Optional[str] = None
+    trainer: str = 'QwenImageEdit'
 
     def __post_init__(self):
         """验证训练配置"""
@@ -354,6 +354,8 @@ class TrainConfig:
         if self.resume_from_checkpoint is not None:
             if not isinstance(self.resume_from_checkpoint, str) or not os.path.exists(self.resume_from_checkpoint):
                 raise ValueError("resume_from_checkpoint must be a non-negative string or None")
+        if self.trainer not in ['QwenImageEdit', 'FluxKontext']:
+            raise ValueError("trainer must be one of ['QwenImageEdit', 'FluxKontext']")
 
 
 @dataclass
@@ -455,6 +457,7 @@ class Config:
                 "vae_encoder_device": self.train.vae_encoder_device,
                 "text_encoder_device": self.train.text_encoder_device,
                 "resume_from_checkpoint": self.train.resume_from_checkpoint,
+                "trainer": self.train.trainer,
             }
         )
 
@@ -589,6 +592,7 @@ def create_sample_config(output_path: str = "config_sample.yaml") -> None:
             "checkpoints_total_limit": 3,
             "max_grad_norm": 1.0,
             "mixed_precision": "bf16",
+            "trainer": "QwenImageEdit",
         },
         "cache": {"vae_encoder_device": 1, "text_encoder_device": 2},
         "predict": {

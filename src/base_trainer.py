@@ -3,13 +3,14 @@ Abstract Base Trainer for all trainer implementations.
 Defines the core interface that all trainers must implement.
 """
 
+from accelerate import Accelerator
+from accelerate.utils import ProjectConfiguration
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Any
 import torch
 import os
 import shutil
 import json
-from accelerate import Accelerator
 import logging
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class BaseTrainer(ABC):
         existing_versions = []
         for item in os.listdir(project_dir):
             item_path = os.path.join(project_dir, item)
-            if os.path.isdir(item_path) and item.startswith('v') and item[1:].isdigit():
+            if os.path.isdir(item_path) and item.startswith("v") and item[1:].isdigit():
                 version_num = int(item[1:])
                 existing_versions.append((version_num, item_path))
 
@@ -89,10 +90,12 @@ class BaseTrainer(ABC):
         checkpoints = []
         if os.path.exists(version_path):
             for item in os.listdir(version_path):
-                if item.startswith("checkpoint-") and os.path.isdir(os.path.join(version_path, item)):
+                if item.startswith("checkpoint-") and os.path.isdir(
+                    os.path.join(version_path, item)
+                ):
                     try:
                         # 从 checkpoint-{epoch}-{global_step} 中提取 global_step
-                        parts = item.split('-')
+                        parts = item.split("-")
                         if len(parts) >= 3:
                             global_step = int(parts[2])
                             checkpoints.append(global_step)
@@ -104,7 +107,7 @@ class BaseTrainer(ABC):
         if os.path.exists(version_path):
             # 查找 tensorboard 事件文件，可能在项目名子目录中
             for root, dirs, files in os.walk(version_path):
-                log_files = [f for f in files if f.startswith('events.out.tfevents')]
+                log_files = [f for f in files if f.startswith("events.out.tfevents")]
                 if log_files:
                     has_logs = True
                     break
@@ -132,45 +135,33 @@ class BaseTrainer(ABC):
         if self.config.train.resume_from_checkpoint is not None:
             # self.accelerator.load_state(self.config.train.resume_from_checkpoint)
             self.optimizer.load_state_dict(
-                torch.load(os.path.join(self.config.train.resume_from_checkpoint, "optimizer.bin"))
+                torch.load(
+                    os.path.join(
+                        self.config.train.resume_from_checkpoint, "optimizer.bin"
+                    )
+                )
             )
             self.lr_scheduler.load_state_dict(
-                torch.load(os.path.join(self.config.train.resume_from_checkpoint, "scheduler.bin"))
+                torch.load(
+                    os.path.join(
+                        self.config.train.resume_from_checkpoint, "scheduler.bin"
+                    )
+                )
             )
-            logging.info(f"Loaded optimizer and scheduler from {self.config.train.resume_from_checkpoint}")
+            logging.info(
+                f"Loaded optimizer and scheduler from {self.config.train.resume_from_checkpoint}"
+            )
 
-        lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
-            lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
+        lora_layers_model, optimizer, train_dataloader, lr_scheduler = (
+            self.accelerator.prepare(
+                lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
+            )
         )
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
 
         # Trackers already initialized in setup_accelerator
         return train_dataloader
-
-    def configure_optimizers(self):
-        from diffusers.optimization import get_scheduler
-
-        """Configure optimizer and learning rate scheduler"""
-        lora_layers = filter(lambda p: p.requires_grad, self.transformer.parameters())
-
-        # Use optimizer parameters from configuration
-        optimizer_config = self.config.optimizer.init_args
-        self.optimizer = torch.optim.AdamW(
-            lora_layers,
-            lr=optimizer_config["lr"],
-            betas=optimizer_config["betas"],
-            weight_decay=optimizer_config.get("weight_decay", 0.01),
-            eps=optimizer_config.get("eps", 1e-8),
-        )
-
-        self.lr_scheduler = get_scheduler(
-            self.config.lr_scheduler.scheduler_type,
-            optimizer=self.optimizer,
-            num_warmup_steps=self.config.lr_scheduler.warmup_steps * self.accelerator.num_processes,
-            num_training_steps=self.config.train.max_train_steps * self.accelerator.num_processes,
-        )
-
 
     def merge_lora(self):
         """Merge LoRA weights into base model"""
@@ -202,17 +193,76 @@ class BaseTrainer(ABC):
         """Set model device allocation based on different modes."""
         pass
 
+    def setup_predict(self,):
+        pass
+
     @abstractmethod
     def encode_prompt(self, *args, **kwargs):
         """Encode text prompts to embeddings."""
         pass
 
-    # Common methods that can be shared across implementations
     def setup_accelerator(self):
-        """Initialize accelerator and logging configuration."""
-        # This will be implemented by child classes with specific logic
-        # but can contain common initialization code
-        pass
+        """Initialize accelerator and logging configuration"""
+        # Setup versioned logging directory
+        self.setup_versioned_logging_dir()
+
+        # Set logging_dir to the versioned output directory directly
+        # Use project_dir as logging_dir to avoid extra subdirectory creation
+        accelerator_project_config = ProjectConfiguration(
+            project_dir=self.config.logging.output_dir,
+            logging_dir=self.config.logging.output_dir,
+        )
+
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
+            mixed_precision=self.config.train.mixed_precision,
+            log_with=self.config.logging.report_to,
+            project_config=accelerator_project_config,
+        )
+
+        # Initialize tracker with empty project name to avoid subdirectory
+        if self.config.logging.report_to == "tensorboard":
+            # Create a simple config dict with only basic types for TensorBoard
+            try:
+                simple_config = {
+                    "learning_rate": float(
+                        self.config.optimizer.init_args.get("lr", 0.0001)
+                    ),
+                    "batch_size": int(self.config.data.batch_size),
+                    "max_train_steps": int(self.config.train.max_train_steps),
+                    "num_epochs": int(self.config.train.num_epochs),
+                    "gradient_accumulation_steps": int(
+                        self.config.train.gradient_accumulation_steps
+                    ),
+                    "mixed_precision": str(self.config.train.mixed_precision),
+                    "lora_r": int(self.config.model.lora.r),
+                    "lora_alpha": int(self.config.model.lora.lora_alpha),
+                    "model_name": str(self.config.model.pretrained_model_name_or_path),
+                    "checkpointing_steps": int(self.config.train.checkpointing_steps),
+                }
+                self.accelerator.init_trackers("", config=simple_config)
+            except Exception as e:
+                logging.warning(f"Failed to initialize trackers with config: {e}")
+                # Initialize without config if there's an error
+                self.accelerator.init_trackers("")
+        logging.info(
+            f"Number of devices used in DDP training: {self.accelerator.num_processes}"
+        )
+
+        # Set weight data type
+        if self.accelerator.mixed_precision == "fp16":
+            self.weight_dtype = torch.float16
+        elif self.accelerator.mixed_precision == "bf16":
+            self.weight_dtype = torch.bfloat16
+
+        # Create output directory
+        if (
+            self.accelerator.is_main_process
+            and self.config.logging.output_dir is not None
+        ):
+            os.makedirs(self.config.logging.output_dir, exist_ok=True)
+
+        logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
     def save_checkpoint(self, epoch, global_step):
         """Save checkpoint"""
@@ -225,32 +275,61 @@ class BaseTrainer(ABC):
         with open(os.path.join(save_path, "state.json"), "w") as f:
             json.dump({"global_step": global_step, "epoch": epoch}, f)
 
-
     def configure_optimizers(self):
-        """Configure optimizer and learning rate scheduler."""
-        # Common optimizer configuration can be implemented here
-        pass
+        """Configure optimizer and learning rate scheduler"""
+        from diffusers.optimization import get_scheduler
 
-    def setup_versioned_logging_dir(self):
-        """Set up versioned logging directory."""
-        # Common logging directory setup can be implemented here
-        pass
+        lora_layers = filter(lambda p: p.requires_grad, self.transformer.parameters())
+
+        # Use optimizer parameters from configuration
+        optimizer_config = self.config.optimizer.init_args
+        self.optimizer = torch.optim.AdamW(
+            lora_layers,
+            lr=optimizer_config["lr"],
+            betas=optimizer_config["betas"],
+            weight_decay=optimizer_config.get("weight_decay", 0.01),
+            eps=optimizer_config.get("eps", 1e-8),
+        )
+
+        self.lr_scheduler = get_scheduler(
+            self.config.lr_scheduler.scheduler_type,
+            optimizer=self.optimizer,
+            num_warmup_steps=self.config.lr_scheduler.warmup_steps
+            * self.accelerator.num_processes,
+            num_training_steps=self.config.train.max_train_steps
+            * self.accelerator.num_processes,
+        )
+
+    def set_criterion(self):
+        import torch.nn as nn
+
+        if self.config.loss.mask_loss:
+            from src.loss.edit_mask_loss import MaskEditLoss
+
+            self.criterion = MaskEditLoss(
+                forground_weight=self.config.loss.forground_weight,
+                background_weight=self.config.loss.background_weight,
+            )
+        else:
+            self.criterion = nn.MSELoss()
+        self.criterion.to(self.accelerator.device)
 
     def get_model_type(self) -> str:
         """Get the model type identifier."""
-        return getattr(self.config.model, 'model_type', 'unknown')
+        return getattr(self.config.model, "model_type", "unknown")
 
     def get_precision_info(self) -> Dict[str, Any]:
         """Get precision and quantization information."""
         return {
-            'weight_dtype': str(self.weight_dtype),
-            'mixed_precision': getattr(self.config.train, 'mixed_precision', 'none'),
-            'quantize': getattr(self.config.model, 'quantize', False)
+            "weight_dtype": str(self.weight_dtype),
+            "mixed_precision": getattr(self.config.train, "mixed_precision", "none"),
+            "quantize": getattr(self.config.model, "quantize", False),
         }
 
     @classmethod
     def quantize_model(cls, model, device):
         from src.models.quantize import quantize_model_to_fp8
+
         model = quantize_model_to_fp8(
             model,
             engine="bnb",
@@ -261,7 +340,7 @@ class BaseTrainer(ABC):
         return model
 
     @classmethod
-    def add_lora_adapter(cls, transformer: torch.nnModule, config, adapter_name: str):
+    def add_lora_adapter(cls, transformer: torch.nn.Module, config, adapter_name: str):
         from peft import LoraConfig
 
         lora_config = LoraConfig(
@@ -270,31 +349,42 @@ class BaseTrainer(ABC):
             init_lora_weights=config.model.lora.init_lora_weights,
             target_modules=config.model.lora.target_modules,
         )
+        logging.info(f"add_lora_adapter: {lora_config}, {adapter_name}")
         transformer.add_adapter(lora_config, adapter_name=adapter_name)
         transformer.set_adapter(adapter_name)
 
     @classmethod
-    def load_pretrain_lora_model(cls, transformer: torch.nn.Module, config, adapter_name: str):
+    def load_pretrain_lora_model(
+        cls, transformer: torch.nn.Module, config, adapter_name: str
+    ):
         from src.utils.lora_utils import classify_lora_weight
-        pretrained_weight = getattr(config.model.lora, 'pretrained_weight', None)
+
+        pretrained_weight = getattr(config.model.lora, "pretrained_weight", None)
         if pretrained_weight:
             lora_type = classify_lora_weight(pretrained_weight)
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
-                transformer.load_lora_adapter(pretrained_weight, adapter_name=adapter_name)
-                logging.info(f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}")
+                transformer.load_lora_adapter(
+                    pretrained_weight, adapter_name=adapter_name
+                )
+                logging.info(
+                    f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}"
+                )
             else:
                 # add lora first
                 # Configure model
                 cls.add_lora_adapter(transformer, config, adapter_name)
                 import safetensors.torch
+
                 missing, unexpected = transformer.load_state_dict(
                     safetensors.torch.load_file(pretrained_weight),
                     strict=False,
                 )
                 if len(unexpected) > 0:
                     raise ValueError(f"Unexpected keys: {unexpected}")
-                logging.info(f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}")
+                logging.info(
+                    f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}"
+                )
                 logging.info(f"missing keys: {len(missing)}, {missing[0]}")
                 # self.load_lora(self.config.model.lora.pretrained_weight)
             logging.info(f"set_lora: Loaded lora from {pretrained_weight}")
@@ -307,3 +397,8 @@ class BaseTrainer(ABC):
         logger.info(f"Precision Info: {self.get_precision_info()}")
         logger.info(f"Batch Size: {self.batch_size}")
         logger.info(f"Use Cache: {self.use_cache}")
+
+    @abstractmethod
+    def save_lora(self, save_path):
+        """Save LoRA weights"""
+        pass

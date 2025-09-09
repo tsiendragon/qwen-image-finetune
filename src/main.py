@@ -21,9 +21,15 @@ def main():
         diffusers.utils.logging.set_verbosity_error()
 
     # 创建训练器
-    from src.qwen_image_edit_trainer import QwenImageEditTrainer
+    trainer_type = config.train.trainer
+    if trainer_type == 'QwenImageEdit':
+        from src.qwen_image_edit_trainer import QwenImageEditTrainer as Trainer
+    elif trainer_type == 'FluxKontext':
+        from src.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
+    else:
+        raise ValueError(f"Invalid trainer type: {trainer_type}")
 
-    trainer = QwenImageEditTrainer(config)
+    trainer = Trainer(config)
 
     # 加载数据
     train_dataloader = loader(

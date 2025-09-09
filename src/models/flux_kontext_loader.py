@@ -104,7 +104,7 @@ def load_flux_kontext_clip(
 def load_flux_kontext_t5(
     model_path: str,
     weight_dtype: torch.dtype = torch.bfloat16,
-    device_map: str = "cuda",
+    device_map: str = "cpu",
     use_pipeline: bool = False,
 ):
     """
@@ -148,7 +148,7 @@ def load_flux_kontext_t5(
 def load_flux_kontext_transformer(
     repo: str = "black-forest-labs/FLUX.1-Kontext-dev",
     weight_dtype: torch.dtype = torch.bfloat16,
-    device_map: Optional[str] = "cuda",  # or "auto"
+    device_map: Optional[str] = "cpu",  # or "auto"
     variant: Optional[str] = None,  # e.g. "fp16", "bf16", or custom
     use_pipeline: bool = False,
 ):
