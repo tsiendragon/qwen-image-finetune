@@ -394,10 +394,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
 
         self.load_pretrain_lora_model(self.transformer, self.config, self.adapter_name)
-        self.text_encoder.eval()
-        self.text_encoder_2.eval()
-        self.vae.eval()
-        self.configure_optimizers()
+        self.text_encoder.requires_grad_(False).eval()
+        self.text_encoder_2.requires_grad_(False).eval()
+        self.vae.requires_grad_(False).eval()
         self.set_model_devices(mode="train")
 
         self.transformer.requires_grad_(False)
@@ -418,8 +417,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
             f"Trainable/Total parameters: {trainable_params / 1e6:.2f}M / {total_params / 1e9:.2f}B"
         )
 
+        self.configure_optimizers()
+
         self.set_criterion()
-        self.guidance = 3.5
+
         train_dataloader = self.accelerator_prepare(train_dataloader)
 
         logging.info("***** Running training *****")
@@ -705,11 +706,14 @@ class FluxKontextLoraTrainer(BaseTrainer):
             latent_ids = torch.cat(
                 [latent_ids, image_ids], dim=0
             )  # dim 0 is sequence dimension
-        # FLUX Kontext Dev must pass the guidance
-        guidance = torch.full(
-            [1], self.guidance, device=self.accelerator.device, dtype=torch.float32
+
+        # Prepare guidance
+        guidance = (
+            torch.ones((noise.shape[0],)).to(self.accelerator.device)
+            if self.transformer.config.guidance_embeds
+            else None
         )
-        guidance = guidance.expand(pixel_latents.shape[0])
+
         model_pred = self.transformer(
             hidden_states=latent_model_input,
             timestep=timesteps / 1000,

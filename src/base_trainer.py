@@ -279,7 +279,25 @@ class BaseTrainer(ABC):
         """Configure optimizer and learning rate scheduler"""
         from diffusers.optimization import get_scheduler
 
-        lora_layers = filter(lambda p: p.requires_grad, self.transformer.parameters())
+        trainable_named_params = [
+            (name, param)
+            for name, param in self.transformer.named_parameters()
+            if param.requires_grad
+        ]
+        lora_layers = [param for _, param in trainable_named_params]
+
+        # Log how many parameters are in training and show one example
+        if (getattr(self, "accelerator", None) is None) or self.accelerator.is_main_process:
+            total_elements = sum(p.numel() for p in lora_layers)
+            logging.info(
+                f"Trainable parameters: {len(lora_layers)} tensors, total elements: {total_elements}"
+            )
+            if len(trainable_named_params) > 0:
+                example_name, example_param = trainable_named_params[0]
+                logging.info(
+                    f"Example trainable param: {example_name}, shape={tuple(example_param.shape)}"
+                )
+                logging.info(f"Example dtype: {example_param.dtype}")
 
         # Use optimizer parameters from configuration
         optimizer_config = self.config.optimizer.init_args
