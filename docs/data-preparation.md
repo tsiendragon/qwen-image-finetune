@@ -25,8 +25,8 @@ This guide covers how to prepare and organize your dataset for training Qwen Ima
 ```
 dataset/
 ├── control_images/         # 源/输入图像
-│   ├── 060002_4_028450_FEMALE_30.jpg
-│   ├── 060003_4_028451_FEMALE_65.jpg
+│   ├── 060002_4_028450_FEMALE_30.png
+│   ├── 060003_4_028451_FEMALE_65.png
 │   └── ...
 └── training_images/        # 目标图像和提示文本
     ├── 060002_4_028450_FEMALE_30.png    # 目标图像

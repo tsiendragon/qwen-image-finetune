@@ -268,7 +268,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.cache_manager = train_dataloader.cache_manager
         vae_encoder_device = self.config.cache.vae_encoder_device
         text_encoder_device = self.config.cache.text_encoder_device
-        text_encoder_2_device =  self.config.cache.text_encoder_2_device
+        text_encoder_2_device = self.config.cache.text_encoder_2_device
 
         logging.info("Starting embedding caching process...")
 
@@ -378,9 +378,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             "empty_prompt_embed", prompt_hash, empty_prompt_embeds
         )
 
-    def setup_predict(self):
-        self.guidance = 3.5
-
     def fit(self, train_dataloader):
         logging.info("Starting training process...")
 
@@ -417,7 +414,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
             else:
                 param.requires_grad = False
 
-        logging.info(f"Trainable/Total parameters: {trainable_params / 1e6:.2f}M / {total_params / 1e9:.2f}B")
+        logging.info(
+            f"Trainable/Total parameters: {trainable_params / 1e6:.2f}M / {total_params / 1e9:.2f}B"
+        )
 
         self.set_criterion()
         self.guidance = 3.5
@@ -666,6 +665,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
             sigmas = self._get_sigmas(
                 timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype
             )
+            # t = torch.rand((noise.shape[0],), device=self.device)  # random time t
+            # t_ = t.unsqueeze(1).unsqueeze(1)
+
+            # noisy_model_input = (1.0 - t_) * pixel_latents + t_ * noise
             noisy_model_input = (1.0 - sigmas) * pixel_latents + sigmas * noise
 
             # prepare text ids
@@ -704,12 +707,13 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )  # dim 0 is sequence dimension
         # FLUX Kontext Dev must pass the guidance
         guidance = torch.full(
-                [1], self.guidance, device=self.accelerator.device, dtype=torch.float32
-            )
+            [1], self.guidance, device=self.accelerator.device, dtype=torch.float32
+        )
         guidance = guidance.expand(pixel_latents.shape[0])
         model_pred = self.transformer(
             hidden_states=latent_model_input,
             timestep=timesteps / 1000,
+            # timestep=t,
             guidance=guidance,  # must pass to guidance for FluxKontextDev
             pooled_projections=pooled_prompt_embeds,
             encoder_hidden_states=prompt_embeds,
@@ -765,7 +769,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         Logic is
         1. Resize it make it devisible by 16
         2. Input should be RGB format
-        3. Convert to [0,1] range by devide 255
+        3. Convert to [-1,1] range by devide 255
         4. Input shape should be [B,3,H,W]
         """
         # get proper image shape
@@ -773,7 +777,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         h = h // 16 * 16
         w = w // 16 * 16
         image = image.to(self.weight_dtype)
-        image = F.interpolate(image, size=(h, w), mode="bilinear", align_corners=False)
+        if image.shape[2] != h or image.shape[3] != w:
+            image = F.interpolate(
+                image, size=(h, w), mode="bilinear", align_corners=False
+            )
         image = image / 255.0
         # image = image.astype(self.weight_dtype)
         image = image.to(self.weight_dtype)
@@ -842,8 +849,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
         prompt = [prompt] if isinstance(prompt, str) else prompt
         prompt_2 = prompt_2 or prompt
         prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
-        logging.info(f'prompt {prompt}')
-        logging.info(f'prompt_2 {prompt_2}')
+        logging.info(f"prompt {prompt}")
+        logging.info(f"prompt_2 {prompt_2}")
         # We only use the pooled prompt output from the CLIPTextModel
         with torch.inference_mode():
             pooled_prompt_embeds = self.get_clip_prompt_embeds(
@@ -961,6 +968,34 @@ class FluxKontextLoraTrainer(BaseTrainer):
         ) * self.vae.config.scaling_factor
         return image_latents
 
+    def setup_predict(self):
+        if not hasattr(self, "vae") or self.vae is None:
+            logging.info("Loading model...")
+            self.load_model()
+
+        self.guidance = 3.5
+        #  Get device configurations
+        device_vae = self.config.predict.devices.get("vae", "cuda:0")
+        device_text_encoder = self.config.predict.devices.get("text_encoder", "cuda:0")
+        device_text_encoder_2 = self.config.predict.devices.get(
+            "text_encoder_2", "cuda:0"
+        )
+        device_transformer = self.config.predict.devices.get("transformer", "cuda:0")
+
+        logging.info(
+            f"Using devices - VAE: {device_vae}, Text Encoders: {device_text_encoder}/"
+            + f"{device_text_encoder_2}, Transformer: {device_transformer}"
+        )
+
+        self.vae = self.vae.to(device_vae)
+        self.text_encoder = self.text_encoder.to(device_text_encoder)
+        self.text_encoder_2 = self.text_encoder_2.to(device_text_encoder_2)
+        self.transformer = self.transformer.to(device_transformer)
+        self.vae.eval()
+        self.text_encoder.eval()
+        self.text_encoder_2.eval()
+        self.transformer.eval()
+
     def predict(
         self,
         prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]],
@@ -1014,7 +1049,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         image = []
         for img in prompt_image:
             if isinstance(img, PIL.Image.Image):
-                img = img.convert('RGB')
+                img = img.convert("RGB")
                 img = np.array(img).astype(np.float32)
             if isinstance(img, np.ndarray):
                 img = torch.from_numpy(img.astype(np.float32))
@@ -1056,11 +1091,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             + f"{device_text_encoder_2}, Transformer: {device_transformer}"
         )
 
-        self.vae = self.vae.to(device_vae)
-        self.text_encoder = self.text_encoder.to(device_text_encoder)
-        self.text_encoder_2 = self.text_encoder_2.to(device_text_encoder_2)
-        self.transformer = self.transformer.to(device_transformer)
-
         # 4. Encode prompts (dual encoder: CLIP + T5)
         pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
             prompt=prompt,
@@ -1081,10 +1111,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 device_text_encoder_2=device_text_encoder_2,
                 max_sequence_length=self.max_sequence_length,
             )
-            logging.info(f'negative_prompt_embeds shape {negative_prompt_embeds.shape}')
-            logging.info(f'negative_text_ids shape {negative_text_ids.shape}')
-            logging.info(f'negative_text_ids {negative_text_ids}')
-            logging.info(f'negative_pooled_prompt_embeds shape {negative_pooled_prompt_embeds.shape}')
+            logging.info(f"negative_prompt_embeds shape {negative_prompt_embeds.shape}")
+            logging.info(f"negative_text_ids shape {negative_text_ids.shape}")
+            logging.info(f"negative_text_ids {negative_text_ids}")
+            logging.info(
+                f"negative_pooled_prompt_embeds shape {negative_pooled_prompt_embeds.shape}"
+            )
 
         # 5. Prepare latents
         print("image", image.shape)

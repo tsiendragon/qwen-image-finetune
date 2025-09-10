@@ -6,16 +6,16 @@ model:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
     lora_alpha: 16  # LoRA alpha, usually equal to r
     init_lora_weights: "gaussian"
-    # target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
-    target_modules: "(.*x_embedder|.*transformer_blocks\\.[0-9]+\\.(norm|norm1)\\.linear|.*transformer_blocks\\.[0-9]+\\.attn\\.(to_k|to_q|to_v|to_add_out)|.*transformer_blocks\\.[0-9]+\\.attn\\.to_out\\.0|.*single_transformer_blocks\\.[0-9]+\\.attn\\.to_out|.*single_transformer_blocks\\.[0-9]+\\.(proj_mlp|proj_out)|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.norm1_context\\.linear|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.attn\\.(to_add_out|add_k_proj|add_q_proj|add_v_proj))"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    # target_modules: "(.*x_embedder|.*transformer_blocks\\.[0-9]+\\.(norm|norm1)\\.linear|.*transformer_blocks\\.[0-9]+\\.attn\\.(to_k|to_q|to_v|to_add_out)|.*transformer_blocks\\.[0-9]+\\.attn\\.to_out\\.0|.*single_transformer_blocks\\.[0-9]+\\.attn\\.to_out|.*single_transformer_blocks\\.[0-9]+\\.(proj_mlp|proj_out)|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.norm1_context\\.linear|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.attn\\.(to_add_out|add_k_proj|add_q_proj|add_v_proj))"
     pretrained_weight: null
     adapter_name: "lora_edit"
 
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/raid/lilong/data/face_seg/"  # change the path to your own dataset path
-    image_size: [512, 512]  # face segmentation usually uses 512x512
+    dataset_path: "/raid/lilong/data/face_seg/train/"  # change the path to your own dataset path
+    image_size: [864, 1048]  # face segmentation usually uses 512x512
     caption_dropout_rate: 0.05  # reduce caption dropout, because the task is relatively specialized
     prompt_image_dropout_rate: 0.05
     cache_dir: ${cache.cache_dir}
@@ -23,11 +23,11 @@ data:
     cache_drop_rate: 0.1  # 10% probability of using empty prompt for training
     # crop configuration - use center crop instead of random crop
     random_crop: false  # disable random crop
-    crop_size: 512  # square size after cropping
+    crop_size: 1024  # square size after cropping
     crop_scale: [0.8, 1.0]  # crop scale range
     center_crop: true  # enable center crop
     center_crop_ratio: 1.0  # center crop ratio, 0.9 means crop to 90% of the area
-  batch_size: 32  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 
@@ -52,8 +52,8 @@ lr_scheduler:
 train:
   trainer: FluxKontext
   gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
-  max_train_steps: 3000  # face segmentation data is small, reduce training steps
-  num_epochs: 10000  # increase epoch number
+  max_train_steps: 6000  # face segmentation data is small, reduce training steps
+  num_epochs: 400  # increase epoch number
   checkpointing_steps: 100  # save checkpoints more frequently
   checkpoints_total_limit: 20
   max_grad_norm: 1.0
@@ -63,7 +63,7 @@ train:
   # otherwise, the model will be loaded on all the gpus
   vae_encoder_device: cuda:1
   text_encoder_device: cuda:1
-  resume_from_checkpoint: /raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/face_segmentation_lora/v2/checkpoint-99-200
+  resume_from_checkpoint: null
 
 cache:
   vae_encoder_device: cuda:1

@@ -118,3 +118,5 @@ But we got.
 ![alt text](images/image-5.png)
 
 We found a error as indicate in 6. Lets train it again, to see if this resolves the problem.
+
+- Found that the face is not upright while the face mask is all upright. Fixed it. Change resolution to what used in Qwen-Image-Edit Training

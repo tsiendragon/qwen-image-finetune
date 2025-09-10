@@ -26,3 +26,4 @@ ninja
 wheel
 setuptools
 sentencepiece
+datasets

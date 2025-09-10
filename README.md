@@ -29,6 +29,9 @@ This repository provides a comprehensive framework for fine-tuning Qwen Vision-L
 - [Citation](#citation)
 - [License](#license)
 
+### Additional Docs
+- [Hugging Face Dataset Upload and Download](docs/huggingface-dataset.md)
+
 ## Installation
 
 ### Prerequisites

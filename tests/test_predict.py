@@ -57,11 +57,11 @@ def load_test_data(image_path: str, prompt_path: str):
     logger.info(f"加载图像: {image_path}, 尺寸: {image.size}")
 
     # 加载提示词
-    if not os.path.exists(prompt_path):
-        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
-
-    with open(prompt_path, 'r', encoding='utf-8') as f:
-        prompt = f.read().strip()
+    if os.path.exists(prompt_path):
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            prompt = f.read().strip()
+    else:
+        prompt = prompt_path
 
     logger.info(f"加载提示词: {prompt[:100]}...")
 
@@ -199,17 +199,7 @@ def main():
         else:
             raise ValueError(f"Invalid trainer type: {trainer_type}")
 
-
-        # 加载测试数据
-        if args.prompt_text:
-            # 使用直接提供的提示词文本
-            image = Image.open(args.image).convert('RGB')
-            prompt = args.prompt_text
-            logger.info(f"加载图像: {args.image}, 尺寸: {image.size}")
-            logger.info(f"使用提示词: {prompt[:100]}...")
-        else:
-            # 从文件加载提示词
-            image, prompt = load_test_data(args.image, args.prompt)
+        image, prompt = load_test_data(args.image, args.prompt)
 
         # 创建输出目录
         output_dir = project_root / args.output_dir

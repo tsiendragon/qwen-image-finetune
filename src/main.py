@@ -3,6 +3,7 @@ import transformers
 from src.data.dataset import loader
 from src.utils.options import parse_args
 from src.utils.logger import get_logger
+from src.utils.seed import seed_everything
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -19,6 +20,8 @@ def main():
     else:
         transformers.utils.logging.set_verbosity_error()
         diffusers.utils.logging.set_verbosity_error()
+
+    seed_everything(1234)
 
     # 创建训练器
     trainer_type = config.train.trainer
