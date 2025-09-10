@@ -4,7 +4,7 @@ Configuration module for Qwen Image Fine-tuning
 """
 
 import os
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass, field
 from omegaconf import OmegaConf
 import yaml
@@ -34,7 +34,7 @@ class LoraConfig:
     r: int = 16  # LoRA rank
     lora_alpha: int = 16  # LoRA alpha
     init_lora_weights: str = "gaussian"  # 初始化方式
-    target_modules: List[str] = field(
+    target_modules: Union[str,List[str]] = field(
         default_factory=lambda: ["to_k", "to_q", "to_v", "to_out.0"]
     )
     pretrained_weight: Optional[str] = None
@@ -55,9 +55,9 @@ class LoraConfig:
                 f"init_lora_weights must be one of ['gaussian', 'normal', 'zero'], got {self.init_lora_weights}"
             )
 
-        if not isinstance(self.target_modules, list) or not self.target_modules:
+        if not isinstance(self.target_modules, (list, str)) or not self.target_modules:
             raise ValueError(
-                f"target_modules must be a non-empty list, got {self.target_modules}"
+                f"target_modules must be a non-empty list or string, got {self.target_modules}"
             )
 
         if self.pretrained_weight is not None:
@@ -67,11 +67,10 @@ class LoraConfig:
                 raise ValueError(
                     f"pretrained_weight must be a valid file path, got {self.pretrained_weight}"
                 )
-        if self.adapter_name is not None:
-            if not isinstance(self.adapter_name, str) or not self.adapter_name:
-                raise ValueError(
-                    f"adapter_name must be a non-empty string, got {self.adapter_name}"
-                )
+        if not isinstance(self.adapter_name, str) or not self.adapter_name:
+            raise ValueError(
+                f"adapter_name must be a non-empty string, got {self.adapter_name}"
+            )
 
 
 @dataclass
@@ -239,8 +238,12 @@ class CacheConfig:
 
     vae_encoder_device: Optional[str] = None  # VAE 编码器设备 ID
     text_encoder_device: Optional[str] = None  # 文本编码器设备 ID
+    text_encoder_2_device: Optional[str] = None  # 文本编码器2设备 ID
     use_cache: bool = True
     cache_dir: str = "/data/lilong/experiment/id_card_qwen_image_lora/cache"
+    prompt_empty_drop_keys: List[str] = field(
+        default_factory=lambda: ["prompt_embed", "prompt_embeds_mask"]
+    )
 
     def __post_init__(self):
         """验证缓存配置"""
@@ -255,6 +258,12 @@ class CacheConfig:
             if not isinstance(self.text_encoder_device, str):
                 raise ValueError(
                     f"text_encoder_device must be a non-negative string or None, got {self.text_encoder_device}"
+                )
+
+        if self.text_encoder_2_device is not None:
+            if not isinstance(self.text_encoder_2_device, str):
+                raise ValueError(
+                    f"text_encoder_2_device must be a non-negative string or None, got {self.text_encoder_2_device}"
                 )
 
         if not isinstance(self.use_cache, bool):
@@ -285,6 +294,7 @@ class TrainConfig:
     vae_encoder_device: Optional[str] = None
     text_encoder_device: Optional[str] = None
     resume_from_checkpoint: Optional[str] = None
+    trainer: str = 'QwenImageEdit'
 
     def __post_init__(self):
         """验证训练配置"""
@@ -344,6 +354,8 @@ class TrainConfig:
         if self.resume_from_checkpoint is not None:
             if not isinstance(self.resume_from_checkpoint, str) or not os.path.exists(self.resume_from_checkpoint):
                 raise ValueError("resume_from_checkpoint must be a non-negative string or None")
+        if self.trainer not in ['QwenImageEdit', 'FluxKontext']:
+            raise ValueError("trainer must be one of ['QwenImageEdit', 'FluxKontext']")
 
 
 @dataclass
@@ -445,6 +457,7 @@ class Config:
                 "vae_encoder_device": self.train.vae_encoder_device,
                 "text_encoder_device": self.train.text_encoder_device,
                 "resume_from_checkpoint": self.train.resume_from_checkpoint,
+                "trainer": self.train.trainer,
             }
         )
 
@@ -579,6 +592,7 @@ def create_sample_config(output_path: str = "config_sample.yaml") -> None:
             "checkpoints_total_limit": 3,
             "max_grad_norm": 1.0,
             "mixed_precision": "bf16",
+            "trainer": "QwenImageEdit",
         },
         "cache": {"vae_encoder_device": 1, "text_encoder_device": 2},
         "predict": {

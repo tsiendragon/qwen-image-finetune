@@ -308,6 +308,246 @@ CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m
 - 30-50% memory reduction during training
 - Consistent embeddings across epochs
 
+## FLUX Kontext LoRA Training
+
+The framework now supports FLUX Kontext model fine-tuning with LoRA adapters across different precision levels. FLUX Kontext is a state-of-the-art diffusion model that combines image and text understanding through a sophisticated transformer-based architecture.
+
+### Supported Precision Levels
+
+The FLUX Kontext implementation supports three precision configurations, each optimized for different hardware capabilities and quality requirements:
+
+#### 1. FP16 Training (Highest Quality)
+
+**Model**: `black-forest-labs/FLUX.1-Kontext-dev`
+**Configuration**: `configs/face_seg_flux_kontext_fp16.yaml`
+
+```yaml
+model:
+  pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
+  rank: 16
+  quantize: false
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    adapter_name: "lora_edit"
+
+train:
+  trainer: FluxKontext  # Specify FLUX Kontext trainer
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+  low_memory: true
+  vae_encoder_device: cuda:1
+  text_encoder_device: cuda:1
+
+cache:
+  vae_encoder_device: cuda:1
+  text_encoder_device: cuda:1
+  text_encoder_2_device: cuda:1  # T5 text encoder
+```
+
+**Features:**
+- Highest quality results (reference level)
+- VRAM requirement: ~24GB for training, ~12GB for inference
+- Best for production, research, and benchmarking
+- Dual text encoder support (CLIP + T5)
+
+#### 2. FP8 Training (Balanced Performance)
+
+**Model**: `camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers`
+**Configuration**: `configs/face_seg_flux_kontext_fp8.yaml`
+
+```yaml
+model:
+  pretrained_model_name_or_path: camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers
+  rank: 16
+  quantize: false  # Pre-quantized model, no runtime quantization needed
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    adapter_name: "lora_edit"
+
+train:
+  trainer: FluxKontext
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+  low_memory: true
+```
+
+**Features:**
+- 95% quality of FP16 with 1.5x faster training
+- VRAM requirement: ~18GB for training, ~8GB for inference
+- Optimal balance between performance and quality
+- Pre-quantized weights for efficiency
+
+#### 3. FP4 Training (Maximum Efficiency)
+
+**Model**: `eramth/flux-kontext-4bit-fp4`
+**Configuration**: `configs/face_seg_flux_kontext_fp4.yaml`
+
+```yaml
+model:
+  pretrained_model_name_or_path: eramth/flux-kontext-4bit-fp4
+  rank: 16
+  quantize: false  # Pre-quantized model
+  lora:
+    r: 16  # Consider higher rank (32) for quantized models
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    adapter_name: "lora_edit"
+
+train:
+  trainer: FluxKontext
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+  low_memory: true
+  gradient_accumulation_steps: 2  # May need larger accumulation
+```
+
+**Features:**
+- 85% quality of FP16 with 2.5x faster training
+- VRAM requirement: ~12GB for training, ~5GB for inference
+- Ideal for consumer GPUs and rapid prototyping
+- Maximum memory efficiency
+
+### FLUX Kontext Training Workflow
+
+#### Basic Training Steps
+
+```bash
+# 1. Choose and copy appropriate configuration
+cp configs/face_seg_flux_kontext_fp16.yaml configs/my_flux_config.yaml
+# Edit my_flux_config.yaml with your dataset path and parameters
+
+# 2. Pre-compute embeddings (recommended for faster training)
+CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_flux_config.yaml --cache
+
+# 3. Start FLUX Kontext LoRA training
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_flux_config.yaml
+
+# 4. Monitor training progress
+tensorboard --logdir output_dir/{tracker_project_name}/ --port 6006
+```
+
+#### Multi-GPU Training
+
+```bash
+# Configure accelerate for multi-GPU FLUX training
+accelerate config
+
+# Multi-GPU FLUX Kontext training with device allocation
+CUDA_VISIBLE_DEVICES=0,1,2 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_flux_config.yaml
+```
+
+### FLUX Kontext Specific Configurations
+
+#### Dataset Configuration
+
+FLUX Kontext uses the same dataset structure as Qwen Image Edit but with different image size recommendations:
+
+```yaml
+data:
+  class_path: "src.data.dataset.ImageDataset"
+  init_args:
+    dataset_path: "data/your_flux_dataset"
+    image_size: [1024, 1024]  # FLUX typical size, can be [832, 576] for aspect ratio training
+    caption_dropout_rate: 0.05
+    prompt_image_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+  batch_size: 1  # FLUX models typically need smaller batches
+```
+
+#### Device Allocation Strategy
+
+FLUX Kontext uses multiple encoders that benefit from device distribution:
+
+```yaml
+# Training device allocation
+train:
+  low_memory: true
+  vae_encoder_device: cuda:1
+  text_encoder_device: cuda:1
+
+# Cache device allocation
+cache:
+  vae_encoder_device: cuda:1
+  text_encoder_device: cuda:1    # CLIP encoder
+  text_encoder_2_device: cuda:1  # T5 encoder
+
+# Inference device allocation
+predict:
+  devices:
+    vae: cuda:1
+    text_encoder: cuda:1     # CLIP
+    text_encoder_2: cuda:1   # T5
+    transformer: cuda:1
+```
+
+#### Memory Optimization for FLUX
+
+```yaml
+# Recommended memory optimization settings
+train:
+  gradient_checkpointing: true
+  mixed_precision: "bf16"
+  gradient_accumulation_steps: 2  # Adjust based on available memory
+  low_memory: true  # Enable multi-device model loading
+
+optimizer:
+  class_path: bnb.optim.Adam8bit  # 8bit optimizer for memory efficiency
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+```
+
+### Performance Comparison
+
+| Precision | Model | Quality | Training Speed | VRAM (Train) | VRAM (Inference) | Use Case |
+|-----------|-------|---------|----------------|--------------|------------------|----------|
+| FP16 | black-forest-labs/FLUX.1-Kontext-dev | 100% (Reference) | 1x | ~24GB | ~12GB | Production, Research |
+| FP8 | camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers | 95% | 1.5x | ~18GB | ~8GB | Balanced Performance |
+| FP4 | eramth/flux-kontext-4bit-fp4 | 85% | 2.5x | ~12GB | ~5GB | Consumer GPUs, Prototyping |
+
+### FLUX Kontext Inference
+
+```python
+# Inference with trained FLUX Kontext LoRA model
+from src.flux_kontext_trainer import FluxKontextLoraTrainer
+from src.data.config import load_config_from_yaml
+from PIL import Image
+
+# Load configuration
+config = load_config_from_yaml("configs/face_seg_flux_kontext_fp16.yaml")
+
+# Initialize FLUX Kontext trainer
+trainer = FluxKontextLoraTrainer(config)
+
+# Load trained LoRA weights
+trainer.load_lora("/path/to/your/flux_lora/weights")
+
+# Setup for inference
+trainer.setup_predict()
+
+# Load input image
+input_image = Image.open("input_image.jpg")
+
+# Generate with FLUX Kontext
+result = trainer.predict(
+    prompt_image=input_image,
+    prompt="transform the image with your editing instruction",
+    num_inference_steps=28,  # FLUX typically uses more steps
+    guidance_scale=3.5       # FLUX guidance scale
+)
+
+# Save result
+result[0].save("flux_output.png")
+```
+
 ## Training Modes
 
 ### 1. LoRA Fine-tuning (Recommended)

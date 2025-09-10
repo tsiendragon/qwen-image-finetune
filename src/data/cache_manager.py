@@ -14,7 +14,7 @@ def check_cache_exists(cache_root: str) -> Dict[str, bool]:
         包含各种缓存类型存在状态的字典
     """
     cache_root_path = Path(cache_root)
-    cache_types = ['pixel_latent', 'control_latent', 'prompt_embed', 'prompt_embeds_mask']
+    cache_types = ['pixel_latent', 'prompt_embed']
 
     result = {}
     for cache_type in cache_types:
@@ -45,10 +45,6 @@ class EmbeddingCacheManager:
             'empty_prompt_embeds_mask': self.cache_root / 'empty_prompt_embeds_mask'
         }
 
-        # 创建缓存目录
-        for cache_dir in self.cache_dirs.values():
-            cache_dir.mkdir(parents=True, exist_ok=True)
-
     def _get_file_hash(self, file_path: str, prompt: str = "") -> str:
         """
         生成文件的唯一哈希值
@@ -65,7 +61,10 @@ class EmbeddingCacheManager:
 
     def _get_cache_path(self, cache_type: str, file_hash: str) -> Path:
         """获取缓存文件路径"""
-        return self.cache_dirs[cache_type] / f"{file_hash}.pt"
+        if cache_type in self.cache_dirs:  # original style
+            return self.cache_dirs[cache_type] / f"{file_hash}.pt"
+        else:
+            return os.path.join(self.cache_root, cache_type, f"{file_hash}.pt")
 
     def save_cache(self, cache_type: str, file_hash: str, data: torch.Tensor) -> None:
         """
@@ -76,6 +75,8 @@ class EmbeddingCacheManager:
             data: 要缓存的张量数据
         """
         cache_path = self._get_cache_path(cache_type, file_hash)
+        if not os.path.exists(os.path.dirname(cache_path)):
+            os.makedirs(os.path.dirname(cache_path))
         # 确保tensor没有梯度信息，避免多进程序列化问题
         data_to_save = data.detach().cpu().to(torch.float16)
         torch.save(data_to_save, cache_path)

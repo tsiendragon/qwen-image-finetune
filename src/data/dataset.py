@@ -1,42 +1,84 @@
 import os
 import random
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from typing import List, Dict, Any, Optional
+
 import glob
 import numpy as np
 import cv2
 import importlib
-from typing import Optional, Dict, List, Any
+# 删除重复的 typing 导入，已在上方统一导入 Optional, Dict, List, Any
 from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
 
 
 class ImageDataset(Dataset):
     """
-    Dataset:
-        image: RGB numpy array [3, img_h, img_w]
-        control: RGB numpy array [3, img_h, img_w]
-        prompt: str
-        file_hashes: dict
-            - image_hash: str
-            - control_hash: str
-            - prompt_hash: str
-            - empty_prompt_hash: str
+    图像-控制图像-文本 三元组数据集。
+
+    返回的样本在不同缓存模式下包含不同键：
+    - cached=False: 包含 'image' (C,H,W), 'control' (C,H,W), 'prompt' (str), 'file_paths' (dict)，以及可选 'mask'
+    - cached=True 且旧式缓存存在: 另含 'pixel_latent', 'control_latent',
+      'prompt_embed', 'prompt_embeds_mask', 'empty_prompt_embed',
+      'empty_prompt_embeds_mask' 等张量
+    - cached=True 且仅有新式缓存: 返回缓存子目录名对应的键及其张量
+
+    使用示例:
+    ```python
+    from src.data.dataset import ImageDataset, collate_fn
+    from torch.utils.data import DataLoader
+
+    data_config = {
+        'dataset_path': '/path/to/dataset',
+        'image_size': (512, 512),
+        'use_cache': True,
+        'cache_dir': '/path/to/cache',
+        'random_crop': False,
+        'center_crop': True,
+        'center_crop_ratio': 0.9,
+    }
+    dataset = ImageDataset(data_config)
+    loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, collate_fn=collate_fn)
+    batch = next(iter(loader))
+    ```
     """
     def __init__(self, data_config):
         """
-        初始化数据集
+        初始化数据集。
         Args:
-            data_config: 包含数据集路径和配置的字典
-                - dataset_path: 数据集根目录路径，可以是单个路径字符串或路径列表
-                - image_size: 图像尺寸 [img_w, img_h]，默认为(512, 512)
-                - cache_dir: 缓存目录路径，如果提供则启用缓存
-                - use_cache: 是否使用缓存，默认为 True
-                - random_crop: 是否启用随机裁剪，默认为 False
-                - crop_size: 裁剪后的正方形尺寸，默认为 None
-                - crop_scale: 裁剪缩放范围 [min, max]，默认为 [0.8, 1.0]
-                - center_crop: 是否启用中心裁剪，默认为 False
-                - center_crop_ratio: 中心裁剪比例，默认为 1.0
+            data_config: 包含数据集路径和处理配置的字典，常见键：
+                - dataset_path: 数据集根目录路径（str 或 [str]）
+                - image_size: 目标尺寸 [img_w, img_h] 或 int，默认 None（不缩放）
+                - cache_dir: 缓存目录路径，提供则可用缓存
+                - use_cache: 是否使用缓存，默认 True
+                - random_crop: 是否随机正方形裁剪，默认 False（需配合 crop_size）
+                - crop_size: 随机裁剪后缩放到的边长，默认 None
+                - crop_scale: 随机裁剪的缩放范围 [min, max]，默认 [0.8, 1.0]
+                - center_crop: 是否启用按比例的中心裁剪，默认 False
+                - center_crop_ratio: 中心裁剪相对最大可裁区域的缩放比例，默认 1.0
 
+        期望的数据集目录结构（每个根路径下）:
+            dataset_root/
+              training_images/
+                xxx.png
+                xxx.txt          # 与图像同名的 caption 文本
+              control_images/
+                xxx.png
+                xxx_mask.png     # 可选，若存在则会返回 'mask'
+
+        示例:
+        ```python
+        cfg = {
+            'dataset_path': ['/data/ds1', '/data/ds2'],
+            'image_size': (512, 512),
+            'use_cache': True,
+            'cache_dir': '/data/cache'
+        }
+        ds = ImageDataset(cfg)
+        print(len(ds))
+        sample = ds[0]
+        ```
         """
         self.data_config = data_config
         dataset_path = data_config.get('dataset_path', './dataset')
@@ -70,6 +112,11 @@ class ImageDataset(Dataset):
             print("缓存未启用")
 
         self.cache_exists = check_cache_exists(self.cache_dir) if self.cache_dir else False
+        if self.cache_exists:
+            cache_subfolders = glob.glob(self.cache_dir+"/*")
+            self.cache_keys = [os.path.basename(cache_subfolder) for cache_subfolder in cache_subfolders]
+        else:
+            self.cache_keys = []
 
         self.images_dirs, self.control_dirs = self._find_directories()
 
@@ -81,14 +128,35 @@ class ImageDataset(Dataset):
         else:
             self.resize_size = self.image_size
 
+    def __repr__(self) -> str:
+        msg = f"""ImageDataset(
+            dataset_paths={self.dataset_paths},
+            image_size={self.image_size},
+            cache_dir={self.cache_dir},
+            use_cache={self.use_cache},
+            random_crop={self.random_crop},
+            crop_size={self.crop_size},
+            crop_scale={self.crop_scale},
+            center_crop={self.center_crop},
+            center_crop_ratio={self.center_crop_ratio})
+        """
+        return msg
+
     def get_random_crop_bbox(self, h, w):
         """
-        生成随机裁剪的边界框
+        生成随机正方形裁剪的边界框（需启用 random_crop）。
         Args:
             h: 图像高度
             w: 图像宽度
         Returns:
-            tuple: (x, y, crop_w, crop_h) 裁剪区域
+            tuple: (x, y, crop_w, crop_h) 裁剪区域；未启用时返回 None
+
+        示例:
+        ```python
+        dataset.random_crop = True
+        dataset.crop_size = 256
+        bbox = dataset.get_random_crop_bbox(h=768, w=1024)
+        ```
         """
         if not self.random_crop:
             return None
@@ -115,12 +183,19 @@ class ImageDataset(Dataset):
 
     def get_center_crop_bbox(self, h, w):
         """
-        生成中心裁剪的边界框，保持目标比例且在图片内部能达到的最大尺寸
+        生成中心裁剪的边界框，按目标宽高比取最大区域（需启用 center_crop）。
         Args:
             h: 图像高度
             w: 图像宽度
         Returns:
-            tuple: (x, y, crop_w, crop_h) 裁剪区域
+            tuple: (x, y, crop_w, crop_h) 裁剪区域；未启用时返回 None
+
+        示例:
+        ```python
+        dataset.center_crop = True
+        dataset.resize_size = (512, 512)
+        bbox = dataset.get_center_crop_bbox(h=720, w=1280)
+        ```
         """
         if not self.center_crop:
             return None
@@ -164,12 +239,18 @@ class ImageDataset(Dataset):
 
     def apply_crop_and_resize(self, img, bbox=None):
         """
-        应用裁剪和调整大小
+        应用裁剪并按配置调整大小。
         Args:
-            img: 输入图像 (H, W, C)
-            bbox: 裁剪边界框 (x, y, w, h)，如果为None则不裁剪
+            img: 输入图像，(H, W, C) 或 (H, W)
+            bbox: 裁剪边界框 (x, y, w, h)，None 则不裁剪
         Returns:
-            处理后的图像
+            numpy.ndarray: 处理后的图像
+
+        示例:
+        ```python
+        img = cv2.imread('/path/a.png')[:, :, ::-1]
+        out = dataset.apply_crop_and_resize(img, bbox=(10, 20, 256, 256))
+        ```
         """
         if bbox is not None:
             x, y, w, h = bbox
@@ -188,12 +269,17 @@ class ImageDataset(Dataset):
 
     def preprocess(self, image_path, crop_bbox=None):
         """
-        预处理单个图像
+        读取并预处理单个图像，返回 CHW 格式。
         Args:
-            image_path: 图像路径
-            crop_bbox: 可选的裁剪边界框 (x, y, w, h)
+            image_path: 图像路径或已加载的 numpy 数组
+            crop_bbox: 可选裁剪边界框 (x, y, w, h)
         Returns:
-            处理后的图像数组 (C, H, W)
+            numpy.ndarray: (C, H, W)
+
+        示例:
+        ```python
+        arr = dataset.preprocess('/path/a.png', crop_bbox=None)  # (3,H,W)
+        ```
         """
         if isinstance(image_path, str):
             img = cv2.imread(image_path)
@@ -206,11 +292,19 @@ class ImageDataset(Dataset):
 
         # 转换为CHW格式
         if len(img.shape) == 3:
-            img = img.transpose(2, 0, 1) # ，C,H,W
+            img = img.transpose(2, 0, 1)  # ，C,H,W
         return img
 
     def _find_directories(self):
-        """查找所有数据集路径下的图像和控制图像目录"""
+        """
+        查找所有数据集根路径下的图像目录与控制图像目录。
+        优先匹配:
+            images: ['training_images', 'images', 'target_images']
+            control: ['control_images', 'control', 'condition_images']
+        若都未找到则回退到默认 'training_images' 与 'control_images'。
+        Returns:
+            Tuple[List[str], List[str]]: images_dirs, control_dirs
+        """
         images_dirs = []
         control_dirs = []
 
@@ -263,7 +357,16 @@ class ImageDataset(Dataset):
         return images_dirs, control_dirs
 
     def _scan_image_files(self):
-        """扫描所有数据集中的图像文件"""
+        """
+        扫描所有数据集中的成对样本。
+        样本需满足：
+            - images_dir/xxx.(jpg|jpeg|png|bmp)
+            - control_dir/xxx.(jpg|jpeg|png|bmp)
+            - images_dir/xxx.txt 作为 caption
+            - 可选 control_dir/xxx_mask.png
+        Returns:
+            List[dict]: 'image' 'control' 'caption' 'dataset_index' 'mask_file'
+        """
         all_valid_files = []
 
         # 遍历所有数据集目录
@@ -319,11 +422,19 @@ class ImageDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-        获取数据集中的一个样本
+        获取索引样本。
         Args:
             idx: 样本索引
         Returns:
-            tuple: (image_tensor, prompt) 或 带缓存的 embedding 字典
+            dict: 根据缓存状态返回原始图像+文本或缓存嵌入的字典
+
+        示例（非缓存模式）:
+        ```python
+        item = dataset[0]
+        image = item['image']     # (C,H,W) numpy
+        control = item['control'] # (C,H,W) numpy
+        prompt = item['prompt']   # str
+        ```
         """
         if idx >= len(self.image_files):
             raise IndexError(f"Index {idx} out of range for dataset of size {len(self.image_files)}")
@@ -356,8 +467,6 @@ class ImageDataset(Dataset):
             mask_numpy = self.preprocess(cv2.imread(file_info['mask_file'], 0), crop_bbox)
             has_mask = True
 
-
-
         if self.use_cache:
             image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])
             control_hash = self.cache_manager.get_file_hash_for_image(file_info['control'])
@@ -367,44 +476,68 @@ class ImageDataset(Dataset):
         if self.cache_exists and self.use_cache:
             # 如果启用缓存，尝试加载缓存的嵌入
             # 检查缓存是否存在
-            cached_data = {}
-            for cache_type, file_hash in [
-                ('pixel_latent', image_hash),
-                ('control_latent', control_hash),
-                ('prompt_embed', prompt_hash),
-                ('prompt_embeds_mask', prompt_hash),
-                ('empty_prompt_embed', empty_prompt_hash),
-                ('empty_prompt_embeds_mask', empty_prompt_hash),
-            ]:
-                cached_embedding = self.cache_manager.load_cache(cache_type, file_hash)
-                cached_data[cache_type] = cached_embedding
-            if random.random() < self.data_config.get('cache_drop_rate', 0.0):
-                prompt_embed = cached_data['empty_prompt_embed']
-                prompt_embeds_mask = cached_data['empty_prompt_embeds_mask']
-            else:
-                prompt_embed = cached_data['prompt_embed']
-                prompt_embeds_mask = cached_data['prompt_embeds_mask']
-            # 如果所有缓存都存在，返回缓存数据
-            data = {
-                'cached': True,
-                'image': image_numpy,
-                'control': control_numpy,
-                'pixel_latent': cached_data['pixel_latent'],
-                'control_latent': cached_data['control_latent'],
-                'prompt_embed': prompt_embed,
-                'prompt_embeds_mask': prompt_embeds_mask,
-                'prompt': prompt,
-                'file_hashes': {
-                    'image_hash': image_hash,
-                    'control_hash': control_hash,
-                    'prompt_hash': prompt_hash,
-                    'empty_prompt_hash': empty_prompt_hash
+            # TODO: original implementation
+            cache_file = os.path.join(self.cache_dir, 'pixel_latent', f"{image_hash}.pt")
+            old_style = os.path.exists(cache_file)
+
+            if old_style:
+                cached_data = {}
+                for cache_type, file_hash in [
+                    ('pixel_latent', image_hash),
+                    ('control_latent', control_hash),
+                    ('prompt_embed', prompt_hash),
+                    ('prompt_embeds_mask', prompt_hash),
+                    ('empty_prompt_embed', empty_prompt_hash),
+                    ('empty_prompt_embeds_mask', empty_prompt_hash),
+                ]:
+                    cached_embedding = self.cache_manager.load_cache(cache_type, file_hash)
+                    cached_data[cache_type] = cached_embedding
+                if random.random() < self.data_config.get('cache_drop_rate', 0.0):
+                    for key in self.data_config.get('prompt_empty_drop_keys', []):
+                        empty_key = f'empty_{key}'
+                        cached_data[key] = cached_data[empty_key]
+
+                # 如果所有缓存都存在，返回缓存数据
+                data = {
+                    'cached': True,
+                    'image': image_numpy,
+                    'control': control_numpy,
+                    'pixel_latent': cached_data['pixel_latent'],
+                    'control_latent': cached_data['control_latent'],
+                    'prompt_embed': cached_data['prompt_embed'],
+                    'prompt_embeds_mask': cached_data['prompt_embeds_mask'],
+                    'prompt': prompt,
+                    'file_hashes': {
+                        'image_hash': image_hash,
+                        'control_hash': control_hash,
+                        'prompt_hash': prompt_hash,
+                        'empty_prompt_hash': empty_prompt_hash
+                    }
                 }
-            }
-            if has_mask:
-                data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
-            self.check_none_output(data)
-            return data
+                if has_mask:
+                    data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
+                self.check_none_output(data)
+                return data
+            else:
+                data = {}
+                for cache_type in self.cache_keys:
+                    cache_path = os.path.join(self.cache_dir, cache_type, f"{prompt_hash}.pt")
+                    loaded_data = torch.load(cache_path, map_location='cpu', weights_only=False)
+                    # 确保加载的数据没有梯度信息
+                    loaded_data = loaded_data.detach()
+                    data[cache_type] = loaded_data
+                data.update(
+                    {
+                        'cached': True,
+                        'image': image_numpy,
+                        'control': control_numpy,
+                        'prompt': prompt,
+                    }
+                )
+                if has_mask:
+                    data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
+                self.check_none_output(data)
+                return data
         else:
 
             # 如果没有缓存或缓存不完整，返回原始数据
@@ -429,6 +562,13 @@ class ImageDataset(Dataset):
             return data
 
     def check_none_output(self, data: dict):
+        """
+        断言数据字典（含嵌套）中的值均非 None。
+        Args:
+            data: 返回的数据字典
+        Raises:
+            AssertionError: 若存在 None 值
+        """
         for k, v in data.items():
             if isinstance(v, dict):
                 for kk, vv in v.items():
@@ -438,127 +578,82 @@ class ImageDataset(Dataset):
 
     def get_cache_stats(self) -> Optional[Dict[str, int]]:
         """
-        获取缓存统计信息
+        获取缓存统计信息。
         Returns:
-            缓存统计字典，如果未启用缓存则返回 None
+            Optional[Dict[str, int]]: 缓存统计字典；未启用缓存返回 None
+
+        示例:
+        ```python
+        stats = dataset.get_cache_stats()
+        if stats:
+            print(stats)
+        ```
         """
         if self.cache_manager:
             return self.cache_manager.get_cache_stats()
         return None
 
 
+def pad_to_max_shape(tensors, padding_value=0):
+    """
+    将一组不同形状但维度数一致的张量沿各维右侧填充到最大形状后堆叠。
+    Args:
+        tensors: List[Tensor]，形状可能不同
+        padding_value: 填充值，默认 0
+    Returns:
+        Tensor: 形状为 (N, ...) 的批次张量
+
+    示例:
+    ```python
+    x = [torch.ones(2,3), torch.zeros(4,1)]
+    y = pad_to_max_shape(x, padding_value=0)  # -> (2,4,3)
+    ```
+    """
+    # Find maximum shape
+    max_shape = [max(sizes) for sizes in zip(*[t.shape for t in tensors])]
+    padded = []
+    for t in tensors:
+        pad_sizes = []
+        for i in range(len(max_shape) - 1, -1, -1):
+            diff = max_shape[i] - t.shape[i]
+            pad_sizes.extend([0, diff])  # (left, right) per dimension
+        padded_tensor = F.pad(t, pad_sizes, value=padding_value)
+        padded.append(padded_tensor)
+
+    return torch.stack(padded, dim=0)
+
+
 def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    自定义collate函数，用于处理不同长度的prompt_embed和prompt_embeds_mask的padding
-
+    自定义 collate 函数，自动对张量右端填充并对嵌套字典递归聚合。
     Args:
-        batch: 批次数据列表，每个元素是__getitem__返回的字典
-
+        batch: 由 __getitem__ 返回的样本字典组成的列表
     Returns:
-        处理后的批次数据字典，其中prompt_embed和prompt_embeds_mask已进行padding
+        Dict[str, Any]: 已聚合并对齐后的批次字典
+
+    示例:
+    ```python
+    loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
+    batch = next(iter(loader))
+    ```
     """
+    # [{a:1,b:2, c:{d:1,g:2}},{a:3,b:4, c:{e:3,g:4}}] -> {a: [1,3], b: [2,4], c:{d: [1,3], e: [2,4], g: [2,4]}}
     # 分离cached和non-cached的数据
-    cached_items = [item for item in batch if item.get('cached', False)]
-    non_cached_items = [item for item in batch if not item.get('cached', False)]
-
-    # 如果batch中有cached数据，需要进行padding
-    if cached_items:
-        # 找到prompt_embed和prompt_embeds_mask的最大长度
-        max_prompt_len = 0
-        for item in cached_items:
-            if item['prompt_embed'] is not None:
-                prompt_len = item['prompt_embed'].shape[0]
-                max_prompt_len = max(max_prompt_len, prompt_len)
-
-        # 对所有cached items进行padding
-        for item in cached_items:
-            if item['prompt_embed'] is not None:
-                prompt_embed = item['prompt_embed']
-                prompt_embeds_mask = item['prompt_embeds_mask']
-
-                # 转换为torch tensor（如果还不是）
-                if not isinstance(prompt_embed, torch.Tensor):
-                    prompt_embed = torch.tensor(prompt_embed)
-                if not isinstance(prompt_embeds_mask, torch.Tensor):
-                    prompt_embeds_mask = torch.tensor(prompt_embeds_mask)
-
-                current_len = prompt_embed.shape[0]
-
-                if current_len < max_prompt_len:
-                    # 计算需要padding的长度
-                    pad_len = max_prompt_len - current_len
-
-                    # 对prompt_embed进行padding
-                    if len(prompt_embed.shape) == 1:
-                        # 1D tensor
-                        pad_embed = torch.zeros(pad_len, dtype=prompt_embed.dtype)
-                        item['prompt_embed'] = torch.cat([prompt_embed, pad_embed], dim=0)
-                    else:
-                        # 2D tensor [seq_len, hidden_dim]
-                        pad_embed = torch.zeros(pad_len, prompt_embed.shape[1], dtype=prompt_embed.dtype)
-                        item['prompt_embed'] = torch.cat([prompt_embed, pad_embed], dim=0)
-
-                    # 对prompt_embeds_mask进行padding
-                    if len(prompt_embeds_mask.shape) == 1:
-                        # 1D tensor
-                        pad_mask = torch.zeros(pad_len, dtype=prompt_embeds_mask.dtype)
-                        item['prompt_embeds_mask'] = torch.cat([prompt_embeds_mask, pad_mask], dim=0)
-                    else:
-                        # 2D tensor
-                        pad_mask = torch.zeros(pad_len, prompt_embeds_mask.shape[1], dtype=prompt_embeds_mask.dtype)
-                        item['prompt_embeds_mask'] = torch.cat([prompt_embeds_mask, pad_mask], dim=0)
-
-    # 重新组合批次数据
-    all_items = cached_items + non_cached_items
-
-    # 创建批次字典
-    batch_dict = {}
-
-    # 收集所有键
-    all_keys = set()
-    for item in all_items:
-        all_keys.update(item.keys())
-
-    # 对每个键进行批处理
-    for key in all_keys:
-        values = []
-        for item in all_items:
-            if key in item:
-                values.append(item[key])
-            else:
-                values.append(None)
-
-        # 如果所有值都是None，跳过
-        if all(v is None for v in values):
-            continue
-
-        # 如果是tensor类型的数据，尝试stack
-        if key in ['image', 'control', 'mask', 'pixel_latent', 'control_latent', 'prompt_embed', 'prompt_embeds_mask']:
-            try:
-                # 过滤掉None值
-                non_none_values = [v for v in values if v is not None]
-                if non_none_values:
-                    # 转换为torch tensor
-                    tensor_values = []
-                    for v in non_none_values:
-                        if not isinstance(v, torch.Tensor):
-                            v = torch.tensor(v)
-                        tensor_values.append(v)
-
-                    # 尝试stack
-                    if len(tensor_values) > 0:
-                        batch_dict[key] = torch.stack(tensor_values, dim=0)
-                    else:
-                        batch_dict[key] = values
-                else:
-                    batch_dict[key] = values
-            except Exception:
-                # 如果stack失败，保持原始列表
-                batch_dict[key] = values
-        else:
-            # 非tensor数据保持列表形式
-            batch_dict[key] = values
-
+    keys = list(batch[0].keys())
+    # flattten
+    batch_dict = {key: [item[key] for item in batch] for key in keys}
+    # if torch tensor, padding to maximal length
+    for key in batch_dict:
+        if isinstance(batch_dict[key][0], np.ndarray):
+            batch_dict[key] = [torch.from_numpy(item) for item in batch_dict[key]]
+        if isinstance(batch_dict[key][0], torch.Tensor):
+            batch_dict[key] = pad_to_max_shape(batch_dict[key])
+        elif isinstance(batch_dict[key][0], dict):
+            batch_list = batch_dict[key]
+            batch_list = collate_fn(batch_list)
+            batch_dict[key] = batch_list
+            # [ {d:1,g:2}, {e:3,g:4}] -> {d: [1,3], g: [2,4]}
+            # [{a:1,b:2, c:{d:1,g:2}},{a:3,b:4, c:{d:3,g:4}}] -> {a: [1,3], b: [2,4], c:{d: [1,3], g: [2,4]}}
     return batch_dict
 
 
@@ -569,15 +664,29 @@ def loader(
         num_workers: int = 0,
         shuffle: bool = True) -> DataLoader:
     """
-    动态加载数据集类并创建DataLoader
+    动态加载数据集类并创建 DataLoader。
     Args:
         class_path: 类的完整路径，如 'src.data.dataset.ImageDataset'
-        init_args: 用于初始化数据集类的参数字典
+        init_args: 用于初始化该类的参数字典（传给其 __init__）
         batch_size: 批次大小
-        num_workers: 数据加载的工作进程数
-        shuffle: 是否打乱数据
+        num_workers: 工作进程数
+        shuffle: 是否打乱
     Returns:
-        DataLoader对象
+        torch.utils.data.DataLoader: 附加属性 'cache_manager'
+
+    示例:
+    ```python
+    from src.data.dataset import loader
+    dl = loader(
+        class_path='src.data.dataset.ImageDataset',
+        init_args={'dataset_path': '/data/ds', 'use_cache': False},
+        batch_size=2,
+        num_workers=2,
+        shuffle=True,
+    )
+    for batch in dl:
+        pass
+    ```
     """
     # 解析类路径
     module_path, class_name = class_path.rsplit('.', 1)

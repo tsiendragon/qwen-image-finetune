@@ -57,11 +57,11 @@ def load_test_data(image_path: str, prompt_path: str):
     logger.info(f"加载图像: {image_path}, 尺寸: {image.size}")
 
     # 加载提示词
-    if not os.path.exists(prompt_path):
-        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
-
-    with open(prompt_path, 'r', encoding='utf-8') as f:
-        prompt = f.read().strip()
+    if os.path.exists(prompt_path):
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            prompt = f.read().strip()
+    else:
+        prompt = prompt_path
 
     logger.info(f"加载提示词: {prompt[:100]}...")
 
@@ -100,7 +100,7 @@ def run_prediction(trainer: QwenImageEditTrainer,
     result = trainer.predict(
         prompt_image=image,
         prompt=prompt,
-        negative_prompt="blurry",
+        negative_prompt="",
         num_inference_steps=num_inference_steps,
         true_cfg_scale=cfg_scale,
         weight_dtype=torch.bfloat16
@@ -185,21 +185,21 @@ def main():
     logger.info(f"输入图像: {args.image}")
     logger.info(f"提示词文件: {args.prompt}")
 
+
     try:
         # 加载配置文件
         config_path = project_root / args.config
         base_config = load_config(config_path)
 
-        # 加载测试数据
-        if args.prompt_text:
-            # 使用直接提供的提示词文本
-            image = Image.open(args.image).convert('RGB')
-            prompt = args.prompt_text
-            logger.info(f"加载图像: {args.image}, 尺寸: {image.size}")
-            logger.info(f"使用提示词: {prompt[:100]}...")
+        trainer_type = base_config.train.trainer
+        if trainer_type == 'QwenImageEdit':
+            from src.qwen_image_edit_trainer import QwenImageEditTrainer  as Trainer
+        elif trainer_type == 'FluxKontext':
+            from src.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
         else:
-            # 从文件加载提示词
-            image, prompt = load_test_data(args.image, args.prompt)
+            raise ValueError(f"Invalid trainer type: {trainer_type}")
+
+        image, prompt = load_test_data(args.image, args.prompt)
 
         # 创建输出目录
         output_dir = project_root / args.output_dir
@@ -226,7 +226,7 @@ def main():
             logger.info("\n--- 测试基础模型 ---")
             base_config_predict = create_config_for_predict(base_config, None)
 
-            base_trainer = QwenImageEditTrainer(base_config_predict)
+            base_trainer = Trainer(base_config_predict)
             base_trainer.setup_predict()
 
             base_result = run_prediction(
@@ -249,7 +249,7 @@ def main():
             lora_config_predict = create_config_for_predict(base_config, args.lora_weight)
             print('with lora weight', args.lora_weight)
 
-            lora_trainer = QwenImageEditTrainer(lora_config_predict)
+            lora_trainer = Trainer(lora_config_predict)
             lora_trainer.setup_predict()
 
             lora_result = run_prediction(
@@ -279,7 +279,7 @@ def main():
 
             predict_config = create_config_for_predict(base_config, args.lora_weight)
 
-            trainer = QwenImageEditTrainer(predict_config)
+            trainer = Trainer(predict_config)
             trainer.setup_predict()
 
             result = run_prediction(

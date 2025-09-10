@@ -25,3 +25,6 @@ packaging
 ninja
 wheel
 setuptools
+sentencepiece
+datasets
+prodigyopt

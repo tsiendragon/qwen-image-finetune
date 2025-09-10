@@ -288,8 +288,6 @@ class QwenImageEditTrainer:
         else:
             self.transformer.to(self.accelerator.device)
 
-
-
         lora_config = LoraConfig(
             r=self.config.model.lora.r,
             lora_alpha=self.config.model.lora.lora_alpha,
@@ -301,8 +299,10 @@ class QwenImageEditTrainer:
             lora_type = classify(self.config.model.lora.pretrained_weight)
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
-                self.transformer.load_lora_adapter(self.config.model.lora.pretrained_weight, adapter_name=self.adapter_name)
-                logging.info(f"set_lora: {lora_type} Loaded lora from {self.config.model.lora.pretrained_weight} for {self.adapter_name}")
+                self.transformer.load_lora_adapter(
+                    self.config.model.lora.pretrained_weight,
+                    adapter_name=self.adapter_name)
+                logging.info(f"set_lora: {lora_type}  {self.config.model.lora.pretrained_weight} {self.adapter_name}")
             else:
                 # add lora first
                 # Configure model
@@ -315,7 +315,7 @@ class QwenImageEditTrainer:
                 )
                 if len(unexpected) > 0:
                     raise ValueError(f"Unexpected keys: {unexpected}")
-                logging.info(f"set_lora: {lora_type} Loaded lora from {self.config.model.lora.pretrained_weight} for {self.adapter_name}")
+                logging.info(f"set_lora: {lora_type} {self.config.model.lora.pretrained_weight} {self.adapter_name}")
                 logging.info(f"missing keys: {len(missing)}, {missing[0]}")
                 # self.load_lora(self.config.model.lora.pretrained_weight)
             logging.info(f"set_lora: Loaded lora from {self.config.model.lora.pretrained_weight}")
@@ -359,7 +359,7 @@ class QwenImageEditTrainer:
             )
             if len(unexpected) > 0:
                 raise ValueError(f"Unexpected keys: {unexpected}")
-            logging.info(f"set_lora: {lora_type} Loaded lora from {self.config.model.lora.pretrained_weight} for {self.adapter_name}")
+            logging.info(f"set_lora: {lora_type} {self.config.model.lora.pretrained_weight} {self.adapter_name}")
             logging.info(f"missing keys: {len(missing)}, {missing[0]}")
 
     def save_lora(self, save_path):
@@ -686,14 +686,17 @@ class QwenImageEditTrainer:
             edit_mask=edit_mask,
         )
 
-    def _compute_loss(self,
-            pixel_latents,
-            control_latents,
-            prompt_embeds,
-            prompt_embeds_mask,
-            height, width,
-            edit_mask=None
-        ):
+    def _compute_loss(
+        self,
+        pixel_latents,
+        control_latents,
+        prompt_embeds,
+        prompt_embeds_mask,
+        height,
+        width,
+        edit_mask=None,
+    ):
+
         """calculate the flowmatching loss
         pixel_latents: is the packed latent, shape is
           [batch_size, (height // 2) * (width // 2), num_channels_latents * 4]
@@ -817,8 +820,12 @@ class QwenImageEditTrainer:
             self.transformer.enable_gradient_checkpointing()
         if self.config.train.resume_from_checkpoint is not None:
             # self.accelerator.load_state(self.config.train.resume_from_checkpoint)
-            self.optimizer.load_state_dict(torch.load(os.path.join(self.config.train.resume_from_checkpoint, "optimizer.bin")))
-            self.lr_scheduler.load_state_dict(torch.load(os.path.join(self.config.train.resume_from_checkpoint, "scheduler.bin")))
+            self.optimizer.load_state_dict(
+                torch.load(os.path.join(self.config.train.resume_from_checkpoint, "optimizer.bin"))
+            )
+            self.lr_scheduler.load_state_dict(
+                torch.load(os.path.join(self.config.train.resume_from_checkpoint, "scheduler.bin"))
+            )
             logging.info(f"Loaded optimizer and scheduler from {self.config.train.resume_from_checkpoint}")
 
         lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
@@ -899,7 +906,6 @@ class QwenImageEditTrainer:
 
         control_tensor, prompt_image_processed, height_control, width_control = self.adjust_image_size(control)
         image_tensor, _, height_image, width_image = self.adjust_image_size(image)
-
 
         file_hashes = data["file_hashes"]
         image_hash = file_hashes["image_hash"]
@@ -1028,8 +1034,6 @@ class QwenImageEditTrainer:
         logging.info(f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}")
         logging.info(f"  Use cache: {self.use_cache}, Cache exists: {self.cache_exist}")
 
-
-
         # Training loop
         train_loss = 0.0
         running_loss = 0.0
@@ -1047,6 +1051,7 @@ class QwenImageEditTrainer:
             desc="train",
             disable=not self.accelerator.is_local_main_process,
         )
+
         for epoch in range(start_epoch, self.config.train.num_epochs):
             for _, batch in enumerate(train_dataloader):
                 with self.accelerator.accumulate(self.transformer):
@@ -1303,16 +1308,9 @@ class QwenImageEditTrainer:
             )
             negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer, dtype=torch.int64)
 
-            # 将 positive embeddings 移回 GPU
-
-            # 检查 negative prompt embeddings 是否有梯度
-            logging.info(f"negative_prompt_embeds.requires_grad: {negative_prompt_embeds.requires_grad}")
-            logging.info(f"negative_prompt_embeds_mask.requires_grad: {negative_prompt_embeds_mask.requires_grad}")
-            logging.info(f"negative_prompt_embeds shape: {negative_prompt_embeds.shape}, dtype: {negative_prompt_embeds.dtype}")
-            logging.info(f"negative_prompt_embeds_mask shape: {negative_prompt_embeds_mask.shape}, dtype: {negative_prompt_embeds_mask.dtype}")
-
         logging.info(f"mask shape: {prompt_embeds_mask.shape}, dtype: {prompt_embeds_mask.dtype}")
         logging.info(f"prompt_embeds shape: {prompt_embeds.shape}, dtype: {prompt_embeds.dtype}")
+
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
         if image_latents is not None:

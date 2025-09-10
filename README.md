@@ -4,16 +4,18 @@
 
 ## Overview
 
-This repository provides a comprehensive framework for fine-tuning Qwen Vision-Language models for specialized image editing and understanding tasks. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
+This repository provides a comprehensive framework for fine-tuning advanced vision-language models for specialized image editing and understanding tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures, offering flexible precision levels (FP16/FP8/FP4) to accommodate different hardware capabilities. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 
 ## Key Features
 
+- **Dual Model Support**: Complete support for both Qwen-Image-Edit and FLUX Kontext model architectures
+- **Multi-Precision Training**: FP16, FP8, and FP4 quantization levels for different hardware requirements
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
 - **Edit Mask Loss Support**: Advanced mask-weighted loss function for focused training on edit regions
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
 - **Resume Training**: Seamless training resumption from checkpoints with full state recovery
 - **Multi-GPU Support**: Distributed training capabilities with gradient accumulation
-- **Quantization Support**: FP4/INT8 quantization for reduced memory usage
+- **Quantization Support**: FP4/FP8/FP16 quantization for reduced memory usage and performance optimization
 - **Flexible Architecture**: Modular design supporting various vision-language tasks
 - **Production Ready**: Comprehensive testing suite and deployment configurations
 
@@ -28,6 +30,23 @@ This repository provides a comprehensive framework for fine-tuning Qwen Vision-L
 - [Performance Benchmarks](#performance-benchmarks)
 - [Citation](#citation)
 - [License](#license)
+
+## Dataset
+
+We recommend using the curated dataset hosted on Hugging Face instead of keeping samples in-repo. The dataset used in our examples and configs:
+
+- Face segmentation dataset: [`TsienDragon/face_segmentation_20`](https://huggingface.co/datasets/TsienDragon/face_segmentation_20)
+
+Quick usage:
+
+```python
+from src.utils.hugginface import load_editing_dataset
+
+dd = load_editing_dataset("TsienDragon/face_segmentation_20")
+sample = dd["train"][0]
+```
+
+Dataset structure reference and upload/download instructions are in [`docs/huggingface-dataset.md`](docs/huggingface-dataset.md). We will remove the dataset copies under this repository and rely on Hugging Face going forward.
 
 ## Installation
 
@@ -50,16 +69,16 @@ cd qwen-image-finetune
 ```
 Refer [`docs/speed_optimization.md`](docs/speed_optimization.md) to install `flash-atten` to speed-up the training.
 
-### Basic Usage with Toy Dataset
+### Basic Usage with Dataset
 ```bash
-# 1. provied toy data for lora training  data/face_seg/
-ls data/face_seg/control_images/    # control images  (20 samples)
-ls data/face_seg/training_images/   # target images and prompts (20 samples)
+# 1. Prepare dataset: use Hugging Face dataset (recommended)
+#    See docs/huggingface-dataset.md for details
+#    Or download locally following the documented structure
 
-# 2. trainig config
+# 2. training config
 cp configs/face_seg_config.yaml configs/my_config.yaml
 
-# 3. doing cache to same GPU memory. It needs 48.6G memory for lora training with batch size 2 and gradient checkpoint
+# 3. (Optional) build cache first to speed up training
 CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cache
 
 # 4. start training
@@ -67,6 +86,38 @@ CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m
 
 # 5. resume training (add resume_from_checkpoint: to config)
 CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+```
+
+### Configuration Guide
+
+The framework provides various pre-configured training setups for different models and hardware requirements:
+
+| Config File | Model | Precision | Key Features | GPU Memory | Recommended GPU |
+|------------|-------|-----------|--------------|------------|-----------------|
+| `face_seg_config.yaml` | Qwen-Image-Edit | BF16 | Standard training, best quality | ~48.6GB | A100 |
+| `face_seg_fp4_config.yaml` | Qwen-Image-Edit | FP4 | 4-bit quantized, memory efficient | ~22.5GB | A100/RTX4090 |
+| `face_seg_fp4_4090.yaml` | Qwen-Image-Edit | FP4 | Optimized for RTX 4090 | ~23.3GB | RTX 4090 |
+| `face_seg_flux_kontext_fp16.yaml` | FLUX Kontext | FP16 | Full precision, best quality | ~50GB | A100 |
+| `face_seg_flux_kontext_fp8.yaml` | FLUX Kontext | FP8 | 8-bit quantized, balanced | ~35GB | A100 |
+| `face_seg_flux_kontext_fp4.yaml` | FLUX Kontext | FP4 | 4-bit quantized, most efficient | ~24GB | RTX 4090/A100 |
+
+**Key Configuration Differences:**
+
+- **Qwen-Image-Edit Configs**:
+  - Standard BF16: Uses `Qwen/Qwen-Image-Edit` base model
+  - FP4 versions: Use `ovedrive/qwen-image-edit-4bit` quantized model
+  - All use LoRA rank 16 for efficient fine-tuning
+
+- **FLUX Kontext Configs**:
+  - FP16: Uses standard FLUX Kontext or `camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers`
+  - FP8: Uses `camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers`
+  - FP4: Uses `eramth/flux-kontext-4bit-fp4`
+  - Includes additional `text_encoder_2` for T5 model
+
+**Usage Example:**
+```bash
+# For FLUX Kontext FP4 training on RTX 4090
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/face_seg_flux_kontext_fp4.yaml
 ```
 
 #### Training with RTX4090
@@ -84,11 +135,11 @@ distributed_type: MULTI_GPU  #for multi-gpu training
 in the `accelerate_config.yaml`
 
 
-#### 🎯 LoRA Fine-tuning Results Comparison
+#### 🎯 Qwen-Image-Edit LoRA Fine-tuning Results
 
 This project demonstrates fine-tuning the Qwen-VL model for face segmentation tasks. Below shows the comparison between pre and post fine-tuning results:
 
-##### Results Comparison
+##### Image used in Training
 
 <div align="center">
   <table>
@@ -115,7 +166,7 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
   <p><strong>Comparison:</strong> The LoRA fine-tuned model shows significantly improved accuracy and details in face segmentation compared to the base model.</p>
 </div>
 
-##### Precision Comparison: BF16 vs FP4 LoRA Fine-tuning
+##### Image not used in Training
 
 <div align="center">
   <table>
@@ -167,13 +218,56 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
   - FP4 quantized LoRA maintains competitive quality while being more memory efficient
   - Base model uses BF16 precision in both experiments; only the LoRA adapters differ in quantization
 
+#### 🔥 Flux Kontext Compare：FP16, FP8, FP4 LoRA Fine-tuning Results
 
-##### Performance Analysis
-- **Before Fine-tuning**: Base model can identify face regions but with limited segmentation precision
-- **After Fine-tuning**: LoRA fine-tuning significantly improves segmentation accuracy and boundary details
-- **Key Improvements**: More precise boundary detection, better detail preservation, more stable segmentation quality
+<div align="center">
+  <table>
+    <tr>
+      <th>Input Image</th>
+      <th>精度类型</th>
+      <th>Base Model (无LoRA)</th>
+      <th>LoRA Fine-tuned Model</th>
+    </tr>
+    <tr>
+      <td align="center" rowspan="3">
+        <img src="docs/images/20250829_155502/input_image.jpg" alt="Input Image" width="250"/>
+        <br><em>Original input image</em>
+      </td>
+      <td align="center"><strong>FP16</strong></td>
+      <td align="center">
+        <img src="docs/images/image-7.png" alt="FP16 Base Model Results" width="250"/>
+        <br><em>Base Flux Kontext model (FP16)</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-6.png" alt="FP16 LoRA Fine-tuned Results" width="250"/>
+        <br><em><strong>FP16 LoRA fine-tuned model</strong></em>
+      </td>
+    </tr>
+    <tr>
+      <td align="center"><strong>FP8</strong></td>
+      <td align="center">
+        <img src="docs/images/image-10.png" alt="FP8 Base Model Results" width="250"/>
+        <br><em>FP8 base model (无LoRA)</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-11.png" alt="FP8 LoRA Fine-tuned Results" width="250"/>
+        <br><em><strong>FP8 LoRA fine-tuned model</strong></em>
+      </td>
+    </tr>
+    <tr>
+      <td align="center"><strong>FP4</strong></td>
+      <td align="center">
+        <img src="docs/images/image-9.png" alt="FP4 Base Model Results" width="250"/>
+        <br><em>FP4 base model (无LoRA)</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-8.png" alt="FP4 LoRA Fine-tuned Results" width="250"/>
+        <br><em><strong>FP4 LoRA fine-tuned model</strong></em>
+      </td>
+    </tr>
+  </table>
+</div>
 
-> 💡 **Note**: Through LoRA fine-tuning, we achieve significant performance improvements for specific tasks while maintaining model efficiency and lightweight characteristics.
 ### Lora Training Performance
 
 |cache|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed|
@@ -277,6 +371,7 @@ We welcome contributions to improve this documentation:
 
 ### Technical Support
 - **Training Issues**: See [Training Guide](docs/training.md) troubleshooting
+- **FLUX Kontext Training**: See [Training Guide](docs/training.md#flux-kontext-lora-training) for multi-precision training
 - **Setup Problems**: Check [Setup Guide](docs/setup.md) common issues
 - **Performance**: Review [Cache System](docs/cache-system.md) optimization
 - **General Questions**: Open a GitHub issue with detailed description

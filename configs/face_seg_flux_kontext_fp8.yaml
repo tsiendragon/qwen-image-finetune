@@ -1,6 +1,5 @@
 model:
-  # pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
-  pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"  # 4bit version
+  pretrained_model_name_or_path: camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers
   rank: 16
   quantize: False
   lora:
@@ -8,12 +7,14 @@ model:
     lora_alpha: 16  # LoRA alpha, usually equal to r
     init_lora_weights: "gaussian"
     target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    # target_modules: "(.*x_embedder|.*transformer_blocks\\.[0-9]+\\.(norm|norm1)\\.linear|.*transformer_blocks\\.[0-9]+\\.attn\\.(to_k|to_q|to_v|to_add_out)|.*transformer_blocks\\.[0-9]+\\.attn\\.to_out\\.0|.*single_transformer_blocks\\.[0-9]+\\.attn\\.to_out|.*single_transformer_blocks\\.[0-9]+\\.(proj_mlp|proj_out)|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.norm1_context\\.linear|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.attn\\.(to_add_out|add_k_proj|add_q_proj|add_v_proj))"
     pretrained_weight: null
+    adapter_name: "lora_edit"
 
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/raid/lilong/data/face_seg/"  # change the path to your own dataset path
+    dataset_path: "/raid/lilong/data/face_seg/train/"  # change the path to your own dataset path
     image_size: [864, 1048]  # face segmentation usually uses 512x512
     caption_dropout_rate: 0.05  # reduce caption dropout, because the task is relatively specialized
     prompt_image_dropout_rate: 0.05
@@ -31,7 +32,7 @@ data:
   shuffle: true
 
 logging:
-  output_dir: "/raid/lilong/data/experiment/qwen-edit/"  # change the path to your own output path
+  output_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/"  # change the path to your own output path
   logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "face_segmentation_lora"
@@ -41,13 +42,6 @@ optimizer:
   init_args:
     lr: 0.0001  # face segmentation task uses smaller learning rate
     betas: [0.9, 0.999]
-  # if memory is sufficient, you can also use standard AdamW:
-  # class_path: "torch.optim.AdamW"
-  # init_args:
-  #   lr: 0.0001
-  #   weight_decay: 0.01
-  #   betas: [0.9, 0.999]
-  #   eps: 1e-8
 
 lr_scheduler:
   scheduler_type: "cosine"  # cosine scheduler, better for fine-grained tasks
@@ -56,9 +50,10 @@ lr_scheduler:
   power: 1.0
 
 train:
+  trainer: FluxKontext
   gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
   max_train_steps: 6000  # face segmentation data is small, reduce training steps
-  num_epochs: 100  # increase epoch number
+  num_epochs: 400  # increase epoch number
   checkpointing_steps: 100  # save checkpoints more frequently
   checkpoints_total_limit: 20
   max_grad_norm: 1.0
@@ -66,29 +61,23 @@ train:
   gradient_checkpointing: True  # enable gradient checkpointing to save memory
   low_memory: True  # is used low_memory mode, then the model will be loaded on the specified devices
   # otherwise, the model will be loaded on all the gpus
-  vae_encoder_device: cuda:0
+  vae_encoder_device: cuda:1
   text_encoder_device: cuda:1
+  resume_from_checkpoint: null
 
 cache:
-  vae_encoder_device: cuda:0
-  text_encoder_device: cuda:0  # if there is only one card, put them on cuda:0
-  cache_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora/cache"
-  use_cache: False
+  vae_encoder_device: cuda:1
+  text_encoder_device: cuda:1
+  text_encoder_2_device: cuda:1
+  cache_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/cache"
+  use_cache: true
+  prompt_empty_drop_keys:
+    - prompt_embed
+    - pooled_prompt_embed
 
 predict:
   devices:
-    vae: cuda:0
-    text_encoder: cuda:0
-    transformer: cuda:0
-
-# training resume setting
-resume_from_checkpoint: "latest"
-
-# validation setting (optional)
-validation:
-  enabled: false  # if there is a validation set, enable it
-  validation_steps: 200
-  num_validation_samples: 4
-
-# 22.17 GB used for traning with batchsize 2, speed 18.35s/it, on A100
-
+    vae: cuda:1
+    text_encoder: cuda:1 # CLIP
+    text_encoder_2: cuda:1  # T5
+    transformer: cuda:1

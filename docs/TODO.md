@@ -10,5 +10,5 @@
 - [x] non-caching training mode with memory efficiency
 - [ ] FSDP training
 - [ ] tensorboard log dir add version when resume training
-- [ ] Flux Kontext Lora
+- [x] Flux Kontext Lora (v1.5.0)
 - [ ] training step dtype convertion simplification
