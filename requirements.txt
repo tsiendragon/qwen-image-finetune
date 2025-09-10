@@ -27,3 +27,4 @@ wheel
 setuptools
 sentencepiece
 datasets
+prodigyopt
