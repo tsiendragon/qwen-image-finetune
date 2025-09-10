@@ -97,3 +97,24 @@ To summarize, the image process is
 2. resize to make width and height divisible by 16
 3. channel to [B,C,H,W]
 4. normalzie from [0, 255] to [-1,1]
+
+Now test the difference of prompt embedding error.
+```
+torch.norm(d_pooled_prompt_embeds - pooled_prompt_embeds.cpu())
+>>>tensor(0., dtype=torch.bfloat16)
+
+torch.norm(d_prompt_embeds - prompt_embeds.cpu())
+>>>tensor(0., dtype=torch.bfloat16)
+
+torch.norm(dimage_ids - text_ids.cpu())
+>>>tensor(0., dtype=torch.bfloat16)
+```
+Now the embedding parts should be consistant to the diffuser repo. Let train it again.
+
+7. Lora finetune on Flux has no effect
+We are train on the face segmentation mask, expected output to be
+![](images/result_lora_model.jpg)
+But we got.
+![alt text](images/image-5.png)
+
+We found a error as indicate in 6. Lets train it again, to see if this resolves the problem.
