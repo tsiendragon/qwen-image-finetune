@@ -21,6 +21,7 @@ lib64/
 parts/
 sdist/
 var/
+.cache/
 wheels/
 original_train.py
 share/python-wheels/

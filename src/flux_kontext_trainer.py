@@ -1017,7 +1017,11 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 img = np.array(img).astype(np.float32)
             if isinstance(img, np.ndarray):
                 img = torch.from_numpy(img.astype(np.float32))
-            img = img.permute(2, 0, 1)  # [H,W,C] ->  [C,H,W]
+            if len(img.shape) == 2:
+                img = img.unsqueeze(0)
+                img = img.repeat(3, 1, 1)
+            if len(img.shape) == 3 and img.shape[-1] == 3:
+                img = img.permute(2, 0, 1)  # [H,W,C] ->  [C,H,W]
             image.append(img)
         image = torch.stack(image, dim=0)
         image = self.preprocess_image(image)

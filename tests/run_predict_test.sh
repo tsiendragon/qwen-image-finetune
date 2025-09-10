@@ -38,10 +38,12 @@ PROMPT_TEXT='/home/lilong/repos/qwen-image-finetune/tests/outputs/20250905_02513
 LORA_WEIGHT='/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/face_segmentation_lora/v0/checkpoint-19-200/model.safetensors'
 LORA_WEIGHT='/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/face_segmentation_lora/v1/checkpoint-99-300/model.safetensors'
 LORA_WEIGHT='/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/face_segmentation_lora/v2/checkpoint-99-200/model.safetensors'
+LORA_WEIGHT='/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/face_segmentation_lora/v3/checkpoint-1498-1600/model.safetensors'
 IMAGE_PATH='/mnt/nas/public2/lilong/repos/qwen-image-finetune/data/test_person.png'
+IMAGE_PATH='data/face_seg/control_images/060002_4_028450_FEMALE_30.jpg'
 PROMPT_TEXT='/mnt/nas/public2/lilong/repos/qwen-image-finetune/data/test_prompt.txt'
 
-cfg_scale=1.0
+cfg_scale=4.5
 OUTPUT_DIR="tests/outputs/$(date +%Y%m%d_%H%M%S)"
 config_file='configs/face_seg_config.yaml'
 config_file='configs/face_seg_fp4_4090.yaml'
