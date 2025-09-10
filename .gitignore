@@ -22,6 +22,8 @@ parts/
 sdist/
 var/
 .cache/
+upload_dataset.py
+run_predict_test.sh
 wheels/
 original_train.py
 share/python-wheels/
