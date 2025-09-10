@@ -29,8 +29,22 @@ This repository provides a comprehensive framework for fine-tuning Qwen Vision-L
 - [Citation](#citation)
 - [License](#license)
 
-### Additional Docs
-- [Hugging Face Dataset Upload and Download](docs/huggingface-dataset.md)
+## Dataset
+
+We recommend using the curated dataset hosted on Hugging Face instead of keeping samples in-repo. The dataset used in our examples and configs:
+
+- Face segmentation dataset: [`TsienDragon/face_segmentation_20`](https://huggingface.co/datasets/TsienDragon/face_segmentation_20)
+
+Quick usage:
+
+```python
+from src.utils.hugginface import load_editing_dataset
+
+dd = load_editing_dataset("TsienDragon/face_segmentation_20")
+sample = dd["train"][0]
+```
+
+Dataset structure reference and upload/download instructions are in [`docs/huggingface-dataset.md`](docs/huggingface-dataset.md). We will remove the dataset copies under this repository and rely on Hugging Face going forward.
 
 ## Installation
 
@@ -53,16 +67,16 @@ cd qwen-image-finetune
 ```
 Refer [`docs/speed_optimization.md`](docs/speed_optimization.md) to install `flash-atten` to speed-up the training.
 
-### Basic Usage with Toy Dataset
+### Basic Usage with Dataset
 ```bash
-# 1. provied toy data for lora training  data/face_seg/
-ls data/face_seg/control_images/    # control images  (20 samples)
-ls data/face_seg/training_images/   # target images and prompts (20 samples)
+# 1. Prepare dataset: use Hugging Face dataset (recommended)
+#    See docs/huggingface-dataset.md for details
+#    Or download locally following the documented structure
 
-# 2. trainig config
+# 2. training config
 cp configs/face_seg_config.yaml configs/my_config.yaml
 
-# 3. doing cache to same GPU memory. It needs 48.6G memory for lora training with batch size 2 and gradient checkpoint
+# 3. (Optional) build cache first to speed up training
 CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cache
 
 # 4. start training
