@@ -4,16 +4,18 @@
 
 ## Overview
 
-This repository provides a comprehensive framework for fine-tuning Qwen Vision-Language models for specialized image editing and understanding tasks. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
+This repository provides a comprehensive framework for fine-tuning advanced vision-language models for specialized image editing and understanding tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures, offering flexible precision levels (FP16/FP8/FP4) to accommodate different hardware capabilities. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 
 ## Key Features
 
+- **Dual Model Support**: Complete support for both Qwen-Image-Edit and FLUX Kontext model architectures
+- **Multi-Precision Training**: FP16, FP8, and FP4 quantization levels for different hardware requirements
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
 - **Edit Mask Loss Support**: Advanced mask-weighted loss function for focused training on edit regions
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
 - **Resume Training**: Seamless training resumption from checkpoints with full state recovery
 - **Multi-GPU Support**: Distributed training capabilities with gradient accumulation
-- **Quantization Support**: FP4/INT8 quantization for reduced memory usage
+- **Quantization Support**: FP4/FP8/FP16 quantization for reduced memory usage and performance optimization
 - **Flexible Architecture**: Modular design supporting various vision-language tasks
 - **Production Ready**: Comprehensive testing suite and deployment configurations
 
@@ -337,6 +339,7 @@ We welcome contributions to improve this documentation:
 
 ### Technical Support
 - **Training Issues**: See [Training Guide](docs/training.md) troubleshooting
+- **FLUX Kontext Training**: See [Training Guide](docs/training.md#flux-kontext-lora-training) for multi-precision training
 - **Setup Problems**: Check [Setup Guide](docs/setup.md) common issues
 - **Performance**: Review [Cache System](docs/cache-system.md) optimization
 - **General Questions**: Open a GitHub issue with detailed description

@@ -18,6 +18,38 @@
 
 ---
 
+## [1.5.0] - 2025-01-10
+
+### 新增
+- **FLUX Kontext LoRA 训练支持**: 完整实现了 FLUX Kontext 模型的 LoRA 微调功能
+  - 支持三种精度级别：FP16（最高质量）、FP8（平衡性能）、FP4（最大效率）
+  - 提供预配置的训练配置文件：`face_seg_flux_kontext_fp16.yaml`、`face_seg_flux_kontext_fp8.yaml`、`face_seg_flux_kontext_fp4.yaml`
+  - 实现了 `FluxKontextLoraTrainer` 类，继承自 `BaseTrainer` 确保接口一致性
+  - 支持双文本编码器架构（CLIP + T5），优化多设备分配策略
+  - 完整的缓存系统支持，包括 VAE、CLIP 和 T5 编码器的独立设备配置
+
+### 改进
+- **文档完善**: 在 `docs/training.md` 中新增详细的 FLUX Kontext 训练指导章节
+  - 详细的精度对比表格，包含质量、训练速度、显存需求和使用场景
+  - 完整的训练工作流程和多GPU训练配置
+  - 设备分配策略和内存优化建议
+  - FLUX Kontext 推理代码示例和最佳实践
+- **框架描述更新**: 更新 README.md 以反映双模型架构支持
+  - 强调对 Qwen-Image-Edit 和 FLUX Kontext 的完整支持
+  - 突出多精度训练能力（FP16/FP8/FP4）
+  - 更新技术支持部分，添加 FLUX Kontext 训练指南链接
+
+### 技术细节
+- FLUX Kontext 模型架构：基于 Transformer 的扩散模型，支持图像和文本的联合理解
+- 精度性能对比：FP16（参考质量）、FP8（95%质量，1.5x速度）、FP4（85%质量，2.5x速度）
+- 显存需求优化：FP16（24GB训练/12GB推理）→ FP8（18GB/8GB）→ FP4（12GB/5GB）
+- 支持的预训练模型：
+  - `black-forest-labs/FLUX.1-Kontext-dev` (FP16)
+  - `camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers` (FP8)
+  - `eramth/flux-kontext-4bit-fp4` (FP4)
+
+---
+
 ## [1.4.0] - 2025-01-03
 
 ### 新增
