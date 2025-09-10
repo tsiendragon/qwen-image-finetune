@@ -650,27 +650,27 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 pixel_latents, device=self.accelerator.device, dtype=self.weight_dtype
             )
 
-            # Sample timesteps
-            u = compute_density_for_timestep_sampling(
-                weighting_scheme="none",
-                batch_size=batch_size,
-                logit_mean=0.0,
-                logit_std=1.0,
-                mode_scale=1.29,
-            )
-            indices = (u * self.scheduler.config.num_train_timesteps).long()
-            timesteps = self.scheduler.timesteps[indices].to(
-                device=pixel_latents.device
-            )
+            # # Sample timesteps
+            # u = compute_density_for_timestep_sampling(
+            #     weighting_scheme="none",
+            #     batch_size=batch_size,
+            #     logit_mean=0.0,
+            #     logit_std=1.0,
+            #     mode_scale=1.29,
+            # )
+            # indices = (u * self.scheduler.config.num_train_timesteps).long()
+            # timesteps = self.scheduler.timesteps[indices].to(
+            #     device=pixel_latents.device
+            # )
 
-            sigmas = self._get_sigmas(
-                timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype
-            )
-            # t = torch.rand((noise.shape[0],), device=self.device)  # random time t
-            # t_ = t.unsqueeze(1).unsqueeze(1)
+            # sigmas = self._get_sigmas(
+            #     timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype
+            # )
+            t = torch.rand((noise.shape[0],), device=self.device)  # random time t
+            t_ = t.unsqueeze(1).unsqueeze(1)
 
-            # noisy_model_input = (1.0 - t_) * pixel_latents + t_ * noise
-            noisy_model_input = (1.0 - sigmas) * pixel_latents + sigmas * noise
+            noisy_model_input = (1.0 - t_) * pixel_latents + t_ * noise
+            # noisy_model_input = (1.0 - sigmas) * pixel_latents + sigmas * noise
 
             # prepare text ids
             text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
@@ -716,8 +716,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         model_pred = self.transformer(
             hidden_states=latent_model_input,
-            timestep=timesteps / 1000,
-            # timestep=t,
+            # timestep=timesteps / 1000,
+            timestep=t,
             guidance=guidance,  # must pass to guidance for FluxKontextDev
             pooled_projections=pooled_prompt_embeds,
             encoder_hidden_states=prompt_embeds,
@@ -730,24 +730,27 @@ class FluxKontextLoraTrainer(BaseTrainer):
         model_pred = model_pred[:, : pixel_latents.size(1)]
 
         # Calculate loss
-        weighting = compute_loss_weighting_for_sd3(
-            weighting_scheme="none", sigmas=sigmas
-        )
+        # weighting = compute_loss_weighting_for_sd3(
+        #     weighting_scheme="none", sigmas=sigmas
+        # )
 
         target = noise - pixel_latents
 
-        loss = self.forward_loss(model_pred, target, weighting, edit_mask)
+        loss = self.forward_loss(model_pred, target, weighting=None, edit_mask=edit_mask)
         return loss
 
-    def forward_loss(self, model_pred, target, weighting, edit_mask=None):
+    def forward_loss(self, model_pred, target, weighting=None, edit_mask=None):
         if edit_mask is None:
-            loss = torch.mean(
-                (
-                    weighting.float() * (model_pred.float() - target.float()) ** 2
-                ).reshape(target.shape[0], -1),
-                1,
-            )
-            loss = loss.mean()
+            if weighting is None:
+                loss = torch.nn.functional.mse_loss(model_pred, target, reduction="mean")
+            else:
+                loss = torch.mean(
+                    (
+                        weighting.float() * (model_pred.float() - target.float()) ** 2
+                    ).reshape(target.shape[0], -1),
+                    1,
+                )
+                loss = loss.mean()
         else:
             # shape torch.Size([4, 864, 1216]) torch.Size([4, 4104, 64]) torch.Size([4, 4104, 64]) torch.Size([4, 1, 1])
             loss = self.criterion(edit_mask, model_pred, target, weighting)
