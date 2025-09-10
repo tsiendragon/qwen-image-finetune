@@ -777,6 +777,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         image = image / 255.0
         # image = image.astype(self.weight_dtype)
         image = image.to(self.weight_dtype)
+        image = 2.0 * image - 1.0
         return image
 
     def get_clip_prompt_embeds(self, prompt: str, device: str) -> torch.Tensor:
