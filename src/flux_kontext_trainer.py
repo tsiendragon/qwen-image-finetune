@@ -666,7 +666,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             # sigmas = self._get_sigmas(
             #     timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype
             # )
-            t = torch.rand((noise.shape[0],), device=self.device)  # random time t
+            t = torch.rand((noise.shape[0],), device=self.accelerator.device, dtype=self.weight_dtype)  # random time t
             t_ = t.unsqueeze(1).unsqueeze(1)
 
             noisy_model_input = (1.0 - t_) * pixel_latents + t_ * noise
@@ -713,6 +713,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
             if self.transformer.config.guidance_embeds
             else None
         )
+        # convert dtype to self.weight_dtype
+        latent_model_input = latent_model_input.to(self.weight_dtype)
+        pooled_prompt_embeds = pooled_prompt_embeds.to(self.weight_dtype)
+        prompt_embeds = prompt_embeds.to(self.weight_dtype)
+        guidance = guidance.to(self.weight_dtype)
+        t = t.to(self.weight_dtype)
 
         model_pred = self.transformer(
             hidden_states=latent_model_input,
@@ -856,8 +862,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         prompt = [prompt] if isinstance(prompt, str) else prompt
         prompt_2 = prompt_2 or prompt
         prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
-        logging.info(f"prompt {prompt}")
-        logging.info(f"prompt_2 {prompt_2}")
         # We only use the pooled prompt output from the CLIPTextModel
         with torch.inference_mode():
             pooled_prompt_embeds = self.get_clip_prompt_embeds(
@@ -1002,6 +1006,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.text_encoder.eval()
         self.text_encoder_2.eval()
         self.transformer.eval()
+        if self.config.model.lora.pretrained_weight:
+            self.load_pretrain_lora_model(self.transformer, self.config, self.adapter_name)
+        self.predict_setted = True
 
     def predict(
         self,
@@ -1047,7 +1054,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
             logging.info("Loading model...")
             self.load_model()
 
-        self.setup_predict()
+        if not self.predict_setted:
+            self.setup_predict()
 
         # 1. Process input format
         # convert imgage to tensor

@@ -184,6 +184,39 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
   - FP4 quantized LoRA maintains competitive quality while being more memory efficient
   - Base model uses BF16 precision in both experiments; only the LoRA adapters differ in quantization
 
+#### 🔥 Flux Kontext LoRA Fine-tuning Results
+
+<div align="center">
+  <table>
+    <tr>
+      <th>Input Image</th>
+      <th>Flux Kontext Base (FP16)</th>
+      <th>Flux Kontext LoRA Fine-tuned (BF16)</th>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/20250829_155502/input_image.jpg" alt="Input Image" width="300"/>
+        <br><em>Original input image</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-7.png" alt="Flux Kontext Base Model Results" width="300"/>
+        <br><em>Base Flux Kontext model (FP16)</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-6.png" alt="Flux Kontext LoRA Fine-tuned Results" width="300"/>
+        <br><em><strong>LoRA fine-tuned model (BF16)</strong></em>
+      </td>
+    </tr>
+  </table>
+  <p><strong>Comparison:</strong> The LoRA fine-tuned Flux Kontext model demonstrates improved generation quality and better adherence to specific task requirements compared to the base model.</p>
+</div>
+
+**Flux Kontext Experiment Details:**
+- **Model Architecture:** Flux Kontext with LoRA adapters
+- **Base Model Precision:** FP16 for efficient inference
+- **LoRA Precision:** BF16 for optimal training stability
+- **Training Configuration:** See `configs/face_seg_flux_kontext_fp16.yaml`
+
 
 ##### Performance Analysis
 - **Before Fine-tuning**: Base model can identify face regions but with limited segmentation precision

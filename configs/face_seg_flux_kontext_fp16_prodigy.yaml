@@ -79,7 +79,7 @@ cache:
 
 predict:
   devices:
-    vae: cuda:1
-    text_encoder: cuda:1 # CLIP
-    text_encoder_2: cuda:1  # T5
+    vae: cuda:0
+    text_encoder: cuda:0 # CLIP
+    text_encoder_2: cuda:0  # T5
     transformer: cuda:1

@@ -1,6 +1,6 @@
 model:
-  # pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
-  pretrained_model_name_or_path: camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers
+  pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
+  # pretrained_model_name_or_path: camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers
   # eramth/flux-kontext-4bit-fp4
   rank: 16
   quantize: False
@@ -16,28 +16,25 @@ model:
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/raid/lilong/data/face_seg/train/"  # change the path to your own dataset path
-    image_size: [864, 1048]  # face segmentation usually uses 512x512
-    caption_dropout_rate: 0.05  # reduce caption dropout, because the task is relatively specialized
-    prompt_image_dropout_rate: 0.05
+    dataset_path:
+      - /raid/lilong/data/kyc_gen/ktp_v1.4/dataset1/
+      - /raid/lilong/data/kyc_gen/ktp_v1.4/dataset1_crop/
+    image_size: [832, 576]
+    caption_dropout_rate: 0.1
+    prompt_image_dropout_rate: 0.1
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
-    cache_drop_rate: 0.1  # 10% probability of using empty prompt for training
-    # crop configuration - use center crop instead of random crop
-    random_crop: false  # disable random crop
-    crop_size: 1024  # square size after cropping
-    crop_scale: [0.8, 1.0]  # crop scale range
-    center_crop: true  # enable center crop
-    center_crop_ratio: 1.0  # center crop ratio, 0.9 means crop to 90% of the area
-  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
+    use_edit_mask: true  # if true, dataset output edit mask
+
+  batch_size: 16  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 
 logging:
-  output_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/"  # change the path to your own output path
+  output_dir: "/raid/lilong/data/experiment/flux-kontext-ktp_lora_fp16/"  # change the path to your own output path
   logging_dir: "logs"
   report_to: "tensorboard"
-  tracker_project_name: "face_segmentation_lora"
+  tracker_project_name: "ktp_inpaint"
 
 optimizer:
   class_path: bnb.optim.Adam8bit  # 8bit Adam optimizer to save memory
@@ -54,10 +51,10 @@ lr_scheduler:
 train:
   trainer: FluxKontext
   gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
-  max_train_steps: 6000  # face segmentation data is small, reduce training steps
+  max_train_steps: 10000  # face segmentation data is small, reduce training steps
   num_epochs: 400  # increase epoch number
   checkpointing_steps: 100  # save checkpoints more frequently
-  checkpoints_total_limit: 20
+  checkpoints_total_limit: 50
   max_grad_norm: 1.0
   mixed_precision: "bf16"
   gradient_checkpointing: True  # enable gradient checkpointing to save memory
@@ -69,9 +66,9 @@ train:
 
 cache:
   vae_encoder_device: cuda:1
-  text_encoder_device: cuda:1
-  text_encoder_2_device: cuda:1
-  cache_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/cache"
+  text_encoder_device: cuda:0
+  text_encoder_2_device: cuda:0
+  cache_dir: ${logging.output_dir}/cache
   use_cache: true
   prompt_empty_drop_keys:
     - prompt_embed
