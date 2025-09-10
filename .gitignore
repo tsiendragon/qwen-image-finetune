@@ -21,6 +21,7 @@ lib64/
 parts/
 sdist/
 var/
+.nfs*
 .cache/
 upload_dataset.py
 run_predict_test.sh

@@ -101,11 +101,11 @@ distributed_type: MULTI_GPU  #for multi-gpu training
 in the `accelerate_config.yaml`
 
 
-#### 🎯 LoRA Fine-tuning Results Comparison
+#### 🎯 Qwen-Image-Edit LoRA Fine-tuning Results
 
 This project demonstrates fine-tuning the Qwen-VL model for face segmentation tasks. Below shows the comparison between pre and post fine-tuning results:
 
-##### Results Comparison
+##### Image used in Training
 
 <div align="center">
   <table>
@@ -132,7 +132,7 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
   <p><strong>Comparison:</strong> The LoRA fine-tuned model shows significantly improved accuracy and details in face segmentation compared to the base model.</p>
 </div>
 
-##### Precision Comparison: BF16 vs FP4 LoRA Fine-tuning
+##### Image not used in Training
 
 <div align="center">
   <table>
@@ -184,46 +184,56 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
   - FP4 quantized LoRA maintains competitive quality while being more memory efficient
   - Base model uses BF16 precision in both experiments; only the LoRA adapters differ in quantization
 
-#### 🔥 Flux Kontext LoRA Fine-tuning Results
+#### 🔥 Flux Kontext Compare：FP16, FP8, FP4 LoRA Fine-tuning Results
 
 <div align="center">
   <table>
     <tr>
       <th>Input Image</th>
-      <th>Flux Kontext Base (FP16)</th>
-      <th>Flux Kontext LoRA Fine-tuned (BF16)</th>
+      <th>精度类型</th>
+      <th>Base Model (无LoRA)</th>
+      <th>LoRA Fine-tuned Model</th>
     </tr>
     <tr>
-      <td align="center">
-        <img src="docs/images/20250829_155502/input_image.jpg" alt="Input Image" width="300"/>
+      <td align="center" rowspan="3">
+        <img src="docs/images/20250829_155502/input_image.jpg" alt="Input Image" width="250"/>
         <br><em>Original input image</em>
       </td>
+      <td align="center"><strong>FP16</strong></td>
       <td align="center">
-        <img src="docs/images/image-7.png" alt="Flux Kontext Base Model Results" width="300"/>
+        <img src="docs/images/image-7.png" alt="FP16 Base Model Results" width="250"/>
         <br><em>Base Flux Kontext model (FP16)</em>
       </td>
       <td align="center">
-        <img src="docs/images/image-6.png" alt="Flux Kontext LoRA Fine-tuned Results" width="300"/>
-        <br><em><strong>LoRA fine-tuned model (BF16)</strong></em>
+        <img src="docs/images/image-6.png" alt="FP16 LoRA Fine-tuned Results" width="250"/>
+        <br><em><strong>FP16 LoRA fine-tuned model</strong></em>
+      </td>
+    </tr>
+    <tr>
+      <td align="center"><strong>FP8</strong></td>
+      <td align="center">
+        <img src="docs/images/image-10.png" alt="FP8 Base Model Results" width="250"/>
+        <br><em>FP8 base model (无LoRA)</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-11.png" alt="FP8 LoRA Fine-tuned Results" width="250"/>
+        <br><em><strong>FP8 LoRA fine-tuned model</strong></em>
+      </td>
+    </tr>
+    <tr>
+      <td align="center"><strong>FP4</strong></td>
+      <td align="center">
+        <img src="docs/images/image-9.png" alt="FP4 Base Model Results" width="250"/>
+        <br><em>FP4 base model (无LoRA)</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-8.png" alt="FP4 LoRA Fine-tuned Results" width="250"/>
+        <br><em><strong>FP4 LoRA fine-tuned model</strong></em>
       </td>
     </tr>
   </table>
-  <p><strong>Comparison:</strong> The LoRA fine-tuned Flux Kontext model demonstrates improved generation quality and better adherence to specific task requirements compared to the base model.</p>
 </div>
 
-**Flux Kontext Experiment Details:**
-- **Model Architecture:** Flux Kontext with LoRA adapters
-- **Base Model Precision:** FP16 for efficient inference
-- **LoRA Precision:** BF16 for optimal training stability
-- **Training Configuration:** See `configs/face_seg_flux_kontext_fp16.yaml`
-
-
-##### Performance Analysis
-- **Before Fine-tuning**: Base model can identify face regions but with limited segmentation precision
-- **After Fine-tuning**: LoRA fine-tuning significantly improves segmentation accuracy and boundary details
-- **Key Improvements**: More precise boundary detection, better detail preservation, more stable segmentation quality
-
-> 💡 **Note**: Through LoRA fine-tuning, we achieve significant performance improvements for specific tasks while maintaining model efficiency and lightweight characteristics.
 ### Lora Training Performance
 
 |cache|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed|
