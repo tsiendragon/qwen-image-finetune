@@ -126,8 +126,7 @@ class SamplingConfig:
 
     enable: bool = False  # Enable/disable sampling functionality
     validation_steps: int = 100  # Run validation sampling every N training steps
-    num_samples: int = 4  # Number of samples to generate and log per validation
-    seed: int = 42  # Seed for reproducible sampling
+    num_samples: int = 4  # Number of samples to generate and log per validation for each process
     validation_data: Optional[Union[str, List[Dict[str, str]]]] = None  # Path or list of control-prompt pairs
 
     def __post_init__(self):

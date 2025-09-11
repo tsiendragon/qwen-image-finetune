@@ -315,13 +315,9 @@ class ImageDataset(Dataset):
         for stem, ptxt in sorted(stem_to_prompt.items()):
             # source image（必须在 images_dir）
             image_path = _first_existing(images_dir, stem)
-            if not image_path:
-                continue  # 无图跳过
 
             # control image（必须在 control_dir）
             main_control = _first_existing(control_dir, stem)
-            if not main_control:
-                continue  # 无控制图跳过
 
             # 额外控制图
             extras = _collect_extra_controls(control_dir, stem)
@@ -543,7 +539,10 @@ class ImageDataset(Dataset):
             local_index = sample['local_index']
             repo_id = sample['repo_id']
             data_item = self.hf_datasets[repo_id]['dataset'][local_index]
-            image = np.array(data_item['target_image'].convert('RGB'))
+            if data_item['target_image'] is not None:
+                image = np.array(data_item['target_image'].convert('RGB'))
+            else:
+                image = None
             control = data_item['control_images']
             if control is not None:
                 control = np.array(control[0].convert('RGB'))
@@ -581,12 +580,27 @@ class ImageDataset(Dataset):
                 prompt = f.read().strip()
 
             if self.use_cache:
-                image_hash = self.cache_manager.get_file_hash_for_image(data_item['image'])
-                control_hash = self.cache_manager.get_file_hash_for_image(data_item['control'][0])
-                prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], prompt)
-                empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], "empty")
+                if data_item['image'] is not None:
+                    exist_file = data_item['image']
+                else:
+                    exist_file = data_item['control'][0]
+                if data_item['image'] is None:
+                    image_hash = self.cache_manager.get_file_hash_for_image(exist_file)
+                else:
+                    image_hash = self.cache_manager.get_file_hash_for_image(data_item['image'])
+                if data_item['control'][0] is None:
+                    control_hash = self.cache_manager.get_file_hash_for_image(exist_file)
+                else:
+                    control_hash = self.cache_manager.get_file_hash_for_image(data_item['control'][0])
+                if data_item['mask_file'] is not None:
+                    prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], prompt)
+                    empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], "empty")
+                else:
+                    prompt_hash = self.cache_manager.get_file_hash_for_prompt(exist_file, prompt)
+                    empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(exist_file, "empty")
 
             image = data_item['image']
+
             control = data_item['control'][0]
             mask_file = data_item['mask_file']
             mask_numpy = None
@@ -608,7 +622,10 @@ class ImageDataset(Dataset):
                 elif self.random_crop and self.crop_size is not None:
                     crop_bbox = self.get_random_crop_bbox(h, w)
 
-        image_numpy = self.preprocess(image, crop_bbox)
+        if image is not None:
+            image_numpy = self.preprocess(image, crop_bbox)
+        else:
+            image_numpy = None
 
         # 加载控制图像（使用相同的裁剪边界框）
         control_numpy = self.preprocess(control, crop_bbox)
@@ -662,7 +679,7 @@ class ImageDataset(Dataset):
                 }
                 if has_mask:
                     data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
-                self.check_none_output(data)
+                # self.check_none_output(data)
                 return data
             else:
                 data = {}
@@ -682,7 +699,7 @@ class ImageDataset(Dataset):
                 )
                 if has_mask:
                     data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
-                self.check_none_output(data)
+                # self.check_none_output(data)
                 return data
         else:
 
@@ -703,7 +720,7 @@ class ImageDataset(Dataset):
                 }
             if has_mask:
                 data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
-            self.check_none_output(data)
+            # self.check_none_output(data)
             return data
 
     def check_none_output(self, data: dict):
@@ -845,7 +862,6 @@ def loader(
     # 使用init_args实例化类
     dataset = dataset_class(init_args)
     cache_manager = dataset.cache_manager
-
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -881,3 +897,5 @@ if __name__ == "__main__":
     print(batch['cached'])
     print(batch['file_hashes'])
     print(dataloader.cache_manager)
+    print('batch type', type(batch['image'][0]), batch['image'])
+    print(batch['prompt'])

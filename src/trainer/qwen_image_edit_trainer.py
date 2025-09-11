@@ -1764,33 +1764,3 @@ class QwenImageEditTrainer:
             self.vae.to(original_device)
 
         return image
-
-    def _log_image_to_tensorboard(self, tag, image, global_step):
-        """Log image to tensorboard"""
-        import numpy as np
-        from PIL import Image as PILImage
-
-        # 确保图像格式正确
-        if isinstance(image, PILImage.Image):
-            image_array = np.array(image)
-        else:
-            image_array = image
-
-        # 调整尺寸以节省存储
-        if max(image_array.shape[:2]) > 512:
-            from PIL import Image as PILImage
-            pil_image = PILImage.fromarray(image_array)
-            pil_image.thumbnail((512, 512), PILImage.Resampling.LANCZOS)
-            image_array = np.array(pil_image)
-
-        # 转换为CHW格式用于tensorboard
-        if len(image_array.shape) == 3:
-            image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).float() / 255.0
-        else:
-            image_tensor = torch.from_numpy(image_array).float()
-
-        self.accelerator.log({tag: image_tensor}, step=global_step)
-
-    def _log_text_to_tensorboard(self, tag, text, global_step):
-        """Log text to tensorboard"""
-        self.accelerator.log({tag: text}, step=global_step)

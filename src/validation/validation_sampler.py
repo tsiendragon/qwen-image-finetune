@@ -8,8 +8,17 @@ import logging
 from typing import Dict, List, Optional, Union
 import torch
 import numpy as np
+import os
+from torch.utils.data import ConcatDataset
+from torch.utils.data import Dataset
 from PIL import Image
-
+from accelerate import Accelerator
+from src.data.config import ValidationDataConfig
+from src.data.config import DataConfig
+import math
+from src.utils.tools import sample_indices_per_rank
+from src.data.dataset import ImageDataset
+import cv2
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +26,15 @@ logger = logging.getLogger(__name__)
 class ValidationSampler:
     """Universal validation sampler that works with any model architecture"""
 
-    def __init__(self, config, accelerator, weight_dtype):
+    def __init__(
+        self,
+        config: ValidationDataConfig,
+        accelerator: Accelerator,
+        weight_dtype: torch.dtype = torch.bfloat16,
+        data_config: DataConfig | None = None,
+    ):
         self.config = config
+        self.data_config = data_config
         self.accelerator = accelerator
         self.weight_dtype = weight_dtype
         self.validation_dataset = None
@@ -33,11 +49,19 @@ class ValidationSampler:
             'log_prefix': 'validation',
             'move_vae_to_cpu_after': True,
             'skip_on_error': True,
-            'min_samples_per_process': 1
+            'samples_per_process': 1
         }
+        self.get_accelerator_attribute()
+        self.setup_validation_dataset()
+
+    def get_accelerator_attribute(self):
+        self.local_rank = self.accelerator.local_process_index    # 本机内 rank
+        self.world_size = self.accelerator.num_processes          # 总进程数（= 全局并行数）
 
     def setup_validation_dataset(self, train_dataset=None):
+
         """Setup validation dataset from config or training dataset"""
+        # only return control and prompt
         if self.config.validation_data is None:
             # Use subset of training dataset
             self.validation_dataset = self._create_subset_from_training(train_dataset)
@@ -131,66 +155,70 @@ class ValidationSampler:
             if not self._internal_config['skip_on_error']:
                 raise
 
+    def _repeat_datasets(self, train_dataset: Union[Dataset, List[Dict]]):
+        dataset_size = len(train_dataset)
+        if dataset_size < self.world_size * self.config.num_samples:
+            # repeat the dataset to match the size use concat dataset
+            repeat_num = math.ceil(self.world_size * self.config.num_samples / dataset_size)
+            if isinstance(train_dataset, List):
+                train_dataset = train_dataset * repeat_num
+            else:
+                train_dataset = ConcatDataset([train_dataset] * repeat_num)
+        return train_dataset
+
     def _create_subset_from_training(self, train_dataset):
         """Create validation subset from training dataset"""
         if train_dataset is None:
             logger.warning("No training dataset provided for validation subset creation")
             return []
+        assert self.data_config is not None, "data_config is required for using training dataset"
+        train_dataset = self._repeat_datasets(train_dataset)
+
+        self.selected_indices = sample_indices_per_rank(
+            self.accelerator,
+            len(train_dataset),
+            self.config.num_samples,
+            seed=self.config.seed,
+            replacement=False,
+            global_shuffle=False)
 
         # Use first few samples as validation set
-        max_validation_samples = min(20, len(train_dataset))
-        validation_samples = []
-
-        for i in range(max_validation_samples):
-            sample = train_dataset[i]
-            validation_samples.append(sample)
-
-        logger.info(f"Created validation subset with {len(validation_samples)} samples from training dataset")
-        return validation_samples
+        self.selected_datasets = []  # List dict
+        for i in self.selected_indices:
+            data_item = train_dataset[i]
+            new_data = {}
+            if 'prompt' in data_item:
+                new_data['prompt'] = data_item['prompt']
+            if 'control' in data_item:  # suppose control is a Union[list[tensor], tensor]
+                new_data['control'] = data_item['control']
+            self.selected_datasets.append(data_item)
 
     def _load_dataset_from_path(self, dataset_path: str):
         """Load validation dataset from file path"""
-        import os
-
-        if not os.path.exists(dataset_path):
-            logger.error(f"Validation dataset path does not exist: {dataset_path}")
-            return []
-
-        # Simple implementation: assume directory with images
-        validation_samples = []
-
-        if os.path.isdir(dataset_path):
-            image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
-
-            for filename in os.listdir(dataset_path):
-                if any(filename.lower().endswith(ext) for ext in image_extensions):
-                    image_path = os.path.join(dataset_path, filename)
-                    # Use filename (without extension) as prompt
-                    prompt = os.path.splitext(filename)[0].replace('_', ' ')
-
-                    validation_samples.append({
-                        'control_image': image_path,
-                        'target_image': image_path,  # Same as control for simplicity
-                        'prompt': prompt
-                    })
-
-        logger.info(f"Loaded {len(validation_samples)} samples from dataset path: {dataset_path}")
-        return validation_samples
+        assert self.data_config is not None, "data_config is required to instantiated dataset class"
+        init_args = self.data_config.init_args
+        init_args['dataset_path'] = dataset_path
+        dataset = ImageDataset(init_args)
+        return self._create_subset_from_training(dataset)
 
     def _create_dataset_from_pairs(self, pairs: List[Dict]):
         """Create validation dataset from control-prompt pairs"""
-        validation_samples = []
+        validation_samples = []  # List dict
 
         for pair in pairs:
             if 'control' in pair and 'prompt' in pair:
+                prompt = pair['prompt']
+                with open(pair['prompt'], 'r', encoding='utf-8') as f:
+                    prompt = f.read().strip()
+                control = pair['control']
+                control = cv2.imread(control)
+                control = cv2.cvtColor(control, cv2.COLOR_BGR2RGB)
+                control = control.transpose(2, 0, 1)
                 validation_samples.append({
-                    'control_image': pair['control'],
-                    'target_image': pair.get('target', pair['control']),  # Use control as target if not specified
-                    'prompt': pair['prompt']
+                    'control': control,
+                    'prompt': prompt,
                 })
-
-        logger.info(f"Created validation dataset with {len(validation_samples)} control-prompt pairs")
-        return validation_samples
+        return self._create_subset_from_training(validation_samples)
 
     def _select_sample_indices(self, num_samples, global_step):
         """Select sample indices for validation"""

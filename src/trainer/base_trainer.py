@@ -300,13 +300,18 @@ class BaseTrainer(ABC):
                 logging.info(f"Example dtype: {example_param.dtype}")
 
         # Use optimizer parameters from configuration
+
+        import importlib
+
         optimizer_config = self.config.optimizer.init_args
-        self.optimizer = torch.optim.AdamW(
+        class_path = self.config.optimizer.class_path
+        module_name, class_name = class_path.rsplit(".", 1)
+        cls = getattr(importlib.import_module(module_name), class_name)
+        logging.info(f"Using optimizer: {cls}, {class_path}")
+        # cls = getattr(importlib.import_module(class_path), class_path)
+        self.optimizer = cls(
             lora_layers,
-            lr=optimizer_config["lr"],
-            betas=optimizer_config["betas"],
-            weight_decay=optimizer_config.get("weight_decay", 0.01),
-            eps=optimizer_config.get("eps", 1e-8),
+            **optimizer_config,
         )
 
         self.lr_scheduler = get_scheduler(
@@ -376,7 +381,6 @@ class BaseTrainer(ABC):
         cls, transformer: torch.nn.Module, config, adapter_name: str
     ):
         from src.utils.lora_utils import classify_lora_weight
-
 
         pretrained_weight = getattr(config.model.lora, "pretrained_weight", None)
         if pretrained_weight:
