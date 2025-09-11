@@ -109,7 +109,9 @@ The framework provides various pre-configured training setups for different mode
 | `face_seg_flux_kontext_fp16_huggingface_dataset.yaml` | FLUX Kontext | FP16 | HuggingFace dataset support | ~50GB | A100 |
 | `face_seg_flux_kontext_fp8.yaml` | FLUX Kontext | FP8 | 8-bit quantized, balanced | ~35GB | A100 |
 | `face_seg_flux_kontext_fp4.yaml` | FLUX Kontext | FP4 | 4-bit quantized, most efficient | ~24GB | RTX 4090/A100 |
-
+- batchsize: 2
+- gradient-checkpoint: True
+- Adam8bit
 **Key Configuration Differences:**
 
 - **Qwen-Image-Edit Configs**:
@@ -279,16 +281,22 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
 
 ### Lora Training Performance
 
-|cache|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed|
-|---|---|---|---|---|---|---|---|
-|cache|2| bf16| True| False|A100|48.6 G | 18.3 s/it|
-|cache|2 | fp4| True| False|A100 |22.47 | 10.6 s/it|
-|cache| 2 | fbf16| True | True | A100 | 50.2 G | 10.34 s/it|
-|cache| 2 | fp4 | True | True | A100 | 23.7 G | 10.8 s/it|
-|cache| 2| fp4| True| True| rtx4090| 23.3/22.8G | 12.8 s/it|
-|non-cache|2| fp4| True| True|A100|54.8/53.9G| 20.1 s/it|
-|cache| 1| fp4| True| True| rtx4090| 18.8/17.9G | 6.34 s/it|
+|cache|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed| Num of Process| config example|
+|---|---|---|---|---|---|---|---| --- |---|
+|cache|2| bf16| True| False|A100|48.6 G | 18.3 s/it| 1|[QwenEdit-bf16](configs/face_seg_config.yaml)|
+|cache|2 | fp4| True| False|A100 |22.47 | 10.6 s/it| 1|[QwenEdit-fp4](configs/face_seg_fp4_config.yaml)|
+|cache| 2 | bf16| True | True | A100 | 50.2 G | 10.34 s/it| 1|[QwenEdit-bf16](configs/face_seg_config.yaml)|
+|cache| 2 | fp4 | True | True | A100 | 23.7 G | 10.8 s/it| 1|[QwenEdit-bf16](configs/face_seg_config.yaml)|
+|non-cache|2| fp4| True| True|A100|54.8/53.9G| 20.1 s/it| 2|[QwenEdit-fp4-non-cache](configs/face_seg_fp4_non_cache_config.yaml)|
+|cache| 2| fp4| True| True| rtx4090| 23.3/22.8G | 12.8 s/it| 2|[Qwenedit-fp4](configs/face_seg_fp4_4090.yaml)|
+|cache| 1| fp4| True| True| rtx4090| 18.8/17.9G | 6.34 s/it| 2|[Qwenedit-fp4](configs/face_seg_fp4_4090.yaml)|
+|cache| 2| bf16| True | True| A100 | 31.3 G | 6.65 s/ it |1|[FLuxKontext-bf16](configs/face_seg_flux_kontext_fp16.yaml)|
+|cache| 2| bf16| True | True| A100 | 31.32/31.32G | 6.69 s/ it |2|[FLuxKontext-bf16](configs/face_seg_flux_kontext_fp16.yaml)|
+|cache| 2| bf16| True | True| A100 | 31.9/31.9G | 6.78 s/ it |2|[FLuxKontext-bf16-prodigy-optimizer](configs/face_seg_flux_kontext_fp16_prodigy.yaml)|
+|cache| 2| bf16| True | True| A100 | 31.8/31.8G | 6.77 s/ it |2|[FLuxKontext-fp8](configs/face_seg_flux_kontext_fp8.yaml)|
 
+- prodigy-optimizer: [parameter free optimizer](https://github.com/konstmish/prodigy) No need to tune `lr` any more
+- 4090: train on 4090 need to set `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1`. Other setting are same
 ### Inference
 ```python
 # Inference with trained LoRA model
