@@ -422,6 +422,29 @@ class BaseTrainer(ABC):
         logger.info(f"Use Cache: {self.use_cache}")
 
     @abstractmethod
+    def encode_vae_image_for_validation(self, image):
+        """Encode image to latent space for validation. Used only for validation.
+        Input: np.ndarray, C,H,W, RGB
+        Output: dict from prepare latents: could be different from qwen & flux kontext
+        """
+        pass
+
+    @abstractmethod
+    def encode_prompt_for_validation(self, prompt, control):
+        """Encode prompt to latent space for validation. Used only for validation.
+        Input:
+            - prompt: str
+            - control: np.ndarray, C,H,W, Required for Qwen. Flux only need  prompt
+        Output: dict from encode_prompt: could be different from qwen & flux kontext.
+        """
+        pass
+
+    @abstractmethod
+    def generate_latents_for_validation(self, prompt, control):
+        """Generate latents for validation."""
+        pass
+
+    @abstractmethod
     def save_lora(self, save_path):
         """Save LoRA weights"""
         pass

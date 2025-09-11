@@ -16,9 +16,11 @@ from accelerate import Accelerator
 from src.data.config import ValidationDataConfig
 from src.data.config import DataConfig
 import math
+import cv2
+
+from src.utils.logger import log_images_auto, log_text_auto
 from src.utils.tools import sample_indices_per_rank
 from src.data.dataset import ImageDataset
-import cv2
 
 logger = logging.getLogger(__name__)
 
@@ -64,96 +66,15 @@ class ValidationSampler:
         # only return control and prompt
         if self.config.validation_data is None:
             # Use subset of training dataset
-            self.validation_dataset = self._create_subset_from_training(train_dataset)
+            self._create_subset_from_training(train_dataset)
         elif isinstance(self.config.validation_data, str):
             # Load from dataset path
-            self.validation_dataset = self._load_dataset_from_path(self.config.validation_data)
+            self._load_dataset_from_path(self.config.validation_data)
         elif isinstance(self.config.validation_data, list):
             # Use control-prompt pairs
-            self.validation_dataset = self._create_dataset_from_pairs(self.config.validation_data)
+            self._create_dataset_from_pairs(self.config.validation_data)
         else:
             raise ValueError(f"Unsupported validation_data format: {type(self.config.validation_data)}")
-
-    def cache_embeddings(self, trainer, embeddings_config):
-        """Cache embeddings for all validation samples using trainer's methods"""
-        if self.embeddings_cached:
-            return
-
-        self.cached_embeddings = []
-
-        try:
-            logger.info(f"Caching embeddings for {len(self.validation_dataset)} validation samples...")
-
-            for idx, sample in enumerate(self.validation_dataset):
-                cached_sample = {'sample_idx': idx}
-
-                # Cache VAE embeddings using trainer's encode methods
-                if embeddings_config.get('cache_vae_embeddings', False):
-                    if 'control_image' in sample:
-                        # Use trainer's existing VAE encoding method
-                        cached_sample['control_latents'] = trainer._encode_vae_image_for_validation(sample['control_image'])
-                    if 'target_image' in sample:
-                        cached_sample['target_latents'] = trainer._encode_vae_image_for_validation(sample['target_image'])
-
-                # Cache text embeddings using trainer's encode methods
-                if embeddings_config.get('cache_text_embeddings', False):
-                    if 'prompt' in sample:
-                        # Use trainer's existing prompt encoding method
-                        cached_sample['text_embeddings'] = trainer._encode_prompt_for_validation(
-                            sample['prompt'],
-                            sample.get('control_image')
-                        )
-
-                # Store original sample data for logging
-                cached_sample['original_sample'] = sample
-                self.cached_embeddings.append(cached_sample)
-
-            logger.info(f"Successfully cached embeddings for {len(self.cached_embeddings)} samples")
-
-        except Exception as e:
-            logger.error(f"Failed to cache embeddings: {e}")
-            self.accelerator.print(f"Failed to cache embeddings: {e}")
-            return
-
-        self.embeddings_cached = True
-
-    def should_run_validation(self, global_step: int) -> bool:
-        """Check if validation should run at current step"""
-        if self.config.validation_steps <= 0:
-            return False
-        return global_step % self.config.validation_steps == 0
-
-    def run_validation_loop(self, global_step: int, trainer):
-        """Main validation loop using cached embeddings and trainer's methods"""
-        if not self.embeddings_cached:
-            self.accelerator.print("Warning: Embeddings not cached, skipping validation")
-            return
-
-        try:
-            # Sample from cached embeddings
-            num_samples = min(self.config.num_samples, len(self.cached_embeddings))
-            selected_indices = self._select_sample_indices(num_samples, global_step)
-
-            logger.info(f"Running validation sampling for step {global_step}, generating {num_samples} samples")
-
-            for idx in selected_indices:
-                cached_sample = self.cached_embeddings[idx]
-
-                # Generate sample using cached embeddings and trainer's model
-                generated_latents = trainer._generate_latents_for_validation(cached_sample)
-
-                # Decode latents to image using trainer's decode method
-                generated_image = trainer._decode_latents_for_validation(generated_latents)
-
-                # Log to tensorboard
-                self._log_validation_sample(global_step, idx, cached_sample, generated_image, trainer)
-
-            logger.info(f"Completed validation sampling for step {global_step}")
-
-        except Exception as e:
-            logger.error(f"Validation sampling failed at step {global_step}: {e}")
-            if not self._internal_config['skip_on_error']:
-                raise
 
     def _repeat_datasets(self, train_dataset: Union[Dataset, List[Dict]]):
         dataset_size = len(train_dataset)
@@ -166,7 +87,7 @@ class ValidationSampler:
                 train_dataset = ConcatDataset([train_dataset] * repeat_num)
         return train_dataset
 
-    def _create_subset_from_training(self, train_dataset):
+    def _create_subset_from_training(self, train_dataset: Union[Dataset, List[Dict]]):
         """Create validation subset from training dataset"""
         if train_dataset is None:
             logger.warning("No training dataset provided for validation subset creation")
@@ -220,60 +141,58 @@ class ValidationSampler:
                 })
         return self._create_subset_from_training(validation_samples)
 
-    def _select_sample_indices(self, num_samples, global_step):
-        """Select sample indices for validation"""
-        # Use deterministic selection based on global_step and seed for reproducible results
-        random.seed(self.config.seed + global_step)
-
-        available_indices = list(range(len(self.cached_embeddings)))
-        if num_samples >= len(available_indices):
-            return available_indices
-
-        return random.sample(available_indices, num_samples)
-
-    def _log_validation_sample(self, global_step, sample_idx, cached_sample, generated_image, trainer):
-        """Log validation sample to tensorboard using trainer's logging capabilities"""
-        try:
-            # Log generated image
-            trainer._log_image_to_tensorboard(
-                f"validation/generated/step_{global_step}/sample_{sample_idx}",
-                generated_image,
-                global_step
+    def cache_embeddings(self, trainer):
+        """Cache embeddings for all validation samples using trainer's methods"""
+        self.cached_embeddings = []
+        for idx, sample in enumerate(self.selected_datasets):
+            cached_sample = {'sample_idx': idx}
+            cached_sample['control_latents'] = trainer.encode_vae_image_for_validation(sample['control'])
+            cached_sample['text_embeddings'] = trainer.encode_prompt_for_validation(
+                sample['prompt'],
+                sample['control']
             )
+            self.cached_embeddings.append(cached_sample)
+        logging.info(f"rank [{self.local_rank}] Successfully cached embeddings for "
+                     f"{len(self.cached_embeddings)} samples")
+        self.embeddings_cached = True
 
-            # Log original images for comparison
-            original_sample = cached_sample['original_sample']
+    def should_run_validation(self, global_step: int) -> bool:
+        """Check if validation should run at current step"""
+        if self.config.validation_steps <= 0:
+            return False
+        return global_step % self.config.validation_steps == 0
 
-            if 'control_image' in original_sample:
-                control_image = original_sample['control_image']
-                if isinstance(control_image, str):
-                    control_image = Image.open(control_image)
+    def run_validation_loop(self, global_step: int, trainer):
+        """Main validation loop using cached embeddings and trainer's methods"""
+        if not self.embeddings_cached:
+            self.accelerator.print("Warning: Embeddings not cached, skipping validation")
+            return
 
-                trainer._log_image_to_tensorboard(
-                    f"validation/control/step_{global_step}/sample_{sample_idx}",
-                    control_image,
-                    global_step
+        try:
+            # Sample from cached embeddings
+            for data, cache_embedding in zip(self.selected_datasets, self.cached_embeddings):
+                prompt = data['prompt']
+                control = data['control']  # C,H,W [0,222] np.ndarray
+                control = torch.from_numpy(control).unsqueeze(0)
+                control = (control-127.5)/255
+                log_images_auto(
+                    self.accelerator,
+                    f"control_{self.local_rank}",
+                    control,
+                    global_step,
+                    caption=prompt
                 )
-
-            if 'target_image' in original_sample:
-                target_image = original_sample['target_image']
-                if isinstance(target_image, str):
-                    target_image = Image.open(target_image)
-
-                trainer._log_image_to_tensorboard(
-                    f"validation/target/step_{global_step}/sample_{sample_idx}",
-                    target_image,
-                    global_step
-                )
-
-            # Log prompt as text
-            if 'prompt' in original_sample:
-                trainer._log_text_to_tensorboard(
-                    f"validation/prompts/step_{global_step}/sample_{sample_idx}",
-                    original_sample['prompt'],
-                    global_step
+                # Generate sample using cached embeddings and trainer's model
+                generated_image = trainer.sampling_from_embeddings(cache_embedding)
+                log_images_auto(
+                    self.accelerator,
+                    f"generated_image_{self.local_rank}",
+                    generated_image,
+                    global_step,
+                    caption=prompt
                 )
 
         except Exception as e:
-            logger.error(f"Failed to log validation sample {sample_idx}: {e}")
-            self.accelerator.print(f"Failed to log validation sample {sample_idx}: {e}")
+            logger.error(f"Validation sampling failed at step {global_step}: {e}")
+            if not self._internal_config['skip_on_error']:
+                raise

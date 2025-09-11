@@ -2,6 +2,7 @@ import logging
 import torch, torchvision
 from accelerate.logging import get_logger
 
+
 def load_logger(name, log_level="INFO"):
     logger = get_logger(name, log_level=log_level)
     logging.basicConfig(
