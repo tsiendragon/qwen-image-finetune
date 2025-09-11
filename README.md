@@ -69,23 +69,31 @@ cd qwen-image-finetune
 ```
 Refer [`docs/speed_optimization.md`](docs/speed_optimization.md) to install `flash-atten` to speed-up the training.
 
-### Basic Usage with Dataset
+### Train with Toy Dataset
+1. prepare the datasets or use Hugging Face dataset (**recommended**). Refer `configs/face_seg_flux_kontext_fp16_huggingface_dataset.yaml`
+
+2. prepare your config. Now suppose you have the config
+Chose your model, optimizer, etc.
 ```bash
-# 1. Prepare dataset: use Hugging Face dataset (recommended)
-#    See docs/huggingface-dataset.md for details
-#    Or download locally following the documented structure
+configs/my_config.yaml
+```
 
-# 2. training config
-cp configs/face_seg_config.yaml configs/my_config.yaml
-
-# 3. (Optional) build cache first to speed up training
+3. (Optional) build cache first to speed up training (**recommended**)
+It save the GPU memory since in the training, you dont need image encoder and prompt encoder anymore if you have the cache.
+```bash
 CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cache
+```
+4. start training
+Prepaare a `accelerate_config` to specify single gpu training or multi-gpu training
+```bash
+# three gpu training using accelerate
+CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+```
 
-# 4. start training
-CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
-
-# 5. resume training (add resume_from_checkpoint: to config)
-CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+5. resume training (add resume_from_checkpoint: to config)
+Add the checkpoint path in `train.resume_from_checkpoint` in the config and resume the training
+```
+CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 ```
 
 ### Configuration Guide
@@ -98,6 +106,7 @@ The framework provides various pre-configured training setups for different mode
 | `face_seg_fp4_config.yaml` | Qwen-Image-Edit | FP4 | 4-bit quantized, memory efficient | ~22.5GB | A100/RTX4090 |
 | `face_seg_fp4_4090.yaml` | Qwen-Image-Edit | FP4 | Optimized for RTX 4090 | ~23.3GB | RTX 4090 |
 | `face_seg_flux_kontext_fp16.yaml` | FLUX Kontext | FP16 | Full precision, best quality | ~50GB | A100 |
+| `face_seg_flux_kontext_fp16_huggingface_dataset.yaml` | FLUX Kontext | FP16 | HuggingFace dataset support | ~50GB | A100 |
 | `face_seg_flux_kontext_fp8.yaml` | FLUX Kontext | FP8 | 8-bit quantized, balanced | ~35GB | A100 |
 | `face_seg_flux_kontext_fp4.yaml` | FLUX Kontext | FP4 | 4-bit quantized, most efficient | ~24GB | RTX 4090/A100 |
 
@@ -371,6 +380,8 @@ We welcome contributions to improve this documentation:
 
 ### Technical Support
 - **Training Issues**: See [Training Guide](docs/training.md) troubleshooting
+- **Data Preparation**: See [Data Preparation Guide](docs/data-preparation.md) for dataset setup
+- **HuggingFace Datasets**: See [HuggingFace Dataset Guide](docs/huggingface-dataset.md) for cloud datasets
 - **Optimizer Selection**: See [Training Guide](docs/training.md#optimizer-selection) for available optimizers
 - **FLUX Kontext Training**: See [Training Guide](docs/training.md#flux-kontext-lora-training) for multi-precision training
 - **Setup Problems**: Check [Setup Guide](docs/setup.md) common issues

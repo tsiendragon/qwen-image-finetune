@@ -9,6 +9,7 @@ config_file='configs/face_seg_flux_kontext_fp16.yaml'
 config_file='configs/face_seg_flux_kontext_fp16_prodigy.yaml'
 # config_file='configs/face_seg_flux_kontext_fp8.yaml'
 config_file='configs/face_seg_flux_kontext_fp4.yaml'
+config_file='configs/face_seg_flux_kontext_fp16_huggingface_dataset.yaml'
 echo "Used config file: $config_file"
 
 # cache data (using GPU1)
