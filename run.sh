@@ -7,6 +7,7 @@ config_file='configs/qwen_image_edit_config_inpainting.yaml'
 config_file='configs/qwen_image_edit_config_inpainting_edit_mask.yaml'
 config_file='configs/face_seg_flux_kontext_fp16.yaml'
 config_file='configs/face_seg_flux_kontext_fp16_prodigy.yaml'
+config_file='configs/face_seg_flux_kontext_fp8.yaml'
 echo "Used config file: $config_file"
 
 # cache data (using GPU1)
