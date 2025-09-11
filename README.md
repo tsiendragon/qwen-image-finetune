@@ -371,6 +371,7 @@ We welcome contributions to improve this documentation:
 
 ### Technical Support
 - **Training Issues**: See [Training Guide](docs/training.md) troubleshooting
+- **Optimizer Selection**: See [Training Guide](docs/training.md#optimizer-selection) for available optimizers
 - **FLUX Kontext Training**: See [Training Guide](docs/training.md#flux-kontext-lora-training) for multi-precision training
 - **Setup Problems**: Check [Setup Guide](docs/setup.md) common issues
 - **Performance**: Review [Cache System](docs/cache-system.md) optimization

@@ -11,5 +11,4 @@ When asked to update to a new version, you should Do the following
 4. If it a new feature, add a paragraph in the README.md. If it is changes to bug fix. Correction the description in README.md if needed. If new docs created., cite it in README.md which is the entry point of the project
 5. git commit the changes
 6. git push to remote
-7. git add version tag and push to origin
-8. git create merge request
+7. git create merge request

@@ -1,7 +1,5 @@
 model:
   pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
-  # pretrained_model_name_or_path: camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers
-  # pretrained_model_name_or_path: eramth/flux-kontext-4bit-fp4
   rank: 16
   quantize: False
   lora:
@@ -40,7 +38,7 @@ logging:
   tracker_project_name: "face_segmentation_lora"
 
 optimizer:
-  class_path: bnb.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
   init_args:
     lr: 0.0001  # face segmentation task uses smaller learning rate
     betas: [0.9, 0.999]

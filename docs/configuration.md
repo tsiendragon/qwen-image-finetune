@@ -51,7 +51,7 @@ train:
 
 # Optimizer Configuration
 optimizer:
-  class_path: "bnb.optim.Adam8bit"  # 8-bit Adam for memory efficiency
+  class_path: "bitsandbytes.optim.Adam8bit"  # 8-bit Adam for memory efficiency
   init_args:
     lr: 0.0001
     betas: [0.9, 0.999]
@@ -167,7 +167,7 @@ train:
 #### 8-bit Adam (Recommended)
 ```yaml
 optimizer:
-  class_path: "bnb.optim.Adam8bit"
+  class_path: "bitsandbytes.optim.Adam8bit"
   init_args:
     lr: 0.0001
     betas: [0.9, 0.999]
@@ -241,7 +241,7 @@ train:
 ## Configuration Tips
 
 ### Memory Optimization
-1. Use 8-bit optimizer: `bnb.optim.Adam8bit`
+1. Use 8-bit optimizer: `bitsandbytes.optim.Adam8bit`
 2. Enable gradient checkpointing: `gradient_checkpointing: true`
 3. Use mixed precision: `mixed_precision: "bf16"`
 4. Use pre-quantized models for maximum memory savings

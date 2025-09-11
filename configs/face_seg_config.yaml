@@ -36,7 +36,7 @@ logging:
   tracker_project_name: "face_segmentation_lora"
 
 optimizer:
-  class_path: bnb.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
   init_args:
     lr: 0.0001  # face segmentation task uses smaller learning rate
     betas: [0.9, 0.999]
