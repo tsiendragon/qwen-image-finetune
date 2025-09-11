@@ -13,6 +13,7 @@ This repository provides a comprehensive framework for fine-tuning advanced visi
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
 - **Edit Mask Loss Support**: Advanced mask-weighted loss function for focused training on edit regions
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
+- **Validation Sampling**: Real-time training progress monitoring with TensorBoard visualization
 - **Resume Training**: Seamless training resumption from checkpoints with full state recovery
 - **Multi-GPU Support**: Distributed training capabilities with gradient accumulation
 - **Quantization Support**: FP4/FP8/FP16 quantization for reduced memory usage and performance optimization
@@ -146,6 +147,40 @@ distributed_type: MULTI_GPU  #for multi-gpu training
 in the `accelerate_config.yaml`
 
 
+### Validation Sampling During Training
+
+The framework now supports validation sampling during training to monitor progress and visualize results in TensorBoard. This feature helps debug training issues and track model improvement over time.
+
+Add the `sampling` section under `logging` in your YAML config:
+
+```yaml
+logging:
+  output_dir: "/path/to/output"
+  logging_dir: "logs"
+  report_to: "tensorboard"
+
+  # Sampling during training configuration
+  sampling:
+    enable: true              # Enable/disable sampling functionality
+    validation_steps: 200     # Run validation sampling every N training steps
+    num_samples: 4           # Number of samples to generate per validation
+    seed: 42                 # Seed for reproducible sampling
+
+    # Option 1: Use a validation dataset directory
+    validation_data: "/path/to/validation/dataset"
+
+    # Option 2: Use specific control-prompt pairs
+    # validation_data:
+    #   - control: "/path/to/control1.jpg"
+    #     prompt: "A person with glasses"
+    #   - control: "/path/to/control2.jpg"
+    #     prompt: "A landscape with mountains"
+```
+
+Launch TensorBoard to view the validation results:
+```bash
+tensorboard --logdir=/path/to/output/logs
+```
 #### 🎯 Qwen-Image-Edit LoRA Fine-tuning Results
 
 This project demonstrates fine-tuning the Qwen-VL model for face segmentation tasks. Below shows the comparison between pre and post fine-tuning results:
@@ -294,6 +329,8 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
 |cache| 2| bf16| True | True| A100 | 31.32/31.32G | 6.69 s/ it |2|[FLuxKontext-bf16](configs/face_seg_flux_kontext_fp16.yaml)|
 |cache| 2| bf16| True | True| A100 | 31.9/31.9G | 6.78 s/ it |2|[FLuxKontext-bf16-prodigy-optimizer](configs/face_seg_flux_kontext_fp16_prodigy.yaml)|
 |cache| 2| bf16| True | True| A100 | 31.8/31.8G | 6.77 s/ it |2|[FLuxKontext-fp8](configs/face_seg_flux_kontext_fp8.yaml)|
+|cache| 2| bf16| True | True| A100 | 16.3G | 8.24 s/ it |1|[FLuxKontext-fp4](configs/face_seg_flux_kontext_fp4.yaml)|
+|cache| 2| bf16| False | True| A100 |OOM | - |1|[FLuxKontext-fp4](configs/face_seg_flux_kontext_fp4.yaml)|
 
 - prodigy-optimizer: [parameter free optimizer](https://github.com/konstmish/prodigy) No need to tune `lr` any more
 - 4090: train on 4090 need to set `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1`. Other setting are same

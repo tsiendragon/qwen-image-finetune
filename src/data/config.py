@@ -121,6 +121,36 @@ class DataConfig:
 
 
 @dataclass
+class SamplingConfig:
+    """Validation sampling during training configuration"""
+
+    enable: bool = False  # Enable/disable sampling functionality
+    validation_steps: int = 100  # Run validation sampling every N training steps
+    num_samples: int = 4  # Number of samples to generate and log per validation
+    seed: int = 42  # Seed for reproducible sampling
+    validation_data: Optional[Union[str, List[Dict[str, str]]]] = None  # Path or list of control-prompt pairs
+
+    def __post_init__(self):
+        """验证采样配置"""
+        if self.validation_steps <= 0 and self.enable:
+            raise ValueError(
+                f"validation_steps must be positive when sampling is enabled, got {self.validation_steps}"
+            )
+        if self.num_samples <= 0 and self.enable:
+            raise ValueError(
+                f"num_samples must be positive when sampling is enabled, got {self.num_samples}"
+            )
+        # Validate validation_data format
+        if self.validation_data is not None:
+            if isinstance(self.validation_data, list):
+                for item in self.validation_data:
+                    if not isinstance(item, dict) or 'control' not in item or 'prompt' not in item:
+                        raise ValueError(
+                            "Each validation_data item must be a dict with 'control' and 'prompt' keys"
+                        )
+
+
+@dataclass
 class LoggingConfig:
     """日志和输出相关配置"""
 
@@ -128,6 +158,7 @@ class LoggingConfig:
     logging_dir: str = "logs"
     report_to: str = "tensorboard"  # tensorboard, wandb, all, none
     tracker_project_name: str = "qwen-image-finetune"
+    sampling: Optional[SamplingConfig] = None  # Validation sampling configuration
 
     def __post_init__(self):
         """验证日志配置"""
@@ -135,6 +166,9 @@ class LoggingConfig:
             raise ValueError(
                 f"report_to must be one of ['tensorboard', 'wandb', 'all', 'none'], got {self.report_to}"
             )
+        # Initialize sampling config if not provided
+        if self.sampling is None:
+            self.sampling = SamplingConfig()
 
 
 @dataclass

@@ -13,3 +13,6 @@
 - [x] Flux Kontext Lora (v1.5.0)
 - [x] HuggingFace Dataset 支持 (v1.5.2)
 - [ ] training step dtype convertion simplification
+- [ ] Validation Sampling During Training (v1.6.0)
+- [ ] training step dtype convertion simplification
+- [ ] Web UI for training monitoring

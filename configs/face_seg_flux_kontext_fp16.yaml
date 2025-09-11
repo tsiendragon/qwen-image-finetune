@@ -37,6 +37,14 @@ logging:
   report_to: "tensorboard"
   tracker_project_name: "face_segmentation_lora"
 
+  # Sampling during training configuration
+  sampling:
+    enable: false              # Enable/disable sampling functionality
+    validation_steps: 200      # Run validation sampling every N training steps
+    num_samples: 4            # Number of samples to generate and log per validation
+    seed: 42                  # Seed for reproducible sampling
+    validation_data: null     # Path to validation dataset or list of control-prompt pairs
+
 optimizer:
   class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
   init_args:
