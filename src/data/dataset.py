@@ -11,6 +11,7 @@ import cv2
 import importlib
 # 删除重复的 typing 导入，已在上方统一导入 Optional, Dict, List, Any
 from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
+from src.utils.hugginface import load_editing_dataset
 
 
 class ImageDataset(Dataset):

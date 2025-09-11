@@ -187,3 +187,42 @@ def load_editing_dataset(repo_id: str, split: Optional[str] = None):
     if split is None:
         return load_dataset(repo_id, **kwargs)
     return load_dataset(repo_id, split=split, **kwargs)
+
+
+def is_huggingface_repo(path: str) -> bool:
+    """
+    Detect if the path is a Hugging Face repository ID.
+
+    HF repo patterns:
+    - username/dataset-name
+    - organization/dataset-name
+    - dataset-name (for datasets without namespace)
+
+    Local path patterns:
+    - /absolute/path/to/dataset
+    - ./relative/path
+    - ../relative/path
+    - path/without/leading/slash (treated as relative)
+    """
+    # Check if it's an absolute path
+    if os.path.isabs(path):
+        return False
+
+    # Check if it's a relative path with ./ or ../
+    if path.startswith('./') or path.startswith('../'):
+        return False
+
+    # Check if the path exists locally
+    if os.path.exists(path):
+        return False
+
+    # Check HF repo pattern: should contain at most one '/'
+    # and not contain invalid characters for repo names
+    parts = path.split('/')
+    if len(parts) <= 2 and all(part.replace('-', '').replace('_', '').isalnum() for part in parts):
+        return True
+    return False
+
+if __name__ == "__main__":
+    from datasets import get_dataset_config_names
+    print(get_dataset_config_names("TsienDragon/face_segmentation_20"))
