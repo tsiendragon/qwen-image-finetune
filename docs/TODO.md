@@ -11,4 +11,8 @@
 - [ ] FSDP training
 - [ ] tensorboard log dir add version when resume training
 - [x] Flux Kontext Lora (v1.5.0)
+- [x] Validation Sampling During Training (v1.6.0)
 - [ ] training step dtype convertion simplification
+- [ ] Automatic mixed precision (AMP) optimization
+- [ ] Support for more model architectures
+- [ ] Web UI for training monitoring

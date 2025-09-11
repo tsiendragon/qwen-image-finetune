@@ -1,0 +1,71 @@
+# Example configuration with sampling enabled during training
+
+trainer: QwenImageEdit  # or FluxKontext
+
+model:
+  lora:
+    r: 16
+    lora_alpha: 16
+    target_modules: "all-linear"
+    init_lora_weights: "gaussian"
+  pretrained_model_path: "/path/to/pretrained/model"
+  quantize: true
+
+data:
+  dataset_path: "/path/to/training/dataset"
+  batch_size: 2
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/path/to/output"
+  logging_dir: "logs"
+  report_to: "tensorboard"
+  tracker_project_name: "example_project"
+
+  # Sampling during training configuration - ENABLED
+  sampling:
+    enable: true               # Enable sampling functionality
+    validation_steps: 100      # Generate samples every 100 training steps
+    num_samples: 4            # Generate 4 samples per validation
+    seed: 42                  # Seed for reproducible sampling
+
+    # Option 1: Use a validation dataset directory
+    # validation_data: "/path/to/validation/dataset"
+
+    # Option 2: Use control-prompt pairs for specific validation samples
+    validation_data:
+      - control: "/path/to/validation/control1.jpg"
+        prompt: "A person with glasses and short hair"
+      - control: "/path/to/validation/control2.jpg"
+        prompt: "A landscape with mountains in the background"
+      - control: "/path/to/validation/control3.jpg"
+        prompt: "A modern building with glass windows"
+      - control: "/path/to/validation/control4.jpg"
+        prompt: "A close-up portrait of a smiling person"
+
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 100
+  num_cycles: 0.5
+
+train:
+  num_epochs: 10
+  max_train_steps: 10000
+  gradient_accumulation_steps: 1
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+  checkpointing_steps: 500
+  max_grad_norm: 1.0
+  seed: 42
+
+cache:
+  use_cache: true
+  cache_dir: "/path/to/cache"

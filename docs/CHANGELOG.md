@@ -18,6 +18,36 @@
 
 ---
 
+## [1.6.0] - 2025-01-11
+
+### 新增
+- **Validation Sampling During Training**: 训练过程中的验证采样功能，实时监控训练进度
+  - TensorBoard 集成：可视化生成的图像、控制图像、目标图像和提示词
+  - 智能设备管理：VAE 解码器仅在采样时移至 GPU，优化内存使用
+  - 灵活的验证数据配置：支持数据集路径和控制-提示词对两种格式
+  - 多 GPU 支持：自动在各进程间分配采样任务
+  - 配置系统更新：在 `LoggingConfig` 中添加 `SamplingConfig` 嵌套配置
+
+### 改进
+- **QwenImageEditTrainer 增强**: 添加 5 个 validation 相关方法
+  - `_encode_vae_image_for_validation()`: 复用现有 VAE 编码逻辑
+  - `_encode_prompt_for_validation()`: 复用 Qwen VL 编码逻辑
+  - `_generate_latents_for_validation()`: 使用缓存 embeddings 生成
+  - `_decode_latents_for_validation()`: VAE 解码到图像
+  - `_log_image_to_tensorboard()` 和 `_log_text_to_tensorboard()`: 日志记录
+- **FluxKontextTrainer 增强**: 已有的 validation 方法与 fit() 方法的集成优化
+- **配置文件更新**: 所有示例配置文件添加了 sampling 配置部分（默认禁用以保持向后兼容）
+- **文档完善**: README.md 添加详细的 Validation Sampling 使用说明和配置示例
+
+### 技术细节
+- 验证采样配置参数：`enable`、`validation_steps`、`num_samples`、`seed`、`validation_data`
+- 支持两种验证数据格式：数据集路径或控制-提示词对列表
+- TensorBoard 日志组织：`validation/generated/`、`validation/control/`、`validation/target/`、`validation/prompts/`
+- 内存优化：embeddings 预先缓存在 CPU，使用时移至 GPU；VAE 解码器仅在需要时移至 GPU
+- 简化推理：验证时使用 10 步推理而非完整步数，加快采样速度
+
+---
+
 ## [1.5.0] - 2025-01-10
 
 ### 新增
