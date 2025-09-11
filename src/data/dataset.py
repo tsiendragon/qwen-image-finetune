@@ -10,7 +10,6 @@ import numpy as np
 import cv2
 import importlib
 import logging
-import glob
 import hashlib
 # 删除重复的 typing 导入，已在上方统一导入 Optional, Dict, List, Any
 from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
@@ -179,18 +178,26 @@ class ImageDataset(Dataset):
         # dict['dataset_type', 'local_index', 'repo_id','global_index' ]
 
         for dataset_path in self.dataset_paths:
+            split = None
+            if isinstance(dataset_path, dict):
+                repo_id = dataset_path['repo_id']
+                split = dataset_path['split']
+                dataset_path = repo_id
             if is_huggingface_repo(dataset_path):
-                samples = self._load_huggingface_dataset(dataset_path)
+                samples = self._load_huggingface_dataset(dataset_path, split=split)
             else:
                 samples = self._load_local_dataset(dataset_path)
                 # [image_file, control_files, prompt_file, mask_file, dataset_type, local_index, global_index]
+            if samples is None:
+                logging.warning(f"No samples loaded from {dataset_path}")
+                continue
             self.all_samples += samples
 
     def __len__(self):
         """Return total number of samples across all datasets."""
         return len(self.all_samples)
 
-    def _load_huggingface_dataset(self, repo_id: str):
+    def _load_huggingface_dataset(self, repo_id: str, split: Optional[str] = None):
         """
         Load dataset from Hugging Face using lazy loading approach.
 
@@ -198,8 +205,7 @@ class ImageDataset(Dataset):
         and metadata for later access.
         """
         # Load the dataset (this is fast, just creates the dataset object)
-        dataset = load_editing_dataset(repo_id, split=self.data_config.get('split', 'train'))
-
+        dataset = load_editing_dataset(repo_id, split=self.data_config.get('split', split))
         # Store HF dataset reference
         dataset_info = {
             'type': 'huggingface',
@@ -214,6 +220,7 @@ class ImageDataset(Dataset):
 
         # Add entries for each sample without iterating
         # We'll create lightweight placeholders
+        samples = []
         for idx in range(dataset_info['length']):
             sample_ref = {
                 'dataset_type': 'huggingface',
@@ -221,7 +228,8 @@ class ImageDataset(Dataset):
                 'local_index': idx,
                 'global_index': dataset_info['start_idx'] + idx
             }
-            self.all_samples.append(sample_ref)
+            samples.append(sample_ref)
+        return samples
 
     def _load_local_dataset(self, dataset_path: str) -> List[dict]:
         """Load dataset from local directory."""
@@ -232,7 +240,7 @@ class ImageDataset(Dataset):
         samples = self._scan_image_files(image_dir, control_dir)
         return samples
 
-    def _find_directories(self, dataset_path: str)-> List[str]:
+    def _find_directories(self, dataset_path: str) -> List[str]:
         """
         查找所有数据集根路径下的图像目录与控制图像目录。
         优先匹配:
@@ -535,12 +543,12 @@ class ImageDataset(Dataset):
             local_index = sample['local_index']
             repo_id = sample['repo_id']
             data_item = self.hf_datasets[repo_id]['dataset'][local_index]
-            image_numpy = np.array(data_item['target_image'].convert('RGB'))
+            image = np.array(data_item['target_image'].convert('RGB'))
             control = data_item['control_images']
             if control is not None:
-                control_numpy = np.array(control[0].convert('RGB'))
+                control = np.array(control[0].convert('RGB'))
             else:
-                control_numpy = None
+                control = None
             prompt = data_item['prompt']
             if data_item['control_mask'] is not None:
                 mask_numpy = np.array(data_item['control_mask'].convert('L'))
@@ -573,7 +581,7 @@ class ImageDataset(Dataset):
 
             if self.use_cache:
                 image_hash = self.cache_manager.get_file_hash_for_image(data_item['image'])
-                control_hash = self.cache_manager.get_file_hash_for_image(data_item['control'])
+                control_hash = self.cache_manager.get_file_hash_for_image(data_item['control'][0])
                 prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], prompt)
                 empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], "empty")
 
@@ -581,7 +589,7 @@ class ImageDataset(Dataset):
             control = data_item['control'][0]
             mask_file = data_item['mask_file']
             mask_numpy = None
-            if os.path.exists(mask_file):
+            if mask_file is not None and os.path.exists(mask_file):
                 mask_numpy = cv2.imread(mask_file, 0)
 
         # 如果启用裁剪，生成共同的裁剪边界框

@@ -240,3 +240,9 @@ if __name__ == "__main__":
     for x in a:
         print(x, type(x))
     print(is_huggingface_repo("TsienDragon/face_segmentation0"))
+
+    dataset = load_editing_dataset("TsienDragon/face_segmentation_20", split="train")
+    print(dataset)
+    data = dataset[0]
+    print(data)
+    print('len', len(dataset))
