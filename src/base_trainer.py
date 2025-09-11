@@ -305,6 +305,7 @@ class BaseTrainer(ABC):
         import importlib
         module_name, class_name = class_path.rsplit(".", 1)
         cls = getattr(importlib.import_module(module_name), class_name)
+        logging.info(f"Using optimizer: {cls}, {class_path}")
         # cls = getattr(importlib.import_module(class_path), class_path)
         self.optimizer = cls(
             lora_layers,
