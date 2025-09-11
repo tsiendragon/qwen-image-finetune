@@ -15,7 +15,7 @@ data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path:
-      - /raid/lilong/data/face_seg/train/  # change the path to your own dataset path
+      # - /raid/lilong/data/face_seg/train/  # change the path to your own dataset path
       - split: train
         repo_id: TsienDragon/face_segmentation_20
     image_size: [864, 1048]  # face segmentation usually uses 512x512
@@ -72,8 +72,8 @@ cache:
   vae_encoder_device: cuda:1
   text_encoder_device: cuda:1
   text_encoder_2_device: cuda:1
-  cache_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/cache"
-  use_cache: false
+  cache_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16_hf/cache"
+  use_cache: true
   prompt_empty_drop_keys:
     - prompt_embed
     - pooled_prompt_embed

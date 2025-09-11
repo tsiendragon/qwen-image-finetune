@@ -537,7 +537,7 @@ class ImageDataset(Dataset):
         ```
         """
         if idx >= self.__len__():
-            raise IndexError(f"Index {idx} out of range for dataset of size {len(self.image_files)}")
+            raise IndexError(f"Index {idx} out of range for dataset of size {self.__len__()}")
         sample = self.all_samples[idx]
         if sample['dataset_type'] == 'huggingface':
             local_index = sample['local_index']
@@ -858,7 +858,7 @@ def loader(
 
 if __name__ == "__main__":
     from src.data.config import load_config_from_yaml
-    config_file = 'configs/qwen_image_edit_config.yaml'
+    config_file = 'configs/face_seg_flux_kontext_fp16_huggingface_dataset.yaml'
     config = load_config_from_yaml(config_file)
     data_config = config.data
     dataloader = loader(
