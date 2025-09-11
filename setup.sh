@@ -124,6 +124,12 @@ else
     echo "You can set it up later with: huggingface-cli login"
 fi
 
+sudo mkdir /raid
+sudo mkdir /raid/lilong
+sudo ln -s /data/lilong /raid/lilong/data
+echo "ln -s /data/lilong /raid/lilong/data"
+echo "Done!"
+
 echo "Setup completed successfully!"
 echo ""
 echo "Conda has been initialized in ~/.bashrc."
