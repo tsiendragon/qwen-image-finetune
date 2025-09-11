@@ -557,10 +557,11 @@ class ImageDataset(Dataset):
 
             if self.use_cache:
                 prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-                image_hash = f"{repo_id}_{local_index}_{prompt_hash}"
-                control_hash = f"{repo_id}_{local_index}_{prompt_hash}"
-                prompt_hash = f"{repo_id}_{local_index}_{prompt_hash}"
-                empty_prompt_hash = f"{repo_id}_{local_index}_{prompt_hash}"
+                repo_id_str = repo_id.replace('/', '_')
+                image_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
+                control_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
+                prompt_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
+                empty_prompt_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
 
         else:
             data_item = self.all_samples[idx]
@@ -616,13 +617,16 @@ class ImageDataset(Dataset):
         if mask_numpy is not None:
             mask_numpy = self.preprocess(mask_numpy, crop_bbox)
             has_mask = True
-
+        print('cache_exists', self.cache_exists)
+        print('use_cache', self.use_cache)
         if self.cache_exists and self.use_cache:
             # 如果启用缓存，尝试加载缓存的嵌入
             # 检查缓存是否存在
             # TODO: original implementation
             cache_file = os.path.join(self.cache_dir, 'pixel_latent', f"{image_hash}.pt")
             old_style = os.path.exists(cache_file)
+
+            print('old style', old_style)
 
             if old_style:
                 cached_data = {}
