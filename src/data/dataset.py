@@ -9,9 +9,51 @@ import glob
 import numpy as np
 import cv2
 import importlib
+import logging
+import glob
+import hashlib
 # 删除重复的 typing 导入，已在上方统一导入 Optional, Dict, List, Any
 from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
 from src.utils.hugginface import load_editing_dataset, is_huggingface_repo
+
+
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
+
+
+def _first_existing(base_dir: str, stem: str, exts=IMG_EXTS) -> Optional[str]:
+    for ext in exts:
+        p = os.path.join(base_dir, stem + ext)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _collect_extra_controls(control_dir: str, stem: str) -> List[str]:
+    """匹配 stem_1.*, stem_2.*, …（只收集数值后缀），排除 *_mask."""
+    out = []
+    for ext in IMG_EXTS:
+        for p in glob.glob(os.path.join(control_dir, f"{stem}_*{ext}")):
+            bn = os.path.basename(p)
+            name_no_ext = os.path.splitext(bn)[0]
+            if name_no_ext.endswith("_mask"):
+                continue
+            suf = name_no_ext[len(stem) + 1:]  # 去掉 'stem_'
+            if suf.isdigit():
+                out.append(p)
+    # 依据数字后缀排序，确保确定性
+    out.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))
+    return out
+
+
+def _find_mask(images_dir: str, control_dir: str, stem: str) -> Optional[str]:
+    cands = [
+        os.path.join(images_dir, f"{stem}_mask.png"),
+        os.path.join(control_dir, f"{stem}_mask.png"),
+    ]
+    for p in cands:
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 class ImageDataset(Dataset):
@@ -90,6 +132,8 @@ class ImageDataset(Dataset):
         else:
             self.dataset_paths = [dataset_path]
 
+        self.hf_datasets = {}
+
         self.image_size = data_config.get('image_size', None)
         self.cache_dir = data_config.get('cache_dir', None)
         self.use_cache = data_config.get('use_cache', True)
@@ -118,16 +162,188 @@ class ImageDataset(Dataset):
             self.cache_keys = [os.path.basename(cache_subfolder) for cache_subfolder in cache_subfolders]
         else:
             self.cache_keys = []
+        # loading datsets
+        self._load_all_datasets()
 
-        self.images_dirs, self.control_dirs = self._find_directories()
-
-        # 扫描所有图像文件
-        self.image_files = self._scan_image_files()
         # 图像预处理变换 - 将[img_w, img_h] 转换为transforms.Resize期望的 (height, width) 格式
         if isinstance(self.image_size, (tuple, list)):
             self.resize_size = (self.image_size[0], self.image_size[1])  # (width, height)
         else:
             self.resize_size = self.image_size
+
+    def _load_all_datasets(self):
+        """Load datasets from local directories or Hugging Face repositories."""
+        self.all_samples = []  # Unified list of all samples
+        # [file_info]
+        # file_info:
+        # dict['dataset_type', 'local_index', 'repo_id','global_index' ]
+
+        for dataset_path in self.dataset_paths:
+            if is_huggingface_repo(dataset_path):
+                samples = self._load_huggingface_dataset(dataset_path)
+            else:
+                samples = self._load_local_dataset(dataset_path)
+                # [image_file, control_files, prompt_file, mask_file, dataset_type, local_index, global_index]
+            self.all_samples += samples
+
+    def __len__(self):
+        """Return total number of samples across all datasets."""
+        return len(self.all_samples)
+
+    def _load_huggingface_dataset(self, repo_id: str):
+        """
+        Load dataset from Hugging Face using lazy loading approach.
+
+        No enumeration happens here - we just store the dataset object
+        and metadata for later access.
+        """
+        # Load the dataset (this is fast, just creates the dataset object)
+        dataset = load_editing_dataset(repo_id, split=self.data_config.get('split', 'train'))
+
+        # Store HF dataset reference
+        dataset_info = {
+            'type': 'huggingface',
+            'repo_id': repo_id,
+            'dataset': dataset,
+            'length': len(dataset),  # This is typically cached by HF datasets
+            'start_idx': len(self.all_samples)  # Track where this dataset starts
+        }
+        logging.info(f"Loaded Hugging Face dataset: {repo_id}, {dataset_info}")
+
+        self.hf_datasets[repo_id] = dataset_info
+
+        # Add entries for each sample without iterating
+        # We'll create lightweight placeholders
+        for idx in range(dataset_info['length']):
+            sample_ref = {
+                'dataset_type': 'huggingface',
+                'repo_id': repo_id,
+                'local_index': idx,
+                'global_index': dataset_info['start_idx'] + idx
+            }
+            self.all_samples.append(sample_ref)
+
+    def _load_local_dataset(self, dataset_path: str) -> List[dict]:
+        """Load dataset from local directory."""
+        # under the path, find
+        # 1. find the images_dir and control_dir
+        image_dir, control_dir = self._find_directories(dataset_path)
+        # 2. find the image_files and control_files, prompt file or mask file [optional]
+        samples = self._scan_image_files(image_dir, control_dir)
+        return samples
+
+    def _find_directories(self, dataset_path: str)-> List[str]:
+        """
+        查找所有数据集根路径下的图像目录与控制图像目录。
+        优先匹配:
+            images: ['training_images', 'images', 'target_images']
+            control: ['control_images', 'control', 'condition_images']
+        若都未找到则回退到默认 'training_images' 与 'control_images'。
+        Returns:
+            images_dirs, control_dirs
+        """
+
+        image_possible_names = ['training_images', 'images', 'target_images']
+        control_possible_names = ['control_images', 'control', 'condition_images']
+
+        # 查找图像目录
+        images_dir = None
+        for name in image_possible_names:
+            path = os.path.join(dataset_path, name)
+            if os.path.exists(path):
+                print(f"Found images directory: {path}")
+                images_dir = path
+                break
+
+        # 查找控制图像目录
+        control_dir = None
+        for name in control_possible_names:
+            path = os.path.join(dataset_path, name)
+            if os.path.exists(path):
+                print(f"Found control directory: {path}")
+                control_dir = path
+                break
+        return images_dir, control_dir
+
+    def _scan_image_files(self, images_dir, control_dir):
+        """
+        扫描所有数据集中的成对样本。
+        样本需满足：
+            - images_dir/xyz.(jpg|jpeg|png|bmp)
+            - control_dir/xyz.(jpg|jpeg|png|bmp)
+            - control_dir/xyz_1.(jpg|jpeg|png|bmp) [additional control images]
+            - control_dir/xyz_2.(jpg|jpeg|png|bmp) [additional control images]
+        prompt file could be in either images_dir or control_dir
+            - images_dir/xyz.txt 作为 prompt
+            - control_dir/xyz.txt 作为 prompt
+        (mask could be either in control_dir or images_dir)
+            - control_dir/xxx_mask.png  [additional mask images]
+            - images_dir/xyz_mask.png [additional mask images]
+
+        Returns:
+            List[dict]: 'image' 'control: list[str]' 'caption' 'dataset_index' 'mask_file'
+        """
+        # first looking for prompt text
+        prompt_files = glob.glob(os.path.join(images_dir, '*.txt'))
+        prompt_files += glob.glob(os.path.join(control_dir, '*.txt'))
+        samples = []
+
+        start_idx = len(self.all_samples)
+
+        # 用 stem 归并（同 stem 出现两边时优先 images_dir 文本）
+        stem_to_prompt = {}
+        for p in prompt_files:
+            stem = os.path.splitext(os.path.basename(p))[0]
+            # 如果已存在 images_dir 的 prompt，就不被 control_dir 覆盖
+            if stem in stem_to_prompt:
+                # 维持优先级：images_dir 优先；否则若当前是 images_dir 则覆盖
+                if os.path.dirname(stem_to_prompt[stem]) != images_dir and os.path.dirname(p) == images_dir:
+                    stem_to_prompt[stem] = p
+            else:
+                stem_to_prompt[stem] = p
+
+        # 2) 对每个 stem 按需拼装样本
+        n = 0
+        for stem, ptxt in sorted(stem_to_prompt.items()):
+            # source image（必须在 images_dir）
+            image_path = _first_existing(images_dir, stem)
+            if not image_path:
+                continue  # 无图跳过
+
+            # control image（必须在 control_dir）
+            main_control = _first_existing(control_dir, stem)
+            if not main_control:
+                continue  # 无控制图跳过
+
+            # 额外控制图
+            extras = _collect_extra_controls(control_dir, stem)
+            controls = [main_control] + extras
+
+            img_txt = os.path.join(images_dir, f"{stem}.txt")
+            ctl_txt = os.path.join(control_dir, f"{stem}.txt")
+            if os.path.exists(img_txt):
+                prompt_file = img_txt
+            elif os.path.exists(ctl_txt):
+                prompt_file = ctl_txt
+            else:
+                continue
+
+            # mask（可选）
+            mask_file = _find_mask(images_dir, control_dir, stem)
+
+            samples.append(
+                {
+                    "image": image_path,
+                    "control": controls,
+                    "caption": prompt_file,
+                    "mask_file": mask_file,
+                    "dataset_type": "local",
+                    "local_index": n,
+                    "global_index": start_idx + n,
+                }
+            )
+            n += 1
+        return samples
 
     def __repr__(self) -> str:
         msg = f"""ImageDataset(
@@ -296,131 +512,6 @@ class ImageDataset(Dataset):
             img = img.transpose(2, 0, 1)  # ，C,H,W
         return img
 
-    def _find_directories(self):
-        """
-        查找所有数据集根路径下的图像目录与控制图像目录。
-        优先匹配:
-            images: ['training_images', 'images', 'target_images']
-            control: ['control_images', 'control', 'condition_images']
-        若都未找到则回退到默认 'training_images' 与 'control_images'。
-        Returns:
-            Tuple[List[str], List[str]]: images_dirs, control_dirs
-        """
-        images_dirs = []
-        control_dirs = []
-
-        image_possible_names = ['training_images', 'images', 'target_images']
-        control_possible_names = ['control_images', 'control', 'condition_images']
-
-        for dataset_path in self.dataset_paths:
-            # 查找图像目录
-            images_dir = None
-            for name in image_possible_names:
-                path = os.path.join(dataset_path, name)
-                if os.path.exists(path):
-                    print(f"Found images directory: {path}")
-                    images_dir = path
-                    break
-
-            if images_dir is None:
-                # 如果都没找到，使用默认路径
-                images_dir = os.path.join(dataset_path, 'training_images')
-                print(f"Using default images directory: {images_dir}")
-
-            # 查找控制图像目录
-            control_dir = None
-            for name in control_possible_names:
-                path = os.path.join(dataset_path, name)
-                if os.path.exists(path):
-                    print(f"Found control directory: {path}")
-                    control_dir = path
-                    break
-
-            if control_dir is None:
-                # 如果都没找到，使用默认路径
-                control_dir = os.path.join(dataset_path, 'control_images')
-                print(f"Using default control directory: {control_dir}")
-
-            # 检查目录是否存在
-            if not os.path.exists(images_dir):
-                print(f"Warning: Images directory not found: {images_dir}")
-                continue
-            if not os.path.exists(control_dir):
-                print(f"Warning: Control directory not found: {control_dir}")
-                continue
-
-            images_dirs.append(images_dir)
-            control_dirs.append(control_dir)
-
-        if not images_dirs:
-            raise ValueError("No valid dataset directories found")
-
-        return images_dirs, control_dirs
-
-    def _scan_image_files(self):
-        """
-        扫描所有数据集中的成对样本。
-        样本需满足：
-            - images_dir/xxx.(jpg|jpeg|png|bmp)
-            - control_dir/xxx.(jpg|jpeg|png|bmp)
-            - images_dir/xxx.txt 作为 caption
-            - 可选 control_dir/xxx_mask.png
-        Returns:
-            List[dict]: 'image' 'control' 'caption' 'dataset_index' 'mask_file'
-        """
-        all_valid_files = []
-
-        # 遍历所有数据集目录
-        for i, (images_dir, control_dir) in enumerate(zip(self.images_dirs, self.control_dirs)):
-            print(f"Scanning dataset {i+1}: {images_dir}")
-            image_files = []
-
-            # 获取images目录下的所有图像文件
-            image_patterns = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
-            for pattern in image_patterns:
-                files = glob.glob(os.path.join(images_dir, pattern))
-                image_files.extend(files)
-
-            # 过滤掉没有对应control图像和caption的文件
-            valid_files = []
-            for image_file in image_files:
-                # 获取文件名（不含扩展名）
-                base_name = os.path.splitext(os.path.basename(image_file))[0]
-
-                # 检查是否存在对应的control图像
-                control_file = None
-                for ext in ['.jpg', '.jpeg', '.png', '.bmp']:
-                    control_path = os.path.join(control_dir, base_name + ext)
-                    if os.path.exists(control_path):
-                        control_file = control_path
-                        break
-
-                mask_file = os.path.join(control_dir, base_name + '_mask.png')
-
-                # 检查是否存在对应的caption文件
-                caption_file = os.path.join(images_dir, base_name + '.txt')
-
-                if control_file and os.path.exists(caption_file):
-                    valid_files.append({
-                        'image': image_file,
-                        'control': control_file,
-                        'caption': caption_file,
-                        'dataset_index': i,  # 记录来自哪个数据集,
-                        'mask_file': mask_file,
-                    })
-                else:
-                    print(f"Warning: Skipping {image_file} - missing control image or caption file")
-
-            print(f"Dataset {i+1} found {len(valid_files)} valid image pairs")
-            all_valid_files.extend(valid_files)
-
-        print(f"Total found {len(all_valid_files)} valid image pairs from {len(self.images_dirs)} datasets")
-        return all_valid_files
-
-    def __len__(self):
-        """返回数据集大小"""
-        return len(self.image_files)
-
     def __getitem__(self, idx):
         """
         获取索引样本。
@@ -437,20 +528,70 @@ class ImageDataset(Dataset):
         prompt = item['prompt']   # str
         ```
         """
-        if idx >= len(self.image_files):
+        if idx >= self.__len__():
             raise IndexError(f"Index {idx} out of range for dataset of size {len(self.image_files)}")
+        sample = self.all_samples[idx]
+        if sample['dataset_type'] == 'huggingface':
+            local_index = sample['local_index']
+            repo_id = sample['repo_id']
+            data_item = self.hf_datasets[repo_id]['dataset'][local_index]
+            image_numpy = np.array(data_item['target_image'].convert('RGB'))
+            control = data_item['control_images']
+            if control is not None:
+                control_numpy = np.array(control[0].convert('RGB'))
+            else:
+                control_numpy = None
+            prompt = data_item['prompt']
+            if data_item['control_mask'] is not None:
+                mask_numpy = np.array(data_item['control_mask'].convert('L'))
+            else:
+                mask_numpy = None
 
-        file_info = self.image_files[idx]
+            if self.use_cache:
+                prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
+                image_hash = f"{repo_id}_{local_index}_{prompt_hash}"
+                control_hash = f"{repo_id}_{local_index}_{prompt_hash}"
+                prompt_hash = f"{repo_id}_{local_index}_{prompt_hash}"
+                empty_prompt_hash = f"{repo_id}_{local_index}_{prompt_hash}"
 
-        # 读取提示文本
-        with open(file_info['caption'], 'r', encoding='utf-8') as f:
-            prompt = f.read().strip()
+        else:
+            data_item = self.all_samples[idx]
+            #  {
+            #         "image": image_path,
+            #         "control": controls,
+            #         "caption": prompt_file,
+            #         "mask_file": mask_file,
+            #         "dataset_type": "local",
+            #         "local_index": n,
+            #         "global_index": start_idx + n,
+            #     }
+            # ) If, not exist return None
+            # 读取提示文本
+
+            with open(data_item['caption'], 'r', encoding='utf-8') as f:
+                prompt = f.read().strip()
+
+            if self.use_cache:
+                image_hash = self.cache_manager.get_file_hash_for_image(data_item['image'])
+                control_hash = self.cache_manager.get_file_hash_for_image(data_item['control'])
+                prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], prompt)
+                empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], "empty")
+
+            image = data_item['image']
+            control = data_item['control'][0]
+            mask_file = data_item['mask_file']
+            mask_numpy = None
+            if os.path.exists(mask_file):
+                mask_numpy = cv2.imread(mask_file, 0)
 
         # 如果启用裁剪，生成共同的裁剪边界框
         crop_bbox = None
         if (self.random_crop and self.crop_size is not None) or self.center_crop:
             # 读取第一个图像来获取尺寸（假设image和control尺寸相同）
-            temp_img = cv2.imread(file_info['image'])
+            if isinstance(image, str):
+                temp_img = cv2.imread(image)
+            else:
+                temp_img = image
             if temp_img is not None:
                 h, w = temp_img.shape[:2]
                 if self.center_crop:
@@ -458,21 +599,15 @@ class ImageDataset(Dataset):
                 elif self.random_crop and self.crop_size is not None:
                     crop_bbox = self.get_random_crop_bbox(h, w)
 
-        image_numpy = self.preprocess(file_info['image'], crop_bbox)
+        image_numpy = self.preprocess(image, crop_bbox)
 
         # 加载控制图像（使用相同的裁剪边界框）
-        control_numpy = self.preprocess(file_info['control'], crop_bbox)
+        control_numpy = self.preprocess(control, crop_bbox)
 
         has_mask = False
-        if os.path.exists(file_info['mask_file']):
-            mask_numpy = self.preprocess(cv2.imread(file_info['mask_file'], 0), crop_bbox)
+        if mask_numpy is not None:
+            mask_numpy = self.preprocess(mask_numpy, crop_bbox)
             has_mask = True
-
-        if self.use_cache:
-            image_hash = self.cache_manager.get_file_hash_for_image(file_info['image'])
-            control_hash = self.cache_manager.get_file_hash_for_image(file_info['control'])
-            prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], prompt)
-            empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(file_info['image'], "empty")
 
         if self.cache_exists and self.use_cache:
             # 如果启用缓存，尝试加载缓存的嵌入
@@ -548,7 +683,6 @@ class ImageDataset(Dataset):
                 'image': image_numpy,
                 'control': control_numpy,
                 'prompt': prompt,
-                'file_paths': file_info,
             }
             if self.use_cache:
                 data['file_hashes'] = {
