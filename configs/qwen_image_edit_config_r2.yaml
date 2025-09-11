@@ -40,7 +40,7 @@ logging:
   tracker_project_name: "lora_test"
 
 optimizer:
-  class_path: bnb.optim.Adam8bit
+  class_path: bitsandbytes.optim.Adam8bit
   init_args:
     lr: 0.0002
     betas: [0.9, 0.999]

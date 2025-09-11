@@ -499,7 +499,7 @@ train:
   low_memory: true  # Enable multi-device model loading
 
 optimizer:
-  class_path: bnb.optim.Adam8bit  # 8bit optimizer for memory efficiency
+  class_path: bitsandbytes.optim.Adam8bit  # 8bit optimizer for memory efficiency
   init_args:
     lr: 0.0001
     betas: [0.9, 0.999]
@@ -730,6 +730,66 @@ cache:
   vae_encoder_device: "cuda:1"
   text_encoder_device: "cuda:2"
 ```
+
+## Optimizer Selection
+
+The framework supports multiple optimizers for different training scenarios and hardware constraints:
+
+### Available Optimizers
+
+#### 1. **AdamW** (Default)
+```yaml
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 1e-4
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+    eps: 1e-8
+```
+**Use Case**: Standard choice for most training scenarios with good convergence properties.
+
+#### 2. **8-bit Adam** (Memory Efficient)
+```yaml
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+```
+**Use Case**: Reduces optimizer memory by 75% while maintaining performance. Ideal for large models or limited VRAM.
+
+#### 3. **Prodigy** (Auto-Learning Rate)
+```yaml
+optimizer:
+  class_path: prodigyopt.Prodigy
+  init_args:
+    lr: 1.0  # Prodigy auto-adjusts this
+    betas: [0.9, 0.999]
+    use_bias_correction: true
+    safeguard_warmup: true
+```
+**Use Case**: Automatically adapts learning rate during training. Excellent for experiments without extensive hyperparameter tuning.
+
+#### 4. **SGD** (Classical)
+```yaml
+optimizer:
+  class_path: torch.optim.SGD
+  init_args:
+    lr: 0.01
+    momentum: 0.9
+    weight_decay: 1e-4
+```
+**Use Case**: Simple and memory-efficient, but typically requires more careful tuning.
+
+### Quick Reference
+
+| Optimizer | Memory Usage | Auto LR | Best For |
+|-----------|-------------|---------|----------|
+| AdamW | Standard | No | General use, stable training |
+| Adam8bit | 25% of Adam | No | Large models, limited VRAM |
+| Prodigy | Standard | Yes | Quick experiments, no tuning |
+| SGD | Minimal | No | Memory-critical scenarios |
 
 ## Troubleshooting
 
