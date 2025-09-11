@@ -11,4 +11,5 @@
 - [ ] FSDP training
 - [ ] tensorboard log dir add version when resume training
 - [x] Flux Kontext Lora (v1.5.0)
+- [x] HuggingFace Dataset 支持 (v1.5.2)
 - [ ] training step dtype convertion simplification

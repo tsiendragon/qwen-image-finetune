@@ -18,6 +18,29 @@
 
 ---
 
+## [1.5.2] - 2025-09-11
+
+### 新增
+- **HuggingFace Dataset 支持**: 实现了对 HuggingFace 数据集的无缝集成
+  - 在 `ImageDataset` 类中添加智能路径检测，自动区分本地路径和 HF 仓库 ID
+  - 实现懒加载机制，避免大型数据集的枚举开销
+  - 支持混合使用本地数据集和 HF 数据集
+  - 提供 `face_seg_flux_kontext_fp16_huggingface_dataset.yaml` 配置示例
+  - 完整的数据格式转换，确保与现有预处理流程兼容
+
+### 改进
+- **数据加载性能**: 通过懒加载机制显著提升大型数据集的加载性能
+- **配置系统**: 保持完全向后兼容，现有配置文件无需任何修改
+- **文档**: 添加 `docs/huggingface-dataset.md` 详细指南，包括上传、下载和使用说明
+
+### 技术细节
+- 路径检测逻辑：自动识别本地路径与 HF 仓库 ID 格式
+- 数据格式转换：HF 数据集的 PIL Image → RGB numpy array
+- 统一接口：`__getitem__` 方法对本地和 HF 数据提供一致的处理
+- 完整设计文档：`docs/prd/v1.5.2_add_huggingface_dataset.md`
+
+---
+
 ## [1.5.1] - 2025-01-11
 
 ### 改进

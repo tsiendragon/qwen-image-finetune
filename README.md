@@ -106,6 +106,7 @@ The framework provides various pre-configured training setups for different mode
 | `face_seg_fp4_config.yaml` | Qwen-Image-Edit | FP4 | 4-bit quantized, memory efficient | ~22.5GB | A100/RTX4090 |
 | `face_seg_fp4_4090.yaml` | Qwen-Image-Edit | FP4 | Optimized for RTX 4090 | ~23.3GB | RTX 4090 |
 | `face_seg_flux_kontext_fp16.yaml` | FLUX Kontext | FP16 | Full precision, best quality | ~50GB | A100 |
+| `face_seg_flux_kontext_fp16_huggingface_dataset.yaml` | FLUX Kontext | FP16 | HuggingFace dataset support | ~50GB | A100 |
 | `face_seg_flux_kontext_fp8.yaml` | FLUX Kontext | FP8 | 8-bit quantized, balanced | ~35GB | A100 |
 | `face_seg_flux_kontext_fp4.yaml` | FLUX Kontext | FP4 | 4-bit quantized, most efficient | ~24GB | RTX 4090/A100 |
 
@@ -379,6 +380,8 @@ We welcome contributions to improve this documentation:
 
 ### Technical Support
 - **Training Issues**: See [Training Guide](docs/training.md) troubleshooting
+- **Data Preparation**: See [Data Preparation Guide](docs/data-preparation.md) for dataset setup
+- **HuggingFace Datasets**: See [HuggingFace Dataset Guide](docs/huggingface-dataset.md) for cloud datasets
 - **Optimizer Selection**: See [Training Guide](docs/training.md#optimizer-selection) for available optimizers
 - **FLUX Kontext Training**: See [Training Guide](docs/training.md#flux-kontext-lora-training) for multi-precision training
 - **Setup Problems**: Check [Setup Guide](docs/setup.md) common issues
