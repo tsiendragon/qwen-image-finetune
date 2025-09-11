@@ -8,6 +8,17 @@ from src.utils.seed import seed_everything
 logger = get_logger(__name__, log_level="INFO")
 
 
+def import_trainer(config):
+    trainer_type = config.train.trainer
+    if trainer_type == 'QwenImageEdit':
+        from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer as Trainer
+    elif trainer_type == 'FluxKontext':
+        from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
+    else:
+        raise ValueError(f"Invalid trainer type: {trainer_type}")
+    return Trainer
+
+
 def main():
     """使用模块化的 Trainer 类进行训练"""
     # 解析配置
@@ -24,14 +35,7 @@ def main():
     seed_everything(1234)
 
     # 创建训练器
-    trainer_type = config.train.trainer
-    if trainer_type == 'QwenImageEdit':
-        from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer as Trainer
-    elif trainer_type == 'FluxKontext':
-        from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
-    else:
-        raise ValueError(f"Invalid trainer type: {trainer_type}")
-
+    Trainer = import_trainer(config)
     trainer = Trainer(config)
 
     # 加载数据
