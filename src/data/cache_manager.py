@@ -15,14 +15,12 @@ def check_cache_exists(cache_root: str) -> Dict[str, bool]:
     """
     cache_root_path = Path(cache_root)
     cache_types = ['pixel_latent', 'prompt_embed']
-    print('cache types', cache_types)
 
     result = {}
     for cache_type in cache_types:
         cache_dir = cache_root_path / cache_type
         # 检查目录是否存在且包含 .pt 文件
         has_cache = cache_dir.exists() and len(list(cache_dir.glob("*.pt"))) > 0
-        print('hsa cache', has_cache)
         result[cache_type] = has_cache
 
     return all(result.values())

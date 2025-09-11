@@ -623,10 +623,8 @@ class ImageDataset(Dataset):
             # 如果启用缓存，尝试加载缓存的嵌入
             # 检查缓存是否存在
             # TODO: original implementation
-            cache_file = os.path.join(self.cache_dir, 'pixel_latent', f"{image_hash}.pt")
+            cache_file = os.path.join(self.cache_dir, 'prompt_embeds_mask', f"{image_hash}.pt")
             old_style = os.path.exists(cache_file)
-
-            print('old style', old_style)
 
             if old_style:
                 cached_data = {}
