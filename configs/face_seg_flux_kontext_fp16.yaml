@@ -1,7 +1,5 @@
 model:
   pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
-  # pretrained_model_name_or_path: camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers
-  # pretrained_model_name_or_path: eramth/flux-kontext-4bit-fp4
   rank: 16
   quantize: False
   lora:

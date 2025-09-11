@@ -301,12 +301,14 @@ class BaseTrainer(ABC):
 
         # Use optimizer parameters from configuration
         optimizer_config = self.config.optimizer.init_args
-        self.optimizer = torch.optim.AdamW(
+        class_path = self.config.optimizer.class_path
+        import importlib
+        module_name, class_name = class_path.rsplit(".", 1)
+        cls = getattr(importlib.import_module(module_name), class_name)
+        # cls = getattr(importlib.import_module(class_path), class_path)
+        self.optimizer = cls(
             lora_layers,
-            lr=optimizer_config["lr"],
-            betas=optimizer_config["betas"],
-            weight_decay=optimizer_config.get("weight_decay", 0.01),
-            eps=optimizer_config.get("eps", 1e-8),
+            **optimizer_config,
         )
 
         self.lr_scheduler = get_scheduler(
