@@ -220,9 +220,23 @@ def is_huggingface_repo(path: str) -> bool:
     # and not contain invalid characters for repo names
     parts = path.split('/')
     if len(parts) <= 2 and all(part.replace('-', '').replace('_', '').isalnum() for part in parts):
-        return True
+
+        from datasets import get_dataset_config_names
+        try:
+            a = get_dataset_config_names(path)
+            if a:
+                return True
+        except Exception as e:
+            print(e)
+            return False
     return False
+
 
 if __name__ == "__main__":
     from datasets import get_dataset_config_names
-    print(get_dataset_config_names("TsienDragon/face_segmentation_20"))
+    a = get_dataset_config_names("TsienDragon/face_segmentation_20")
+    # returns ['default']
+    print(a, type(a))
+    for x in a:
+        print(x, type(x))
+    print(is_huggingface_repo("TsienDragon/face_segmentation0"))
