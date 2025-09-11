@@ -380,7 +380,6 @@ class BaseTrainer(ABC):
     ):
         from src.utils.lora_utils import classify_lora_weight
 
-
         pretrained_weight = getattr(config.model.lora, "pretrained_weight", None)
         if pretrained_weight:
             lora_type = classify_lora_weight(pretrained_weight)

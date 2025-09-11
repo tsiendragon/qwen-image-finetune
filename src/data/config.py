@@ -34,7 +34,7 @@ class LoraConfig:
     r: int = 16  # LoRA rank
     lora_alpha: int = 16  # LoRA alpha
     init_lora_weights: str = "gaussian"  # 初始化方式
-    target_modules: Union[str,List[str]] = field(
+    target_modules: Union[str, List[str]] = field(
         default_factory=lambda: ["to_k", "to_q", "to_v", "to_out.0"]
     )
     pretrained_weight: Optional[str] = None
