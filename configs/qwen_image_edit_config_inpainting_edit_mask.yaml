@@ -73,7 +73,7 @@ cache:
 
 predict:
   devices:
-    vae: cuda:5
+    vae: cuda:3
     text_encoder: cuda:6
     transformer: cuda:7
 

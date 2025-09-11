@@ -222,9 +222,10 @@ def main():
             logger.info("开始对比测试：基础模型 vs LoRA模型")
             logger.info("=" * 60)
 
-            # 测试1: 基础模型
+
             logger.info("\n--- 测试基础模型 ---")
             base_config_predict = create_config_for_predict(base_config, None)
+            lora_config_predict = create_config_for_predict(base_config, args.lora_weight)
 
             base_trainer = Trainer(base_config_predict)
             base_trainer.setup_predict()
