@@ -25,13 +25,6 @@ except ImportError as e:
     print("请确保在项目根目录运行此脚本")
     sys.exit(1)
 
-# 导入项目模块 (需要在path设置后)
-try:
-    from src.qwen_image_edit_trainer import QwenImageEditTrainer
-except ImportError as e:
-    print(f"导入错误: {e}")
-    print("请确保在项目根目录运行此脚本")
-    sys.exit(1)
 
 # 配置日志
 logging.basicConfig(
@@ -83,7 +76,7 @@ def create_config_for_predict(base_config, lora_weight_path: str = None):
     return predict_config
 
 
-def run_prediction(trainer: QwenImageEditTrainer,
+def run_prediction(trainer,
                    image: Image.Image,
                    prompt: str,
                    num_inference_steps: int = 20,
@@ -185,20 +178,13 @@ def main():
     logger.info(f"输入图像: {args.image}")
     logger.info(f"提示词文件: {args.prompt}")
 
-
     try:
         # 加载配置文件
         config_path = project_root / args.config
         base_config = load_config(config_path)
+        from src.main import import_trainer
 
-        trainer_type = base_config.train.trainer
-        if trainer_type == 'QwenImageEdit':
-            from src.qwen_image_edit_trainer import QwenImageEditTrainer  as Trainer
-        elif trainer_type == 'FluxKontext':
-            from src.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
-        else:
-            raise ValueError(f"Invalid trainer type: {trainer_type}")
-
+        Trainer = import_trainer(base_config)
         image, prompt = load_test_data(args.image, args.prompt)
 
         # 创建输出目录

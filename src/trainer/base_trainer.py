@@ -440,11 +440,6 @@ class BaseTrainer(ABC):
         pass
 
     @abstractmethod
-    def generate_latents_for_validation(self, prompt, control):
-        """Generate latents for validation."""
-        pass
-
-    @abstractmethod
     def save_lora(self, save_path):
         """Save LoRA weights"""
         pass

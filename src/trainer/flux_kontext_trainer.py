@@ -26,7 +26,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from peft.utils import get_peft_model_state_dict
 
 from diffusers import FluxKontextPipeline
-from src.base_trainer import BaseTrainer
+from src.trainer.base_trainer import BaseTrainer
 from src.models.flux_kontext_loader import (
     load_flux_kontext_vae,
     load_flux_kontext_clip,
@@ -1373,7 +1373,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         logging.info(f"Saved LoRA weights to {save_path}")
 
     # Validation sampling methods
-    def _encode_vae_image_for_validation(self, image):
+    def encode_vae_image_for_validation(self, image):
         """Encode image for validation using existing VAE encoding logic"""
         if isinstance(image, str):  # 如果是路径，先加载图片
             from PIL import Image
@@ -1396,7 +1396,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         return latents[0].cpu()  # 返回CPU上的latents以节省显存
 
-    def _encode_prompt_for_validation(self, prompt, control_image=None):
+    def encode_prompt_for_validation(self, prompt, control_image=None):
         """Encode prompt for validation using existing dual encoder logic"""
         # 临时移动编码器到GPU
         original_text_encoder_device = self.text_encoder.device
@@ -1425,85 +1425,3 @@ class FluxKontextLoraTrainer(BaseTrainer):
             'prompt_embeds': prompt_embeds[0].cpu(),
             'text_ids': text_ids.cpu()
         }
-
-    def _generate_latents_for_validation(self, cached_sample):
-        """Generate latents using cached embeddings and current model"""
-        # 使用缓存的embeddings进行推理生成
-        text_embeddings = cached_sample['text_embeddings']
-        control_latents = cached_sample.get('control_latents')
-
-        # 移动embeddings到GPU
-        pooled_prompt_embeds = text_embeddings['pooled_prompt_embeds'].to(self.accelerator.device).unsqueeze(0)
-        prompt_embeds = text_embeddings['prompt_embeds'].to(self.accelerator.device).unsqueeze(0)
-        text_ids = text_embeddings['text_ids'].to(self.accelerator.device)
-
-        if control_latents is not None:
-            control_latents = control_latents.to(self.accelerator.device).unsqueeze(0)
-
-        # 简化的推理逻辑，类似于predict方法但使用缓存的embeddings
-        batch_size = 1
-        height, width = 512, 512  # 固定尺寸用于validation
-
-        # 准备latents
-        latents, _, latent_ids, _ = self.prepare_latents(
-            None, batch_size, 16, height, width,
-            self.weight_dtype, self.accelerator.device
-        )
-
-        if control_latents is not None:
-            latent_ids = torch.cat([latent_ids, latent_ids], dim=0)  # 为control latents添加ids
-
-        # 使用简化的推理步骤 (fewer steps for validation)
-        num_inference_steps = 10
-        timesteps = torch.linspace(1000, 0, num_inference_steps, device=self.accelerator.device)
-
-        with torch.no_grad():
-            for t in timesteps:
-                # 简化的推理步骤
-                latent_model_input = latents
-                if control_latents is not None:
-                    latent_model_input = torch.cat([latents, control_latents], dim=1)
-
-                # 准备guidance
-                guidance = torch.ones(latents.shape[0], device=self.accelerator.device)
-
-                noise_pred = self.transformer(
-                    hidden_states=latent_model_input,
-                    timestep=t.expand(latents.shape[0]) / 1000,
-                    guidance=guidance,
-                    pooled_projections=pooled_prompt_embeds,
-                    encoder_hidden_states=prompt_embeds,
-                    txt_ids=text_ids,
-                    img_ids=latent_ids,
-                    joint_attention_kwargs={},
-                    return_dict=False,
-                )[0]
-
-                # 只取前面对应latents的部分
-                noise_pred = noise_pred[:, :latents.size(1)]
-
-                # 简化的调度器步骤
-                latents = latents - 0.1 * noise_pred  # 简化的更新规则
-
-        return latents
-
-    def _decode_latents_for_validation(self, latents):
-        """Decode latents to image using existing VAE decoder"""
-        # 复用现有的VAE解码逻辑
-        latents = self._unpack_latents(latents, 512, 512, self.vae_scale_factor)
-        latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-
-        # 临时将VAE decoder移到GPU
-        original_device = self.vae.device
-        self.vae.to(self.accelerator.device)
-
-        try:
-            with torch.no_grad():
-                image = self.vae.decode(latents, return_dict=False)[0]
-                # 转换为PIL格式
-                image = self.image_processor.postprocess(image, output_type="pil")[0]
-        finally:
-            # 恢复VAE设备
-            self.vae.to(original_device)
-
-        return image
