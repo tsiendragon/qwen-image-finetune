@@ -2,6 +2,8 @@ import os
 import torch
 from typing import Dict, Optional, List
 from pathlib import Path
+import json
+import glob
 from src.utils.tools import extract_file_hash, hash_string_md5
 
 
@@ -56,7 +58,13 @@ class EmbeddingCacheManager:
             # default is for the Flux Kontext
         else:
             self.cache_dirs = {cache_type: self.cache_root / cache_type for cache_type in cache_types}
+        self.metadata_dir = self.cache_root / 'metadata'
+
+    def create_folders(self):
         # all possible cache keys
+        os.makedirs(self.metadata_dir, exist_ok=True)
+        for dir in self.cache_dirs:
+            os.makedirs(self.metadata_dir / dir, exist_ok=True)
 
     def get_hash(self, file_path: str, prompt: str = "") -> str:
         if prompt:
@@ -64,64 +72,61 @@ class EmbeddingCacheManager:
         else:
             return extract_file_hash(file_path)
 
-    def _get_cache_path(self, cache_type: str, file_hash: str) -> Path:
-        """获取缓存文件路径"""
-        if cache_type in self.cache_dirs:  # original style
-            return self.cache_dirs[cache_type] / f"{file_hash}.pt"
-        else:
-            raise ValueError(f"Invalid cache type: {cache_type}"
-                f"supported cache types: {list(self.cache_dirs.keys())}"
-            )
+    def get_metadata_path(self, main_hash: str) -> str:
+        return os.path.join(str(self.cache_root), f'{main_hash}_metadata.json')
 
-    def save_cache(self, cache_type: str, file_hash: str, data: torch.Tensor) -> None:
-        """
-        保存缓存数据
-        Args:
-            cache_type: 缓存类型 (pixel_latent, control_latent, prompt_embed, prompt_embeds_mask)
-            file_hash: 文件哈希值
-            data: 要缓存的张量数据
-        """
-        cache_path = self._get_cache_path(cache_type, file_hash)
-        if not os.path.exists(os.path.dirname(cache_path)):
-            os.makedirs(os.path.dirname(cache_path))
-        # 确保tensor没有梯度信息，避免多进程序列化问题
-        data_to_save = data.detach().cpu().to(torch.float16)
-        torch.save(data_to_save, cache_path)
+    def get_cache_embedding_path(self, embedding_key: str, hash_value: str) -> str:
+        return os.path.join(str(self.cache_root), embedding_key, f'{hash_value}.pt')
 
-    def load_cache(self, cache_type: str, file_hash: str) -> Optional[torch.Tensor]:
+    def save_cache_embedding(self, data:dict, hash_maps:dict, file_hashes:dict):
+        """save cache embedding
+        data: dict[k, embedding]
+            keys like: image_latent, prompt_embedding, pooled_prompt_embedding, etc.
+        hash_maps: dict[k, hash_type]. Hash types support
+            - image_hash
+            - control_hash
+            - prompt_hash
+            - empty_prompt_hash
+            - control_prompt_hash
+            - control_empty_prompt_hash
+            - control_1_hash
+            - control_2_hash
         """
-        加载缓存数据
-        Args:
-            cache_type: 缓存类型
-            file_hash: 文件哈希值
-        Returns:
-            缓存的张量数据，如果不存在则返回 None
-        """
-        cache_path = self._get_cache_path(cache_type, file_hash)
-        if cache_path.exists():
-            loaded_data = torch.load(cache_path, map_location='cpu', weights_only=False)
-            # 确保加载的数据没有梯度信息
-            return loaded_data.detach() if loaded_data is not None else None
-        return None
+        assert set(hash_maps.keys()) == set(data.keys()), "hash_maps and data keys must be the same"
+        assert set(hash_maps.values()).issubset(set(file_hashes.keys())), "hash_maps values must be a subset of file_hashes keys"
+        main_hash = file_hashes['image_hash']
+        metadata_path = self.get_metadata_path(main_hash)
+        metadata = {}
 
-    def cache_exists(self, cache_type: str, file_hash: str) -> bool:
-        """检查缓存是否存在"""
-        cache_path = self._get_cache_path(cache_type, file_hash)
-        return cache_path.exists()
+        for key in data.keys():
+            hash_type = hash_maps[key]
+            hash_value = file_hashes[hash_type]
+            embedding = data[key].detach().cpu().to(torch.float16)
+            cache_path = self.get_cache_embedding_path(key, hash_value)
+            torch.save(embedding, cache_path)
+            metadata[key] = hash_value
 
-    def get_cache_stats(self) -> Dict[str, int]:
-        """获取缓存统计信息"""
-        stats = {}
-        for cache_type, cache_dir in self.cache_dirs.items():
-            stats[cache_type] = len(list(cache_dir.glob("*.pt")))
-        return stats
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f)
+
+    def load_cache(self, data):
+        main_hash = data['file_hashes']['image_hash']
+        metadata_path = self.get_metadata_path(main_hash)
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        for embedding_key, hash_value in metadata.items():
+            cache_path = self.get_cache_embedding_path(embedding_key, hash_value)
+            embedding = torch.load(cache_path, map_location='cpu', weights_only=False)
+            data[embedding_key] = embedding
+        return data
 
     def exist(self):
-        for cache_type, cache_dir in self.cache_dirs.items():
-            if not cache_dir.exists():
-                return False
-        return check_cache_exists(self.cache_root, list(self.cache_dirs.keys()))
-
+        """check if metadata exists"""
+        meta_folder = self.metadata_dir
+        if os.path.exists(meta_folder):
+            metadata_files = glob.glob(os.path.join(meta_folder, "*.json"))
+            return len(metadata_files) > 0
+        return False
 
 if __name__ == "__main__":
     cache_root = "/data/lilong/experiment/id_card_qwen_image_lora/cache"

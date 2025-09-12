@@ -11,6 +11,24 @@ import yaml
 
 
 @dataclass
+class ImageProcessorInitArgs:
+    """图像处理器初始化参数"""
+    process_type: str = "center_crop"  # center_padding, right_padding, resize
+    resize_mode: str = "bilinear"
+    target_size: List[int] = field(default_factory=lambda: [832, 576])
+    controls_size: Optional[Union[List[int], List[List[int]]]] = None
+    # if controls_size is None, use target_size
+    # controls_size specify for each control
+
+
+@dataclass
+class ImageProcessorConfig:
+    """图像处理器相关配置"""
+    class_path: str = "src.data.preprocess.ImageProcessor"
+    init_args: ImageProcessorInitArgs = field(default_factory=ImageProcessorInitArgs)
+
+
+@dataclass
 class PredictConfig:
     """预测相关配置"""
 
@@ -94,13 +112,23 @@ class ModelConfig:
             self.lora.r = self.rank
             self.lora.lora_alpha = self.rank
 
+class DatasetInitArgs:
+    """数据集初始化参数"""
+    dataset_path: Union[str, List[str]] = None
+    image_size: List[int] = None
+    caption_dropout_rate: float = 0.0
+    prompt_image_dropout_rate: float = 0.0
+    cache_dir: str = None
+    use_cache: bool = True
+    selected_control_indexes: List[int] = None
+
 
 @dataclass
 class DataConfig:
     """数据相关配置"""
 
     class_path: str = "torch.utils.data.Dataset"
-    init_args: Dict[str, Any] = field(default_factory=dict)
+    init_args: DatasetInitArgs = field(default_factory=DatasetInitArgs)
     batch_size: int = 1
     num_workers: int = 1
     shuffle: bool = True
