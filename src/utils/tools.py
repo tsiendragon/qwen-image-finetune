@@ -1,5 +1,11 @@
 import torch
 from blake3 import blake3
+from PIL import Image, ImageOps
+import imagehash
+import PIL
+import os
+from typing import Union
+import hashlib
 
 
 def sample_indices_per_rank(accelerator, dataset_size: int, num_samples: int,
@@ -39,4 +45,22 @@ def content_hash_blake3(path, chunk_size=1 << 20):
     with open(path, 'rb') as f:
         for chunk in iter(lambda: f.read(chunk_size), b''):
             h.update(chunk)
-    return h.hexdigest()  # 64位hex
+    return h.hexdigest()  # 64位 hex
+
+
+def phash_hex_from_image(img: Image.Image) -> str:
+    im = ImageOps.exif_transpose(img)   # 纠正EXIF方向
+    return str(imagehash.phash(im))     # 16 hex = 64 bit
+
+
+def hash_string_md5(s: str) -> str:
+    return hashlib.md5(s.encode("utf-8")).hexdigest()
+
+
+def extract_file_hash(image_path: Union[str, PIL.Image.Image]) -> str:
+    if isinstance(image_path, PIL.Image.Image):
+        return phash_hex_from_image(image_path)
+    elif os.path.exists(image_path):
+        return content_hash_blake3(image_path)
+    else:
+        raise ValueError(f"Invalid image path: {image_path}")

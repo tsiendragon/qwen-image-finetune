@@ -25,6 +25,7 @@ data:
     prompt_image_dropout_rate: 0.1
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
+    cache_keys: ${cache.cache_keys}
     use_edit_mask: true  # if true, dataset output edit mask
 
   batch_size: 8  # adjust batch size according to the available memory, can be set to 1, 2, 4
@@ -74,6 +75,13 @@ cache:
   prompt_empty_drop_keys:
     - prompt_embed
     - pooled_prompt_embed
+  cache_keys:
+    - pixel_latent
+    - control_latent
+    - prompt_embed
+    - empty_prompt_embed
+    - pooled_prompt_embed
+    - empty_pooled_prompt_embed
 
 predict:
   devices:

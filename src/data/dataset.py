@@ -12,8 +12,9 @@ import importlib
 import logging
 import hashlib
 # 删除重复的 typing 导入，已在上方统一导入 Optional, Dict, List, Any
-from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
+from src.data.cache_manager import EmbeddingCacheManager
 from src.utils.hugginface import load_editing_dataset, is_huggingface_repo
+from src.utils.tools import hash_string_md5
 
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
@@ -107,6 +108,8 @@ class ImageDataset(Dataset):
                 xxx.txt          # 与图像同名的 caption 文本
               control_images/
                 xxx.png
+                xxx_1.png
+                xxx_2.png
                 xxx_mask.png     # 可选，若存在则会返回 'mask'
 
         示例:
@@ -149,13 +152,13 @@ class ImageDataset(Dataset):
         # 初始化缓存管理器
         if self.use_cache and self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
-            self.cache_manager = EmbeddingCacheManager(self.cache_dir)
+            self.cache_manager = EmbeddingCacheManager(self.cache_dir, cache_types=self.data_config.get('cache_keys', None))
             print(f"缓存已启用，缓存目录: {self.cache_dir}")
         else:
             self.cache_manager = None
             print("缓存未启用")
 
-        self.cache_exists = check_cache_exists(self.cache_dir) if self.cache_dir else False
+        self.cache_exists = self.cache_manager.exist() if self.cache_manager else False
         if self.cache_exists:
             cache_subfolders = glob.glob(self.cache_dir+"/*")
             self.cache_keys = [os.path.basename(cache_subfolder) for cache_subfolder in cache_subfolders]
@@ -516,6 +519,52 @@ class ImageDataset(Dataset):
             img = img.transpose(2, 0, 1)  # ，C,H,W
         return img
 
+    def get_file_hashes(self, data):
+        file_hashes = {}
+        if 'image' in data:
+            file_hashes['image_hash'] = self.cache_manager.get_hash(data['image'])
+        if 'control' in data:
+            file_hashes['control_hash'] = self.cache_manager.get_hash(data['control'][0])
+        if 'prompt' in data:
+            file_hashes['prompt_hash'] = hash_string_md5(data['prompt'])
+        if 'prompt' in data:
+            file_hashes['empty_prompt_hash'] = hash_string_md5("empty")
+        if 'control' in data and 'prompt' in data:
+            file_hashes['control_prompt_hash'] = self.cache_manager.get_hash(data['control'][0], data['prompt'])
+        if 'control' in data and 'prompt' in data:
+            file_hashes['control_empty_prompt_hash'] = self.cache_manager.get_hash(data['control'][0], "empty")
+        for i in range(10):
+            if f"control_{i}" in data:
+                file_hashes[f"control_{i}_hash"] = self.cache_manager.get_hash(data[f"control_{i}"])
+        return file_hashes
+
+    def load_data(self, idx):
+        if idx >= self.__len__():
+            raise IndexError(f"Index {idx} out of range for dataset of size {self.__len__()}")
+        sample = self.all_samples[idx]
+        data = {}
+        if sample['dataset_type'] == 'huggingface':
+            local_index = sample['local_index']
+            repo_id = sample['repo_id']
+            data_item = self.hf_datasets[repo_id]['dataset'][local_index]
+            if data_item['target_image'] is not None:
+                image = data_item['target_image'].convert('RGB')
+                data['image'] = image
+            control = data_item['control_images']
+            if control is not None:
+                data['control'] = control[0].convert('RGB')
+                if len(control) > 1:
+                    for i in range(1, len(control)):
+                        data[f"control_{i}"] = control[i].convert('RGB')
+            prompt = data_item['prompt']
+            data['prompt'] = prompt
+            if data_item['control_mask'] is not None:
+                data['mask'] = np.array(data_item['control_mask'].convert('L'))
+
+            if self.use_cache:
+                file_hashes = self.get_file_hashes(data)
+                data['file_hashes'] = file_hashes
+
     def __getitem__(self, idx):
         """
         获取索引样本。
@@ -532,35 +581,6 @@ class ImageDataset(Dataset):
         prompt = item['prompt']   # str
         ```
         """
-        if idx >= self.__len__():
-            raise IndexError(f"Index {idx} out of range for dataset of size {self.__len__()}")
-        sample = self.all_samples[idx]
-        if sample['dataset_type'] == 'huggingface':
-            local_index = sample['local_index']
-            repo_id = sample['repo_id']
-            data_item = self.hf_datasets[repo_id]['dataset'][local_index]
-            if data_item['target_image'] is not None:
-                image = np.array(data_item['target_image'].convert('RGB'))
-            else:
-                image = None
-            control = data_item['control_images']
-            if control is not None:
-                control = np.array(control[0].convert('RGB'))
-            else:
-                control = None
-            prompt = data_item['prompt']
-            if data_item['control_mask'] is not None:
-                mask_numpy = np.array(data_item['control_mask'].convert('L'))
-            else:
-                mask_numpy = None
-
-            if self.use_cache:
-                prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-                repo_id_str = repo_id.replace('/', '_')
-                image_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
-                control_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
-                prompt_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
-                empty_prompt_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
 
         else:
             data_item = self.all_samples[idx]
