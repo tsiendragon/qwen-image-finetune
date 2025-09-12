@@ -38,6 +38,10 @@ class BaseTrainer(ABC):
 
         logger.info(f"Initialized {self.__class__.__name__} with config")
 
+    def __repr__(self) -> str:
+        msg = f"{self.__class__.__name__}(config={self.config})"
+        return msg
+
     def setup_versioned_logging_dir(self):
         """设置版本化的日志目录"""
         base_output_dir = self.config.logging.output_dir

@@ -78,9 +78,6 @@ class ImageDataset(Dataset):
         'image_size': (512, 512),
         'use_cache': True,
         'cache_dir': '/path/to/cache',
-        'random_crop': False,
-        'center_crop': True,
-        'center_crop_ratio': 0.9,
     }
     dataset = ImageDataset(data_config)
     loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, collate_fn=collate_fn)

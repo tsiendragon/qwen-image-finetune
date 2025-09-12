@@ -1,8 +1,5 @@
 model:
   pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
-  # pretrained_model_name_or_path: camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers
-  # eramth/flux-kontext-4bit-fp4
-  rank: 16
   quantize: False
   lora:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
@@ -20,13 +17,17 @@ data:
     dataset_path:
       - /raid/lilong/data/kyc_gen/ktp_v1.4/dataset1/
       - /raid/lilong/data/kyc_gen/ktp_v1.4/dataset1_crop/
-    image_size: [832, 576]
     caption_dropout_rate: 0.1
     prompt_image_dropout_rate: 0.1
-    cache_dir: ${cache.cache_dir}
-    use_cache: ${cache.use_cache}
-    cache_keys: ${cache.cache_keys}
     use_edit_mask: true  # if true, dataset output edit mask
+    selected_control_indexes: [1]
+    processor:
+      class_path: src.data.preprocess.ImageProcessor
+      init_args:
+        process_type: resize
+        resize_mode: bilinear
+        target_size: [832, 576]
+        controls_size: [[832, 576]]
 
   batch_size: 8  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
@@ -34,9 +35,14 @@ data:
 
 logging:
   output_dir: "/raid/lilong/data/experiment/flux-kontext-ktp_lora_fp16/"  # change the path to your own output path
-  logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "ktp_inpaint"
+  sampling:
+    enable: false
+    validation_steps: 100
+    num_samples: 1
+    seed: 42
+    validation_data: null
 
 optimizer:
   class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
@@ -50,38 +56,39 @@ lr_scheduler:
   num_cycles: 0.5
   power: 1.0
 
+
+loss:
+  mask_loss: false
+  forground_weight: 2.0
+  background_weight: 1.0
+
 train:
-  trainer: FluxKontext
   gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
   max_train_steps: 10000  # face segmentation data is small, reduce training steps
   num_epochs: 400  # increase epoch number
   checkpointing_steps: 100  # save checkpoints more frequently
-  checkpoints_total_limit: 50
   max_grad_norm: 1.0
   mixed_precision: "bf16"
   gradient_checkpointing: True  # enable gradient checkpointing to save memory
   low_memory: True  # is used low_memory mode, then the model will be loaded on the specified devices
   # otherwise, the model will be loaded on all the gpus
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:1
-  resume_from_checkpoint: null
+  fit_device:
+    vae_encoder_device: cuda:1
+    text_encoder_device: cuda:1
+
+trainer: FluxKontext
+resume: null
 
 cache:
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:0
-  text_encoder_2_device: cuda:0
+  devices:
+    vae_encoder_device: cuda:1
+    text_encoder_device: cuda:0
+    text_encoder_2_device: cuda:0
   cache_dir: ${logging.output_dir}/cache
   use_cache: true
   prompt_empty_drop_keys:
     - prompt_embed
     - pooled_prompt_embed
-  cache_keys:
-    - pixel_latent
-    - control_latent
-    - prompt_embed
-    - empty_prompt_embed
-    - pooled_prompt_embed
-    - empty_pooled_prompt_embed
 
 predict:
   devices:

@@ -1,387 +1,432 @@
 """
-Configuration module for Qwen Image Fine-tuning
+Configuration module for Qwen Image Fine-tuning (Pydantic BaseModel version)
 按 model、data、logging、optimizer、train 分块组织配置，支持 YAML 文件加载和验证
 """
 
 import os
 from typing import Dict, Any, Optional, List, Union
-from dataclasses import dataclass, field
-from omegaconf import OmegaConf
-import yaml
+import re
 import torch
+import yaml
+from omegaconf import OmegaConf
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, Field, ConfigDict, field_serializer
+
+from pydantic import field_validator, ValidationInfo
+
+from pydantic import computed_field
+from enum import Enum
+
+# ----------------------------
+# Common helpers / types
+# ----------------------------
+
+DeviceLike = Union[str, torch.device]
 
 
-@dataclass
-class ImageProcessorInitArgs:
-    """图像处理器初始化参数"""
-    process_type: str = "center_crop"  # center_padding, right_padding, resize
+def _normalize_cache_dir(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return v
+    v = os.path.expanduser(os.path.expandvars(str(v)))
+    if "://" in v:  # 保留如 s3://, http://
+        scheme, rest = v.split("://", 1)
+        rest = re.sub(r"/+", "/", rest)
+        v = f"{scheme}://{rest}"
+    else:
+        v = re.sub(r"/+", "/", v)  # 将 '//' '///' 压成 '/'
+    # 可选：去掉尾部斜杠（非根目录）
+    if len(v) > 1:
+        v = v.rstrip("/")
+    return v
+
+
+def _normalize_device(x: Optional[DeviceLike]) -> Optional[torch.device]:
+    if x is None:
+        return None
+    d = torch.device(x)
+    if d.type == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError(f"CUDA not available but got device={d}.")
+        if d.index is not None:
+            n = torch.cuda.device_count()
+            if d.index < 0 or d.index >= n:
+                raise ValueError(
+                    f"Invalid CUDA index {d.index}; only {n} device(s) present."
+                )
+    if d.type == "mps" and not torch.backends.mps.is_available():
+        raise ValueError("MPS not available but got device='mps'.")
+    return d
+
+
+class DeviceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+    vae: Optional[DeviceLike] = None
+    vae_encoder: Optional[DeviceLike] = None
+    text_encoder: Optional[DeviceLike] = None
+    text_encoder_2: Optional[DeviceLike] = None
+    dit: Optional[DeviceLike] = None
+
+    # 设备规范化（字符串/torch.device -> torch.device）
+    @field_validator(
+        "vae",
+        "vae_encoder",
+        "text_encoder",
+        "text_encoder_2",
+        "dit",
+        mode="after",
+    )
+    @classmethod
+    def _norm(cls, v: Optional[DeviceLike]) -> Optional[torch.device]:
+        return _normalize_device(v)
+
+    @field_serializer(
+        "vae",
+        "text_encoder",
+        "text_encoder_2",
+        "dit",
+        "vae_encoder",
+        when_used="always",  # 只在 JSON 导出时生效；若想在 Python dict 也转字符串，用 "always"
+    )
+    def _ser_dev(self, v: Optional[DeviceLike]):
+        return None if v is None else str(v)
+
+
+# ----------------------------
+# Image Processor
+# ----------------------------
+
+
+class ImageProcessorInitArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    process_type: str = "center_crop"  # resize, _padding, center_crop
     resize_mode: str = "bilinear"
-    target_size: List[int] = field(default_factory=lambda: [832, 576])
-    controls_size: Optional[Union[List[int], List[List[int]]]] = None
-    # if controls_size is None, use target_size
-    # controls_size specify for each control
+    target_size: List[int] = Field(default_factory=lambda: [832, 576])
+    controls_size: Optional[Union[List[int], List[List[int]]]] = (
+        None  # None -> use target_size
+    )
+
+    @field_validator("process_type")
+    @classmethod
+    def _check_process_type(cls, v: str) -> str:
+        allowed = {"resize", "center_padding", "right_padding", "center_crop"}
+        if v not in allowed:
+            raise ValueError(f"process_type must be one of {allowed}")
+        return v
 
 
-@dataclass
-class ImageProcessorConfig:
-    """图像处理器相关配置"""
+class ImageProcessorConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     class_path: str = "src.data.preprocess.ImageProcessor"
-    init_args: ImageProcessorInitArgs = field(default_factory=ImageProcessorInitArgs)
+    init_args: ImageProcessorInitArgs = Field(default_factory=ImageProcessorInitArgs)
 
 
-@dataclass
-class PredictConfig:
-    """预测相关配置"""
-
-    devices: Dict[str, str] = field(default_factory=dict)
-
-    def __post_init__(self):
-        """验证预测配置"""
-
-        if not isinstance(self.devices, dict):
-            raise ValueError(f"devices must be a dictionary, got {type(self.devices)}")
-
-        for device_type, device_id in self.devices.items():
-            if not device_id.startswith("cuda:"):
-                raise ValueError(f"device_id must start with 'cuda:', got {device_id}")
+# ----------------------------
+# Predict
+# ----------------------------
 
 
-@dataclass
-class LoraConfig:
-    """LoRA 相关配置"""
+class PredictConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    devices: DeviceConfig = Field(default_factory=DeviceConfig)
 
-    r: int = 16  # LoRA rank
-    lora_alpha: int = 16  # LoRA alpha
-    init_lora_weights: str = "gaussian"  # 初始化方式
-    target_modules: Union[str, List[str]] = field(
+
+# ----------------------------
+# LoRA / Model
+# ----------------------------
+
+
+class LoraConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    r: int = 16
+    lora_alpha: int = 16
+    init_lora_weights: str = "gaussian"  # 'gaussian' | 'normal' | 'zero'
+    target_modules: Union[str, List[str]] = Field(
         default_factory=lambda: ["to_k", "to_q", "to_v", "to_out.0"]
     )
     pretrained_weight: Optional[str] = None
-    adapter_name: Optional[str] = None
+    adapter_name: str = "default"
 
-    def __post_init__(self):
-        """验证 LoRA 配置"""
-        if not isinstance(self.r, int) or self.r <= 0:
-            raise ValueError(f"r must be a positive integer, got {self.r}")
+    @field_validator("r")
+    @classmethod
+    def _check_r(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("r must be > 0")
+        return v
 
-        if not isinstance(self.lora_alpha, int) or self.lora_alpha <= 0:
-            raise ValueError(
-                f"lora_alpha must be a positive integer, got {self.lora_alpha}"
-            )
+    @field_validator("lora_alpha")
+    @classmethod
+    def _check_alpha(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("lora_alpha must be > 0")
+        return v
 
-        if self.init_lora_weights not in ["gaussian", "normal", "zero"]:
-            raise ValueError(
-                f"init_lora_weights must be one of ['gaussian', 'normal', 'zero'], got {self.init_lora_weights}"
-            )
+    @field_validator("init_lora_weights")
+    @classmethod
+    def _check_init(cls, v: str) -> str:
+        allowed = {"gaussian", "normal", "zero"}
+        if v not in allowed:
+            raise ValueError(f"init_lora_weights must be in {allowed}")
+        return v
 
-        if not isinstance(self.target_modules, (list, str)) or not self.target_modules:
-            raise ValueError(
-                f"target_modules must be a non-empty list or string, got {self.target_modules}"
-            )
+    @field_validator("target_modules")
+    @classmethod
+    def _check_target_modules(cls, v: Union[str, List[str]]):
+        if isinstance(v, str) and not v:
+            raise ValueError("target_modules must be non-empty")
+        if isinstance(v, list) and len(v) == 0:
+            raise ValueError("target_modules must be non-empty")
+        return v
 
-        if self.pretrained_weight is not None:
-            if not isinstance(self.pretrained_weight, str) or not os.path.exists(
-                self.pretrained_weight
-            ):
-                raise ValueError(
-                    f"pretrained_weight must be a valid file path, got {self.pretrained_weight}"
-                )
-        if not isinstance(self.adapter_name, str) or not self.adapter_name:
-            raise ValueError(
-                f"adapter_name must be a non-empty string, got {self.adapter_name}"
-            )
+    @field_validator("pretrained_weight")
+    @classmethod
+    def _check_weight_path(cls, v: Optional[str]):
+        if v is not None and not os.path.exists(v):
+            raise ValueError(f"pretrained_weight path not found: {v}")
+        return v
+
+    @field_validator("adapter_name")
+    @classmethod
+    def _check_adapter_name(cls, v: Optional[str]):
+        if v is not None and not isinstance(v, str):
+            raise ValueError("adapter_name must be a string")
+        return v
 
 
-@dataclass
-class ModelConfig:
-    """模型相关配置"""
-
+class ModelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     pretrained_model_name_or_path: str = "Qwen/Qwen-Image-Edit"
-    rank: int = 16  # LoRA rank (为了兼容性保留)
-    lora: LoraConfig = field(default_factory=LoraConfig)
+    lora: LoraConfig = Field(default_factory=LoraConfig)
     quantize: bool = False
 
-    def __post_init__(self):
-        """验证模型配置"""
-        if not isinstance(self.rank, int) or self.rank <= 0:
-            raise ValueError(f"rank must be a positive integer, got {self.rank}")
-        if not isinstance(self.quantize, bool):
-            raise ValueError(f"quantize must be a boolean, got {self.quantize}")
 
-        # 确保 lora.r 与 rank 保持一致
-        if self.lora.r != self.rank:
-            self.lora.r = self.rank
-            self.lora.lora_alpha = self.rank
+# ----------------------------
+# Data
+# ----------------------------
 
 
-class DatasetInitArgs:
-    """数据集初始化参数"""
-    dataset_path: Union[str, List[str]] = None
-    image_size: List[int] = None
+class DatasetInitArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dataset_path: Union[str, List, None] = None
     caption_dropout_rate: float = 0.0
     prompt_image_dropout_rate: float = 0.0
-    cache_dir: str = None
+    cache_dir: Optional[str] = None
     use_cache: bool = True
-    selected_control_indexes: List[int] = None
+    use_edit_mask: bool = False
+    selected_control_indexes: Optional[List[int]] = None
+    prompt_empty_drop_keys: Optional[List[str]] = None
+    processor: ImageProcessorConfig = Field(default_factory=ImageProcessorConfig)
 
 
-@dataclass
-class DataConfig:
-    """数据相关配置"""
-
+class DataConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     class_path: str = "torch.utils.data.Dataset"
-    init_args: DatasetInitArgs = field(default_factory=DatasetInitArgs)
+    init_args: DatasetInitArgs = Field(default_factory=DatasetInitArgs)
     batch_size: int = 1
     num_workers: int = 1
     shuffle: bool = True
 
-    def __post_init__(self):
-        """验证数据配置"""
-        # 验证 class_path
-        if not isinstance(self.class_path, str) or not self.class_path:
-            raise ValueError(
-                f"class_path must be a non-empty string, got {self.class_path}"
-            )
+    @field_validator("class_path")
+    @classmethod
+    def _check_class_path(cls, v: str) -> str:
+        if not v:
+            raise ValueError("class_path must be non-empty")
+        return v
 
-        # 验证 init_args
-        if not isinstance(self.init_args, dict):
-            raise ValueError(
-                f"init_args must be a dictionary, got {type(self.init_args)}"
-            )
-
-
-@dataclass
-class SamplingConfig:
-    """Validation sampling during training configuration"""
-
-    enable: bool = False  # Enable/disable sampling functionality
-    validation_steps: int = 100  # Run validation sampling every N training steps
-    num_samples: int = 4  # Number of samples to generate and log per validation for each process
-    validation_data: Optional[Union[str, List[Dict[str, str]]]] = None  # Path or list of control-prompt pairs
-
-    def __post_init__(self):
-        """验证采样配置"""
-        if self.validation_steps <= 0 and self.enable:
-            raise ValueError(
-                f"validation_steps must be positive when sampling is enabled, got {self.validation_steps}"
-            )
-        if self.num_samples <= 0 and self.enable:
-            raise ValueError(
-                f"num_samples must be positive when sampling is enabled, got {self.num_samples}"
-            )
-        # Validate validation_data format
-        if self.validation_data is not None:
-            if isinstance(self.validation_data, list):
-                for item in self.validation_data:
-                    if not isinstance(item, dict) or 'control' not in item or 'prompt' not in item:
-                        raise ValueError(
-                            "Each validation_data item must be a dict with 'control' and 'prompt' keys"
-                        )
+    @field_validator("batch_size", "num_workers")
+    @classmethod
+    def _check_pos_int(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("must be positive integer")
+        return v
 
 
-@dataclass
-class LoggingConfig:
-    """日志和输出相关配置"""
+# ----------------------------
+# Logging / Sampling
+# ----------------------------
 
+
+class SamplingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enable: bool = False
+    validation_steps: int = 100
+    num_samples: int = 4
+    seed: int = 42
+    validation_data: Optional[Union[str, List[Dict[str, str]]]] = None
+
+    @model_validator(mode="after")
+    def _check_when_enabled(self):
+        if self.enable:
+            if self.validation_steps <= 0:
+                raise ValueError(
+                    "validation_steps must be positive when sampling is enabled"
+                )
+            if self.num_samples <= 0:
+                raise ValueError(
+                    "num_samples must be positive when sampling is enabled"
+                )
+        return self
+
+    @field_validator("validation_data")
+    @classmethod
+    def _check_validation_data(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, list):
+            for item in v:
+                if (
+                    not isinstance(item, dict)
+                    or "control" not in item
+                    or "prompt" not in item
+                ):
+                    raise ValueError(
+                        "Each validation_data item must be a dict with 'control' and 'prompt' keys"
+                    )
+        return v
+
+
+class LoggingConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     output_dir: str = "./output"
-    logging_dir: str = "logs"
     report_to: str = "tensorboard"  # tensorboard, wandb, all, none
-    tracker_project_name: str = "qwen-image-finetune"
-    sampling: Optional[SamplingConfig] = None  # Validation sampling configuration
+    tracker_project_name: Optional[str] = None  # will get the value from trainer
+    sampling: SamplingConfig = Field(default_factory=SamplingConfig)
 
-    def __post_init__(self):
-        """验证日志配置"""
-        if self.report_to not in ["tensorboard", "wandb", "all", "none"]:
-            raise ValueError(
-                f"report_to must be one of ['tensorboard', 'wandb', 'all', 'none'], got {self.report_to}"
-            )
-        # Initialize sampling config if not provided
-        if self.sampling is None:
-            self.sampling = SamplingConfig()
+    @field_validator("report_to")
+    @classmethod
+    def _check_report_to(cls, v: str) -> str:
+        allowed = {"tensorboard", "wandb", "all", "none"}
+        if v not in allowed:
+            raise ValueError(f"report_to must be one of {allowed}")
+        return v
+
+    @field_validator("output_dir")
+    @classmethod
+    def _check_output_dir(cls, v: str) -> str:
+        return _normalize_cache_dir(v)
 
 
-@dataclass
-class LRSchedulerConfig:
-    """学习率调度器相关配置，适配 get_scheduler 函数"""
+# ----------------------------
+# LR Scheduler
+# ----------------------------
 
-    scheduler_type: str = "constant"  # 调度器类型名称，传给 get_scheduler 的第一个参数
-    warmup_steps: int = 0  # 预热步数
-    num_cycles: float = 0.5  # cosine_with_restarts 的循环数
-    power: float = 1.0  # polynomial 的幂次
 
-    def __post_init__(self):
-        """验证学习率调度器配置"""
-        # 验证调度器类型
-        valid_schedulers = [
+class LRSchedulerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scheduler_type: str = "constant"
+    warmup_steps: int = 0
+    num_cycles: float = 0.5
+    power: float = 1.0
+
+    @field_validator("scheduler_type")
+    @classmethod
+    def _check_type(cls, v: str) -> str:
+        valid = {
             "linear",
             "cosine",
             "cosine_with_restarts",
             "polynomial",
             "constant",
             "constant_with_warmup",
-        ]
-        if self.scheduler_type not in valid_schedulers:
-            raise ValueError(
-                f"scheduler_type must be one of {valid_schedulers}, got {self.scheduler_type}"
-            )
+        }
+        if v not in valid:
+            raise ValueError(f"scheduler_type must be one of {valid}")
+        return v
 
-        # 验证预热步数
-        if not isinstance(self.warmup_steps, int) or self.warmup_steps < 0:
-            raise ValueError(
-                f"warmup_steps must be a non-negative integer, got {self.warmup_steps}"
-            )
+    @field_validator("warmup_steps")
+    @classmethod
+    def _check_warmup(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("warmup_steps must be >= 0")
+        return v
 
-        # 验证 num_cycles
-        if not isinstance(self.num_cycles, (int, float)) or self.num_cycles <= 0:
-            raise ValueError(
-                f"num_cycles must be a positive number, got {self.num_cycles}"
-            )
-
-        # 验证 power
-        if not isinstance(self.power, (int, float)) or self.power <= 0:
-            raise ValueError(f"power must be a positive number, got {self.power}")
+    @field_validator("num_cycles", "power")
+    @classmethod
+    def _check_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("must be positive")
+        return v
 
 
-@dataclass
-class OptimizerConfig:
-    """优化器相关配置"""
+# ----------------------------
+# Optimizer
+# ----------------------------
 
+
+class OptimizerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     class_path: str = "torch.optim.AdamW"
-    init_args: Dict[str, Any] = field(
+    init_args: Dict[str, Any] = Field(
         default_factory=lambda: {
             "lr": 1e-4,
-            # "weight_decay": 1e-2,
             "betas": [0.9, 0.999],
-            # "eps": 1e-8
         }
     )
 
-    def __post_init__(self):
-        """验证优化器配置"""
-        # 验证 class_path
-        if not isinstance(self.class_path, str) or not self.class_path:
-            raise ValueError(
-                f"class_path must be a non-empty string, got {self.class_path}"
-            )
+    @field_validator("class_path")
+    @classmethod
+    def _check_class_path(cls, v: str) -> str:
+        if not v:
+            raise ValueError("class_path must be non-empty")
+        return v
 
-        # 验证 init_args
-        if not isinstance(self.init_args, dict):
-            raise ValueError(
-                f"init_args must be a dictionary, got {type(self.init_args)}"
-            )
-
-        # 验证学习率（如果存在）
-        if "lr" in self.init_args:
-            lr = self.init_args["lr"]
+    @field_validator("init_args")
+    @classmethod
+    def _check_init_args(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+        if "lr" in v:
+            lr = v["lr"]
             if not isinstance(lr, (int, float)) or lr <= 0:
-                raise ValueError(f"lr in init_args must be a positive number, got {lr}")
-
-        # 验证权重衰减（如果存在）
-        if "weight_decay" in self.init_args:
-            wd = self.init_args["weight_decay"]
+                raise ValueError(f"init_args.lr must be positive, got {lr}")
+        if "weight_decay" in v:
+            wd = v["weight_decay"]
             if not isinstance(wd, (int, float)) or wd < 0:
-                raise ValueError(
-                    f"weight_decay in init_args must be non-negative, got {wd}"
-                )
-
-        # 验证 betas（如果存在）
-        if "betas" in self.init_args:
-            betas = self.init_args["betas"]
+                raise ValueError(f"init_args.weight_decay must be >= 0, got {wd}")
+        if "betas" in v:
+            betas = v["betas"]
             if not isinstance(betas, (list, tuple)) or len(betas) != 2:
-                raise ValueError(
-                    f"betas in init_args must be a list/tuple of 2 elements, got {betas}"
-                )
+                raise ValueError("init_args.betas must be a list/tuple of length 2")
             if not all(isinstance(b, (int, float)) and 0 <= b < 1 for b in betas):
-                raise ValueError(f"betas values must be in [0, 1), got {betas}")
+                raise ValueError("each beta must be in [0, 1)")
+        return v
 
 
-DeviceLike = Union[str, torch.device]
+# ----------------------------
+# Device / Cache
+# ----------------------------
 
 
-def _normalize_device(x: Optional[DeviceLike]) -> Optional[torch.device]:
-    if x is None:
-        return None
-    dev = torch.device(x)
-
-    # 运行时可用性/索引校验（仅对易错的 cuda 做严格检查）
-    if dev.type == "cuda":
-        if not torch.cuda.is_available():
-            raise ValueError(f"CUDA not available but got device={dev}.")
-        if dev.index is not None:
-            count = torch.cuda.device_count()
-            if dev.index < 0 or dev.index >= count:
-                raise ValueError(f"Invalid CUDA index {dev.index}; only {count} device(s) present.")
-    if dev.type == "mps" and not torch.backends.mps.is_available():
-        raise ValueError("MPS not available but got device='mps'.")
-    # 其他类型（cpu/xla/meta）通常不需要额外校验
-    return dev
-
-
-@dataclass
-class DeviceConfig:
-    """设备相关配置"""
-    vae_encoder_device: Optional[DeviceLike] = None  # VAE 编码器设备 ID
-    text_encoder_device: Optional[DeviceLike] = None  # 文本编码器设备 ID
-    text_encoder_2_device: Optional[DeviceLike] = None  # 文本编码器2设备 ID
-    dit_device: Optional[DeviceLike] = None  # DIT 设备 ID
-
-    def __post_init__(self):
-        """验证设备配置"""
-
-        self.vae_encoder_device = _normalize_device(self.vae_encoder_device)
-        self.text_encoder_device = _normalize_device(self.text_encoder_device)
-        self.text_encoder_2_device = _normalize_device(self.text_encoder_2_device)
-        self.dit_device = _normalize_device(self.dit_device)
-
-
-@dataclass
-class CacheConfig:
-    """缓存相关配置"""
-
-    vae_encoder_device: Optional[str] = None  # VAE 编码器设备 ID
-    text_encoder_device: Optional[str] = None  # 文本编码器设备 ID
-    text_encoder_2_device: Optional[str] = None  # 文本编码器2设备 ID
+class CacheConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    devices: DeviceConfig = Field(default_factory=DeviceConfig)
     use_cache: bool = True
-    cache_dir: str = "/data/lilong/experiment/id_card_qwen_image_lora/cache"
-    prompt_empty_drop_keys: List[str] = field(
+    cache_dir: str = "./cache/"
+    prompt_empty_drop_keys: List[str] = Field(
         default_factory=lambda: ["prompt_embed", "prompt_embeds_mask"]
     )
-    device: DeviceConfig = field(default_factory=DeviceConfig)
 
-    def __post_init__(self):
-        """验证缓存配置"""
-        # 验证设备 ID
-        if self.vae_encoder_device is not None:
-            if not isinstance(self.vae_encoder_device, str):
-                raise ValueError(
-                    f"vae_encoder_device must be a non-negative string or None, got {self.vae_encoder_device}"
-                )
+    # 规范化：展开 ~ / 环境变量，压缩多余斜杠，保留 scheme://
+    @field_validator("cache_dir", mode="before")
+    @classmethod
+    def format_dir(cls, v: str) -> str:
+        return _normalize_cache_dir(v)
 
-        if self.text_encoder_device is not None:
-            if not isinstance(self.text_encoder_device, str):
-                raise ValueError(
-                    f"text_encoder_device must be a non-negative string or None, got {self.text_encoder_device}"
-                )
-
-        if self.text_encoder_2_device is not None:
-            if not isinstance(self.text_encoder_2_device, str):
-                raise ValueError(
-                    f"text_encoder_2_device must be a non-negative string or None, got {self.text_encoder_2_device}"
-                )
-
-        if not isinstance(self.use_cache, bool):
-            raise ValueError(f"use_cache must be a boolean, got {self.use_cache}")
-
-        if not isinstance(self.cache_dir, str) or not self.cache_dir:
-            raise ValueError(
-                f"cache_dir must be a non-empty string, got {self.cache_dir}"
-            )
+    @field_validator("cache_dir")
+    @classmethod
+    def _check_cache_dir(cls, v: str) -> str:
+        if not v:
+            raise ValueError("cache_dir must be non-empty")
+        return v
 
 
-@dataclass
-class TrainConfig:
-    """训练相关配置"""
+# ----------------------------
+# Train / Loss
+# ----------------------------
+class TrainerKind(str, Enum):
+    QwenImageEdit = "QwenImageEdit"
+    FluxKontext = "FluxKontext"
 
+
+class TrainConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     train_batch_size: int = 1
     gradient_accumulation_steps: int = 4
     max_train_steps: int = 1000
@@ -389,331 +434,177 @@ class TrainConfig:
     checkpointing_steps: int = 500
     checkpoints_total_limit: Optional[int] = None
     max_grad_norm: float = 1.0
-    mixed_precision: str = "bf16"  # fp16, bf16, no
-    gradient_checkpointing: bool = True  # 启用梯度检查点以节省显存
+    mixed_precision: str = "bf16"  # fp16 | bf16 | no
+    gradient_checkpointing: bool = True
     low_memory: bool = False
-    # if used low_memory mode, then the model will be loaded on the specified devices
-    # otherwise, the model will be loaded on all the gpus
+    # 指定精细设备布局（低显存模式时生效）
     fit_device: Optional[DeviceConfig] = None
-    resume_from_checkpoint: Optional[str] = None
-    trainer: str = 'QwenImageEdit'
 
-    def __post_init__(self):
-        """验证训练配置"""
-        # 验证正整数参数
-        int_params = {
-            "train_batch_size": self.train_batch_size,
-            "gradient_accumulation_steps": self.gradient_accumulation_steps,
-            "max_train_steps": self.max_train_steps,
-            "num_epochs": self.num_epochs,
-            "checkpointing_steps": self.checkpointing_steps,
-        }
+    @field_validator(
+        "train_batch_size",
+        "gradient_accumulation_steps",
+        "max_train_steps",
+        "num_epochs",
+        "checkpointing_steps",
+    )
+    @classmethod
+    def _pos_int(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("must be a positive integer")
+        return v
 
-        for param_name, param_value in int_params.items():
-            if not isinstance(param_value, int) or param_value <= 0:
-                raise ValueError(
-                    f"{param_name} must be a positive integer, got {param_value}"
-                )
+    @field_validator("checkpoints_total_limit")
+    @classmethod
+    def _check_total_limit(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v <= 0:
+            raise ValueError("checkpoints_total_limit must be positive or None")
+        return v
 
-        # 验证 checkpoints_total_limit
-        if self.checkpoints_total_limit is not None:
-            if (
-                not isinstance(self.checkpoints_total_limit, int)
-                or self.checkpoints_total_limit <= 0
-            ):
-                raise ValueError(
-                    f"checkpoints_total_limit must be a positive integer or None, got {self.checkpoints_total_limit}"
-                )
+    @field_validator("max_grad_norm")
+    @classmethod
+    def _check_grad_norm(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("max_grad_norm must be positive")
+        return v
 
-        # 验证梯度裁剪
-        if not isinstance(self.max_grad_norm, (int, float)) or self.max_grad_norm <= 0:
-            raise ValueError(
-                f"max_grad_norm must be positive, got {self.max_grad_norm}"
-            )
-
-        # 验证混合精度
-        if self.mixed_precision not in ["fp16", "bf16", "no"]:
-            raise ValueError(
-                f"mixed_precision must be one of ['fp16', 'bf16', 'no'], got {self.mixed_precision}"
-            )
-
-        # 验证梯度检查点
-        if not isinstance(self.gradient_checkpointing, bool):
-            raise ValueError(
-                f"gradient_checkpointing must be a boolean, got {self.gradient_checkpointing}"
-            )
-        # check low_memory
-        if not isinstance(self.low_memory, bool):
-            raise ValueError(f"low_memory must be a boolean, got {self.low_memory}")
-        # check vae_encoder_device
-        if self.vae_encoder_device is not None and not isinstance(self.vae_encoder_device, str):
-            raise ValueError("vae_encoder_device must be a non-negative string or None")
-
-        # check text_encoder_device
-        if self.text_encoder_device is not None and not isinstance(self.text_encoder_device, str):
-            raise ValueError("text_encoder_device must be a non-negative string or None")
-        # check resume_from_checkpoint
-        if self.resume_from_checkpoint is not None:
-            if not isinstance(self.resume_from_checkpoint, str) or not os.path.exists(self.resume_from_checkpoint):
-                raise ValueError("resume_from_checkpoint must be a non-negative string or None")
-        if self.trainer not in ['QwenImageEdit', 'FluxKontext']:
-            raise ValueError("trainer must be one of ['QwenImageEdit', 'FluxKontext']")
+    @field_validator("mixed_precision")
+    @classmethod
+    def _check_mp(cls, v: str) -> str:
+        allowed = {"fp16", "bf16", "no"}
+        if v not in allowed:
+            raise ValueError(f"mixed_precision must be one of {allowed}")
+        return v
 
 
-@dataclass
-class LossConfig:
-    """损失相关配置"""
-    mask_loss: bool = False  # if true, add mask loss
-    forground_weight: float = 2.0  # Text region emphasis
-    background_weight: float = 1.0   # Background region weight
+class LossConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mask_loss: bool = False
+    forground_weight: float = 2.0
+    background_weight: float = 1.0
 
-    def __post_init__(self):
-        """验证损失配置"""
-        if not isinstance(self.mask_loss, bool):
-            raise ValueError(f"mask_loss must be a boolean, got {self.mask_loss}")
-        if not isinstance(self.forground_weight, (int, float)) or self.forground_weight < 0:
-            raise ValueError(f"forground_weight must be a non-negative number, got {self.forground_weight}")
-        if not isinstance(self.background_weight, (int, float)) or self.background_weight < 0:
-            raise ValueError(f"background_weight must be a non-negative number, got {self.background_weight}")
+    @field_validator("forground_weight", "background_weight")
+    @classmethod
+    def _non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("weight must be >= 0")
+        return v
 
 
-@dataclass
-class Config:
-    """完整配置类"""
+# ----------------------------
+# Root Config
+# ----------------------------
 
-    model: ModelConfig = field(default_factory=ModelConfig)
-    data: DataConfig = field(default_factory=DataConfig)
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
-    optimizer: OptimizerConfig = field(default_factory=OptimizerConfig)
-    lr_scheduler: LRSchedulerConfig = field(default_factory=LRSchedulerConfig)
-    train: TrainConfig = field(default_factory=TrainConfig)
-    cache: CacheConfig = field(default_factory=CacheConfig)
-    predict: PredictConfig = field(default_factory=PredictConfig)
-    loss: LossConfig = field(default_factory=LossConfig)
 
-    def to_flat_dict(self) -> Dict[str, Any]:
-        """将配置转换为扁平字典格式，与 train.py 中的 args 兼容"""
-        flat_config = {}
+class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    trainer: TrainerKind = TrainerKind.QwenImageEdit
+    resume: str | None = None
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    data: DataConfig = Field(default_factory=DataConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
+    lr_scheduler: LRSchedulerConfig = Field(default_factory=LRSchedulerConfig)
+    train: TrainConfig = Field(default_factory=TrainConfig)
+    cache: CacheConfig = Field(default_factory=CacheConfig)
+    predict: PredictConfig = Field(default_factory=PredictConfig)
+    loss: LossConfig = Field(default_factory=LossConfig)
 
-        # Model 配置
-        flat_config.update(
-            {
-                "pretrained_model_name_or_path": self.model.pretrained_model_name_or_path,
-                "rank": self.model.rank,
-                "lora_r": self.model.lora.r,
-                "lora_alpha": self.model.lora.lora_alpha,
-                "lora_init_weights": self.model.lora.init_lora_weights,
-                "lora_target_modules": self.model.lora.target_modules,
-            }
-        )
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def trainer_type(self) -> str:
+        return self.trainer
 
-        # Data 配置
-        flat_config.update(
-            {
-                "data_class_path": self.data.class_path,
-                "data_init_args": self.data.init_args,
-            }
-        )
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def use_cache(self) -> str:
+        return self.cache.use_cache
 
-        # Logging 配置
-        flat_config.update(
-            {
-                "output_dir": self.logging.output_dir,
-                "logging_dir": self.logging.logging_dir,
-                "report_to": self.logging.report_to,
-                "tracker_project_name": self.logging.tracker_project_name,
-            }
-        )
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def cache_dir(self) -> str:
+        return self.cache.cache_dir
 
-        # Optimizer 配置
-        flat_config.update(
-            {
-                "optimizer_class_path": self.optimizer.class_path,
-                "optimizer_init_args": self.optimizer.init_args,
-            }
-        )
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def model_name(self) -> List[str]:
+        return self.model.pretrained_model_name_or_path
 
-        # LR Scheduler 配置
-        flat_config.update(
-            {
-                "lr_scheduler": self.lr_scheduler.scheduler_type,
-                "lr_warmup_steps": self.lr_scheduler.warmup_steps,
-                "lr_num_cycles": self.lr_scheduler.num_cycles,
-                "lr_power": self.lr_scheduler.power,
-            }
-        )
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def lora_adapter_name(self) -> str:
+        return self.model.lora.adapter_name
 
-        # Train 配置
-        flat_config.update(
-            {
-                "train_batch_size": self.train.train_batch_size,
-                "gradient_accumulation_steps": self.train.gradient_accumulation_steps,
-                "max_train_steps": self.train.max_train_steps,
-                "num_epochs": self.train.num_epochs,
-                "checkpointing_steps": self.train.checkpointing_steps,
-                "checkpoints_total_limit": self.train.checkpoints_total_limit,
-                "max_grad_norm": self.train.max_grad_norm,
-                "mixed_precision": self.train.mixed_precision,
-                "gradient_checkpointing": self.train.gradient_checkpointing,
-                "low_memory": self.train.low_memory,
-                "vae_encoder_device": self.train.vae_encoder_device,
-                "text_encoder_device": self.train.text_encoder_device,
-                "resume_from_checkpoint": self.train.resume_from_checkpoint,
-                "trainer": self.train.trainer,
-            }
-        )
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def lora_r(self) -> int:
+        return self.model.lora.r
 
-        # Cache 配置
-        flat_config.update(
-            {
-                "vae_encoder_device": self.cache.vae_encoder_device,
-                "text_encoder_device": self.cache.text_encoder_device,
-            }
-        )
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def lora_lora_alpha(self) -> int:
+        return self.model.lora.lora_alpha
 
-        # Loss 配置
-        flat_config.update(
-            {
-                "mask_loss": self.loss.mask_loss,
-                "forground_weight": self.loss.forground_weight,
-                "background_weight": self.loss.background_weight,
-            }
-        )
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def target_size(self) -> str:
+        return self.data.init_args.processor.init_args.target_size
 
-        return flat_config
+    # 1) 纯计算，不读 computed 字段，不改状态
+    def _compute_quantization_type(self) -> str:
+        name = (self.model_name or "").lower()
+        if "fp4" in name or "4bit" in name:
+            return "pretrain_fp4"
+        if "fp8" in name:  # 注意不要把 "8bit/int8" 当作 fp8
+            return "pretrain_fp8"
+        if bool(getattr(self.model, "quantize", False)):
+            return "fp8_online"
+        return "pretrain_fp16"
+
+    # 2) computed_field 只读 —— 任何时候访问都不会改状态
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def quantization_type(self) -> str:
+        return self._compute_quantization_type()
+
+    @model_validator(mode="after")
+    def _wire_cross_defaults(self):
+        self.data.init_args.cache_dir = self.cache.cache_dir
+        self.data.init_args.use_cache = self.cache.use_cache
+        self.data.init_args.prompt_empty_drop_keys = self.cache.prompt_empty_drop_keys
+        self.train.train_batch_size = self.data.batch_size
+        if self.quantization_type in {"pretrain_fp4", "pretrain_fp8", "pretrain_fp16"}:
+            self.model.quantize = False
+        return self
+
+
+# ----------------------------
+# I/O helpers
+# ----------------------------
 
 
 def load_config_from_yaml(yaml_path: str) -> Config:
     """
-    从 YAML 文件加载配置
-
-    Args:
-        yaml_path: YAML 配置文件路径
-
-    Returns:
-        Config: 验证后的配置对象
-
-    Raises:
-        FileNotFoundError: 配置文件不存在
-        ValueError: 配置参数类型错误或值无效
-        Exception: OmegaConf 加载错误
+    从 YAML 文件加载配置并验证
     """
     if not os.path.exists(yaml_path):
         raise FileNotFoundError(f"Configuration file not found: {yaml_path}")
 
     try:
-        # 使用 OmegaConf.load 直接加载 YAML 文件
         yaml_config = OmegaConf.load(yaml_path)
     except Exception as e:
         raise Exception(f"Error loading YAML file {yaml_path}: {e}")
 
-    # 转换为普通字典
-    config_dict = OmegaConf.to_container(yaml_config, resolve=True)
+    data = OmegaConf.to_container(yaml_config, resolve=True) or {}
 
-    # 处理空配置文件的情况
-    if config_dict is None:
-        config_dict = {}
-
-    # 创建配置对象，使用 dataclass 默认值处理缺失的配置块
-    model_dict = config_dict.get("model", {})
-    # 处理 lora 子配置
-    if "lora" in model_dict:
-        lora_config = LoraConfig(**model_dict.pop("lora"))
-        model_config = ModelConfig(lora=lora_config, **model_dict)
-    else:
-        model_config = ModelConfig(**model_dict)
-
-    config = Config(
-        model=model_config,
-        data=DataConfig(**config_dict.get("data", {})),
-        logging=LoggingConfig(**config_dict.get("logging", {})),
-        optimizer=OptimizerConfig(**config_dict.get("optimizer", {})),
-        lr_scheduler=LRSchedulerConfig(**config_dict.get("lr_scheduler", {})),
-        train=TrainConfig(**config_dict.get("train", {})),
-        cache=CacheConfig(**config_dict.get("cache", {})),
-        predict=PredictConfig(**config_dict.get("predict", {})),
-        loss=LossConfig(**config_dict.get("loss", {})),
-    )
-
+    # 直接一次性校验嵌套结构
+    # 若希望保持你之前对 lora/rank 的手动对齐，这里已在 ModelConfig 的 model_validator 中处理
+    config = Config.model_validate(data)
     return config
 
 
-def create_sample_config(output_path: str = "config_sample.yaml") -> None:
-    """
-    创建示例配置文件
-
-    Args:
-        output_path: 输出配置文件路径
-    """
-    sample_config = {
-        "model": {
-            "pretrained_model_name_or_path": "Qwen/Qwen2.5-VL-7B-Instruct",
-            "rank": 16,
-            "lora": {
-                "r": 16,
-                "lora_alpha": 16,
-                "init_lora_weights": "gaussian",
-                "target_modules": ["to_k", "to_q", "to_v", "to_out.0"],
-            },
-        },
-        "data": {
-            "class_path": "src.data.dataset.QwenImageDataset",
-            "init_args": {
-                "dataset_path": "/path/to/dataset",
-                "batch_size": 4,
-                "num_workers": 4,
-            },
-        },
-        "logging": {
-            "output_dir": "./output",
-            "logging_dir": "logs",
-            "report_to": "tensorboard",
-            "tracker_project_name": "qwen-image-finetune",
-        },
-        "optimizer": {
-            "class_path": "torch.optim.AdamW",
-            "init_args": {
-                "lr": 0.0001,
-                "weight_decay": 0.01,
-                "betas": [0.9, 0.999],
-                "eps": 1e-8,
-            },
-        },
-        "lr_scheduler": {
-            "scheduler_type": "constant",
-            "warmup_steps": 0,
-            "num_cycles": 0.5,
-            "power": 1.0,
-        },
-        "train": {
-            "train_batch_size": 1,
-            "gradient_accumulation_steps": 4,
-            "max_train_steps": 1000,
-            "num_epochs": 3,
-            "checkpointing_steps": 500,
-            "checkpoints_total_limit": 3,
-            "max_grad_norm": 1.0,
-            "mixed_precision": "bf16",
-            "trainer": "QwenImageEdit",
-        },
-        "cache": {"vae_encoder_device": 1, "text_encoder_device": 2},
-        "predict": {
-            "devices": {
-                "vae": "cuda:1",
-                "text_encoder": "cuda:2",
-                "transformer": "cuda:3",
-            }
-        },
-        "loss": {
-            "mask_loss": False,
-            "forground_weight": 2.0,
-            "background_weight": 1.0,
-        },
-    }
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        yaml.dump(
-            sample_config, f, default_flow_style=False, allow_unicode=True, indent=2
-        )
-
-    print(f"Sample configuration file created at: {output_path}")
+if __name__ == "__main__":
+    config = load_config_from_yaml("configs/example_fluxkontext_fp16.yaml")
+    print(config)
+    print(config.model_dump_json(indent=2, exclude_none=True))
+    d_json = config.model_dump(mode="json", exclude_none=True)
+    print(d_json)
