@@ -265,7 +265,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
         Pre-compute and cache embeddings (exactly same signature as QwenImageEditTrainer).
         Implements dual text encoder caching for CLIP + T5.
         """
-        self.cache_manager = train_dataloader.cache_manager
+        from src.data.cache_manager import CacheManager
+        self.cache_manager: CacheManager = train_dataloader.cache_manager
         vae_encoder_device = self.config.cache.vae_encoder_device
         text_encoder_device = self.config.cache.text_encoder_device
         text_encoder_2_device = self.config.cache.text_encoder_2_device
@@ -334,6 +335,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         )
         height_image, width_image = image.shape[2:]
         heigth_control, width_control = control.shape[2:]
+
         _, image_latents, _, _ = self.prepare_latents(
             image,
             1,
@@ -360,23 +362,29 @@ class FluxKontextLoraTrainer(BaseTrainer):
         prompt_embeds = prompt_embeds[0].detach().cpu()
         empty_pooled_prompt_embeds = empty_pooled_prompt_embeds[0].detach().cpu()
         empty_prompt_embeds = empty_prompt_embeds[0].detach().cpu()
-        # Save to cache (following QwenImageEditTrainer pattern)
-        file_hashes = data["file_hashes"]
-        prompt_hash = file_hashes["prompt_hash"]
+        shape_info = torch.tensor([height_image, width_image, heigth_control, width_control], dtype=torch.int32)
 
-        # use same cache for all latents/embeddings
-        self.cache_manager.save_cache("pixel_latent", prompt_hash, image_latents)
-        self.cache_manager.save_cache("control_latent", prompt_hash, control_latents)
-        self.cache_manager.save_cache(
-            "pooled_prompt_embed", prompt_hash, pooled_prompt_embeds
-        )
-        self.cache_manager.save_cache("prompt_embed", prompt_hash, prompt_embeds)
-        self.cache_manager.save_cache(
-            "empty_pooled_prompt_embed", prompt_hash, empty_pooled_prompt_embeds
-        )
-        self.cache_manager.save_cache(
-            "empty_prompt_embed", prompt_hash, empty_prompt_embeds
-        )
+        cache_embeddings = {
+            'pixel_latent': image_latents,
+            'control_latent': control_latents,
+            'pooled_prompt_embed': pooled_prompt_embeds,
+            'prompt_embed': prompt_embeds,
+            'empty_pooled_prompt_embed': empty_pooled_prompt_embeds,
+            'empty_prompt_embed': empty_prompt_embeds,
+            'shape_info': shape_info,
+        }
+
+        map_keys = {
+            'pixel_latent', 'image_hash',
+            'control_latent', 'control_hash',
+            'pooled_prompt_embed', 'prompt_hash',
+            'prompt_embed', 'prompt_hash',
+            'empty_pooled_prompt_embed', 'prompt_hash',
+            'empty_prompt_embed', 'prompt_hash',
+            'shape_info', 'image_hash',
+        }
+
+        self.cache_manager.save_cache_embedding(cache_embeddings, map_keys, data["file_hashes"])
 
     def fit(self, train_dataloader):
         logging.info("Starting training process...")

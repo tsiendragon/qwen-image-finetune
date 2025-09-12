@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional, List, Union
 from dataclasses import dataclass, field
 from omegaconf import OmegaConf
 import yaml
+import torch
 
 
 @dataclass
@@ -111,6 +112,7 @@ class ModelConfig:
         if self.lora.r != self.rank:
             self.lora.r = self.rank
             self.lora.lora_alpha = self.rank
+
 
 class DatasetInitArgs:
     """数据集初始化参数"""
@@ -293,6 +295,45 @@ class OptimizerConfig:
                 raise ValueError(f"betas values must be in [0, 1), got {betas}")
 
 
+DeviceLike = Union[str, torch.device]
+
+
+def _normalize_device(x: Optional[DeviceLike]) -> Optional[torch.device]:
+    if x is None:
+        return None
+    dev = torch.device(x)
+
+    # 运行时可用性/索引校验（仅对易错的 cuda 做严格检查）
+    if dev.type == "cuda":
+        if not torch.cuda.is_available():
+            raise ValueError(f"CUDA not available but got device={dev}.")
+        if dev.index is not None:
+            count = torch.cuda.device_count()
+            if dev.index < 0 or dev.index >= count:
+                raise ValueError(f"Invalid CUDA index {dev.index}; only {count} device(s) present.")
+    if dev.type == "mps" and not torch.backends.mps.is_available():
+        raise ValueError("MPS not available but got device='mps'.")
+    # 其他类型（cpu/xla/meta）通常不需要额外校验
+    return dev
+
+
+@dataclass
+class DeviceConfig:
+    """设备相关配置"""
+    vae_encoder_device: Optional[DeviceLike] = None  # VAE 编码器设备 ID
+    text_encoder_device: Optional[DeviceLike] = None  # 文本编码器设备 ID
+    text_encoder_2_device: Optional[DeviceLike] = None  # 文本编码器2设备 ID
+    dit_device: Optional[DeviceLike] = None  # DIT 设备 ID
+
+    def __post_init__(self):
+        """验证设备配置"""
+
+        self.vae_encoder_device = _normalize_device(self.vae_encoder_device)
+        self.text_encoder_device = _normalize_device(self.text_encoder_device)
+        self.text_encoder_2_device = _normalize_device(self.text_encoder_2_device)
+        self.dit_device = _normalize_device(self.dit_device)
+
+
 @dataclass
 class CacheConfig:
     """缓存相关配置"""
@@ -305,6 +346,7 @@ class CacheConfig:
     prompt_empty_drop_keys: List[str] = field(
         default_factory=lambda: ["prompt_embed", "prompt_embeds_mask"]
     )
+    device: DeviceConfig = field(default_factory=DeviceConfig)
 
     def __post_init__(self):
         """验证缓存配置"""
@@ -352,8 +394,7 @@ class TrainConfig:
     low_memory: bool = False
     # if used low_memory mode, then the model will be loaded on the specified devices
     # otherwise, the model will be loaded on all the gpus
-    vae_encoder_device: Optional[str] = None
-    text_encoder_device: Optional[str] = None
+    fit_device: Optional[DeviceConfig] = None
     resume_from_checkpoint: Optional[str] = None
     trainer: str = 'QwenImageEdit'
 
