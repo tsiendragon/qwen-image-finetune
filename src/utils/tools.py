@@ -1,4 +1,5 @@
 import torch
+from blake3 import blake3
 
 
 def sample_indices_per_rank(accelerator, dataset_size: int, num_samples: int,
@@ -31,3 +32,11 @@ def sample_indices_per_rank(accelerator, dataset_size: int, num_samples: int,
         idx = pool[perm_local[:num_samples]]
 
     return idx.tolist()
+
+
+def content_hash_blake3(path, chunk_size=1 << 20):
+    h = blake3()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(chunk_size), b''):
+            h.update(chunk)
+    return h.hexdigest()  # 64位hex
