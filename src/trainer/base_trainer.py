@@ -384,7 +384,7 @@ class BaseTrainer(ABC):
             logging.info(
                 f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
             )
-        BaseTrainer.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
+        self.__class__.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
 
         self.setup_model_device_train_mode(stage="fit", cache=self.use_cache)
         self.configure_optimizers()

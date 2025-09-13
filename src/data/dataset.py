@@ -140,7 +140,7 @@ class ImageDataset(Dataset):
             self.cache_manager = None
             print("缓存未启用")
 
-        self.cache_exists = self.cache_manager.exist() if self.cache_manager else False
+        self.cache_exists = self.cache_manager.exist(self.cache_dir) if self.cache_manager else False
         # loading datsets
         self._load_all_datasets()
         self.load_processor()
@@ -148,8 +148,8 @@ class ImageDataset(Dataset):
     def load_processor(self):
         """load processor"""
         from src.utils.tools import instantiate_class
-        class_path = self.data_config.class_path
-        init_args = self.data_config.init_args
+        class_path = self.data_config.processor.class_path
+        init_args = self.data_config.processor.init_args
         self.preprocessor = instantiate_class(class_path, init_args)
 
     def _load_all_datasets(self):
@@ -187,7 +187,7 @@ class ImageDataset(Dataset):
         and metadata for later access.
         """
         # Load the dataset (this is fast, just creates the dataset object)
-        dataset = load_editing_dataset(repo_id, split=self.data_config.get('split', split))
+        dataset = load_editing_dataset(repo_id, split=split)
         # Store HF dataset reference
         dataset_info = {
             'type': 'huggingface',
@@ -334,7 +334,6 @@ class ImageDataset(Dataset):
     def __repr__(self) -> str:
         msg = f"""ImageDataset(
             dataset_paths={self.dataset_paths},
-            image_size={self.image_size},
             cache_dir={self.cache_dir},
             use_cache={self.use_cache},
         """
@@ -345,18 +344,22 @@ class ImageDataset(Dataset):
         if 'image' in data:
             file_hashes['image_hash'] = self.cache_manager.get_hash(data['image'])
         if 'control' in data:
-            file_hashes['control_hash'] = self.cache_manager.get_hash(data['control'][0])
+            file_hashes['control_hash'] = self.cache_manager.get_hash(data['control'])
         if 'prompt' in data:
             file_hashes['prompt_hash'] = hash_string_md5(data['prompt'])
         if 'prompt' in data:
             file_hashes['empty_prompt_hash'] = hash_string_md5("empty")
         if 'control' in data and 'prompt' in data:
-            file_hashes['control_prompt_hash'] = self.cache_manager.get_hash(data['control'][0], data['prompt'])
+            file_hashes['control_prompt_hash'] = self.cache_manager.get_hash(data['control'], data['prompt'])
         if 'control' in data and 'prompt' in data:
-            file_hashes['control_empty_prompt_hash'] = self.cache_manager.get_hash(data['control'][0], "empty")
+            file_hashes['control_empty_prompt_hash'] = self.cache_manager.get_hash(data['control'], "empty")
         if 'controls' in data:
+            controls_sum_hash = file_hashes['control_hash']
             for i in range(len(data['controls'])):
                 file_hashes[f"control_{i+1}_hash"] = self.cache_manager.get_hash(data['controls'][i])
+                controls_sum_hash += file_hashes[f"control_{i+1}_hash"]
+            file_hashes['controls_sum_hash'] = controls_sum_hash
+
         return file_hashes
 
     def data_key_exist(self, data, key):
@@ -381,8 +384,8 @@ class ImageDataset(Dataset):
                 data['control'] = control[0].convert('RGB')
                 if len(control) > 1:
                     data['controls'] = [control[i].convert('RGB') for i in range(1, len(control))]
-                if self.selected_control_indexes is not None:
-                    data['controls'] = [data['controls'][i] for i in self.selected_control_indexes]
+                    if self.selected_control_indexes is not None:
+                        data['controls'] = [data['controls'][i] for i in self.selected_control_indexes]
 
             prompt = data_item['prompt']
             data['prompt'] = prompt
@@ -441,6 +444,7 @@ class ImageDataset(Dataset):
         """
         data = self.load_data(idx)
         data = self.preprocessor.preprocess(data)
+        data['cached'] = False
         if self.use_cache and self.cache_exists:
             if random.random() < self.data_config.caption_dropout_rate:
                 replace_empty_embeddings = True
@@ -448,7 +452,7 @@ class ImageDataset(Dataset):
                 replace_empty_embeddings = False
             prompt_empty_drop_keys = self.data_config.prompt_empty_drop_keys
             data = self.cache_manager.load_cache(data, replace_empty_embeddings, prompt_empty_drop_keys)
-        data['cached'] = True
+            data['cached'] = True
         return data
 
 

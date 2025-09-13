@@ -1,12 +1,11 @@
 model:
-  pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
-  quantize: False
+  pretrained_model_name_or_path: black-forest-labs/FLUX.1-Kontext-dev
+  quantize: True
   lora:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
     lora_alpha: 16  # LoRA alpha, usually equal to r
     init_lora_weights: "gaussian"
     target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
-    # target_modules: "(.*x_embedder|.*transformer_blocks\\.[0-9]+\\.(norm|norm1)\\.linear|.*transformer_blocks\\.[0-9]+\\.attn\\.(to_k|to_q|to_v|to_add_out)|.*transformer_blocks\\.[0-9]+\\.attn\\.to_out\\.0|.*single_transformer_blocks\\.[0-9]+\\.attn\\.to_out|.*single_transformer_blocks\\.[0-9]+\\.(proj_mlp|proj_out)|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.norm1_context\\.linear|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.attn\\.(to_add_out|add_k_proj|add_q_proj|add_v_proj))"
     pretrained_weight: null
     adapter_name: "lora_edit"
 
@@ -15,8 +14,8 @@ data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path:
-      - /raid/lilong/data/kyc_gen/ktp_v1.4/dataset1/
-      - /raid/lilong/data/kyc_gen/ktp_v1.4/dataset1_crop/
+      - split: train
+        repo_id: TsienDragon/face_segmentation_20
     caption_dropout_rate: 0.1
     prompt_image_dropout_rate: 0.1
     use_edit_mask: true  # if true, dataset output edit mask
@@ -24,7 +23,7 @@ data:
     processor:
       class_path: src.data.preprocess.ImageProcessor
       init_args:
-        process_type: resize
+        process_type: center_crop
         resize_mode: bilinear
         target_size: [832, 576]
         controls_size: [[832, 576]]
@@ -34,9 +33,9 @@ data:
   shuffle: true
 
 logging:
-  output_dir: "/raid/lilong/data/experiment/flux-kontext-ktp_lora_fp16/"  # change the path to your own output path
+  output_dir: "/tmp//image_edit_lora/"  # change the path to your own output path
   report_to: "tensorboard"
-  tracker_project_name: "ktp_inpaint"
+  tracker_project_name: "face_seg_flux_kontext_fp16"
   sampling:
     enable: false
     validation_steps: 100
@@ -65,7 +64,6 @@ loss:
 train:
   gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
   max_train_steps: 10000  # face segmentation data is small, reduce training steps
-  num_epochs: 400  # increase epoch number
   checkpointing_steps: 100  # save checkpoints more frequently
   max_grad_norm: 1.0
   mixed_precision: "bf16"
@@ -73,17 +71,17 @@ train:
   low_memory: True  # is used low_memory mode, then the model will be loaded on the specified devices
   # otherwise, the model will be loaded on all the gpus
   fit_device:
-    vae_encoder_device: cuda:1
-    text_encoder_device: cuda:1
+    vae_encoder: cuda:1
+    text_encoder: cuda:1
 
 trainer: FluxKontext
 resume: null
 
 cache:
   devices:
-    vae_encoder_device: cuda:1
-    text_encoder_device: cuda:0
-    text_encoder_2_device: cuda:0
+    vae_encoder: cuda:1
+    text_encoder: cuda:0
+    text_encoder_2: cuda:0
   cache_dir: ${logging.output_dir}/cache
   use_cache: true
   prompt_empty_drop_keys:
@@ -95,4 +93,4 @@ predict:
     vae: cuda:1
     text_encoder: cuda:1 # CLIP
     text_encoder_2: cuda:1  # T5
-    transformer: cuda:1
+    dit: cuda:1
