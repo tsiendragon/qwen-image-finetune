@@ -16,7 +16,8 @@ import shutil
 import json
 import numpy as np
 from src.utils.sampling import calculate_shift, retrieve_timesteps
-from tqdm.rich import tqdm
+from tqdm import tqdm
+
 
 import logging
 import PIL
@@ -300,17 +301,17 @@ class BaseTrainer(ABC):
                 self.optimizer.zero_grad()
             if self.accelerator.sync_gradients:
                 avg_loss = self.accelerator.gather(loss.repeat(self.batch_size)).mean()
-                self.train_loss += (
+                self.train_loss = (
                     avg_loss.item() / self.config.train.gradient_accumulation_steps
                 )
                 self.running_loss = 0.9 * self.running_loss + 0.1 * self.train_loss
                 self.update_progressbar(
                     logs={
-                        "train_loss": f"{self.train_loss:.3f}",
-                        "loss": f"{self.running_loss:.3f}",
-                        "lr": f"{self.lr_scheduler.get_last_lr()[0]:.1e}",
+                        "loss": self.train_loss,
+                        "smooth_loss": self.running_loss,
+                        "lr": self.lr_scheduler.get_last_lr()[0],
                         "epoch": epoch,
-                        "fps": f"{self.fps_logger.total_fps():.2f}",
+                        "fps": self.fps_logger.total_fps(),
                     }
                 )
                 self.save_checkpoint(epoch, self.global_step)
@@ -351,10 +352,17 @@ class BaseTrainer(ABC):
         )
 
     def update_progressbar(self, logs: dict):
+        self.accelerator.log(logs, step=self.global_step)
+        logs = {
+            "loss": f"{logs['loss']:.3f}",
+            "smooth_loss": f"{logs['smooth_loss']:.3f}",
+            "lr": f"{logs['lr']:.1e}",
+            "epoch": logs['epoch'],
+            "fps": f"{logs['fps']:.2f}",
+        }
         self.progress_bar.update(1)
         self.global_step += 1
         self.progress_bar.set_postfix(logs)
-        self.accelerator.log(logs, step=self.global_step)
 
     def fit(self, train_dataloader):
         """Main training loop implementation."""
@@ -522,17 +530,20 @@ class BaseTrainer(ABC):
     def save_checkpoint(self, epoch, global_step):
         """Save checkpoint"""
         self.fps_logger.pause()
-        if not self.accelerator.is_main_process:
+        if self.global_step % self.config.train.checkpointing_steps != 0:
+            self.fps_logger.resume()
             return
-        save_path = os.path.join(
-            self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
-        )
-        self.accelerator.save_state(save_path)
-        state_info = {"global_step": global_step, "epoch": epoch}
-        git_info = get_git_info()
-        state_info.update(git_info)
-        with open(os.path.join(save_path, "state.json"), "w") as f:
-            json.dump(state_info, f)
+        if self.accelerator.is_main_process:
+            logging.info(f"Saving checkpoint to {self.config.logging.output_dir}")
+            save_path = os.path.join(
+                self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
+            )
+            self.accelerator.save_state(save_path)
+            state_info = {"global_step": global_step, "epoch": epoch}
+            git_info = get_git_info()
+            state_info.update(git_info)
+            with open(os.path.join(save_path, "state.json"), "w") as f:
+                json.dump(state_info, f)
         self.fps_logger.resume()
 
     def save_train_config(self):

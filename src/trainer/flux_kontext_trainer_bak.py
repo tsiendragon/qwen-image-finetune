@@ -368,7 +368,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             'pixel_latent': image_latents,
             'control_latent': control_latents,
             'pooled_prompt_embed': pooled_prompt_embeds,
-            'prompt_embed': prompt_embeds,
+            'prompt_embeds': prompt_embeds,
             'empty_pooled_prompt_embed': empty_pooled_prompt_embeds,
             'empty_prompt_embed': empty_prompt_embeds,
             'shape_info': shape_info,
@@ -378,7 +378,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             'pixel_latent', 'image_hash',
             'control_latent', 'control_hash',
             'pooled_prompt_embed', 'prompt_hash',
-            'prompt_embed', 'prompt_hash',
+            'prompt_embeds', 'prompt_hash',
             'empty_pooled_prompt_embed', 'prompt_hash',
             'empty_prompt_embed', 'prompt_hash',
             'shape_info', 'image_hash',
@@ -573,7 +573,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         pooled_prompt_embed = batch["pooled_prompt_embed"].to(
             self.accelerator.device, dtype=self.weight_dtype
         )
-        prompt_embed = batch["prompt_embed"].to(
+        prompt_embeds = batch["prompt_embeds"].to(
             self.accelerator.device, dtype=self.weight_dtype
         )
 
@@ -594,7 +594,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         return self._compute_loss(
             pixel_latents,
             control_latents,
-            prompt_embed,
+            prompt_embeds,
             pooled_prompt_embed,
             image_width=image_width,
             image_height=image_height,

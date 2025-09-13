@@ -66,7 +66,7 @@ class ImageDataset(Dataset):
     返回的样本在不同缓存模式下包含不同键：
     - cached=False: 包含 'image' (C,H,W), 'control' (C,H,W), 'prompt' (str), 'file_paths' (dict)，以及可选 'mask'
     - cached=True 且旧式缓存存在: 另含 'pixel_latent', 'control_latent',
-      'prompt_embed', 'prompt_embeds_mask', 'empty_prompt_embed',
+      'prompt_embeds', 'prompt_embeds_mask', 'empty_prompt_embed',
       'empty_prompt_embeds_mask' 等张量
     - cached=True 且仅有新式缓存: 返回缓存子目录名对应的键及其张量
 
@@ -293,7 +293,8 @@ class ImageDataset(Dataset):
 
         # 2) 对每个 stem 按需拼装样本
         n = 0
-        from tqdm.rich import tqdm
+        from tqdm import tqdm
+
 
         num_controls = get_number_of_controls(control_dir, stems[0])
         logging.info('found %d controls', num_controls)

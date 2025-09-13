@@ -285,7 +285,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
         Pre-compute and cache embeddings (exactly same signature as QwenImageEditTrainer).
         Implements dual text encoder caching for CLIP + T5.
         """
-        from tqdm.rich import tqdm
+        from tqdm import tqdm
+
 
 
         self.cache_manager = train_dataloader.cache_manager

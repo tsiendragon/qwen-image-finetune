@@ -26,4 +26,4 @@ echo "Used config file: $config_file"
 # NCCL_P2P_DISABLE only for RTX4090, not for A100
 
 # python3 -m src.main --config $config_file --cache
-CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file

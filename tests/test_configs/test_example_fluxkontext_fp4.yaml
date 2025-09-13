@@ -85,8 +85,8 @@ cache:
   cache_dir: ${logging.output_dir}/cache
   use_cache: true
   prompt_empty_drop_keys:
-    - prompt_embed
-    - pooled_prompt_embed
+    - prompt_embeds
+    - pooled_prompt_embeds
 
 predict:
   devices:

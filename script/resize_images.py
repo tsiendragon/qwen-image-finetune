@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 from PIL import Image
 import argparse
-from tqdm.rich import tqdm
+from tqdm import tqdm
+
 
 
 
