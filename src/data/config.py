@@ -50,12 +50,6 @@ def _normalize_device(x: Optional[DeviceLike]) -> Optional[torch.device]:
     if d.type == "cuda":
         if not torch.cuda.is_available():
             raise ValueError(f"CUDA not available but got device={d}.")
-        if d.index is not None:
-            n = torch.cuda.device_count()
-            if d.index < 0 or d.index >= n:
-                raise ValueError(
-                    f"Invalid CUDA index {d.index}; only {n} device(s) present."
-                )
     if d.type == "mps" and not torch.backends.mps.is_available():
         raise ValueError("MPS not available but got device='mps'.")
     return d

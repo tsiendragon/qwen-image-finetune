@@ -10,6 +10,7 @@ config_file='configs/face_seg_flux_kontext_fp16_prodigy.yaml'
 # config_file='configs/face_seg_flux_kontext_fp8.yaml'
 config_file='configs/face_seg_flux_kontext_fp4.yaml'
 config_file='configs/face_seg_flux_kontext_fp16_huggingface_dataset.yaml'
+config_file='tests/test_configs/test_example_fluxkontext_fp4.yaml'
 echo "Used config file: $config_file"
 
 # cache data (using GPU1)
@@ -25,4 +26,4 @@ echo "Used config file: $config_file"
 # NCCL_P2P_DISABLE only for RTX4090, not for A100
 
 # python3 -m src.main --config $config_file --cache
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
+CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file

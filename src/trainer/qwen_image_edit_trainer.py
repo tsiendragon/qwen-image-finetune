@@ -1101,7 +1101,8 @@ class QwenImageEditTrainer:
 
     def cache(self, train_dataloader):
         """Pre-compute and cache embeddings"""
-        from tqdm import tqdm
+        from tqdm.rich import tqdm
+
 
         self.cache_manager = train_dataloader.cache_manager
         vae_encoder_device = self.config.cache.vae_encoder_device

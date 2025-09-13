@@ -443,20 +443,20 @@ class FluxKontextLoraTrainer(BaseTrainer):
         cache_embeddings = {
             "image_latents": image_latents[0],
             "control_latents": control_latents[0],
-            "pooled_prompt_embed": pooled_prompt_embeds[0],
-            "prompt_embed": prompt_embeds[0],
-            "empty_pooled_prompt_embed": empty_pooled_prompt_embeds[0],
-            "empty_prompt_embed": empty_prompt_embeds[0],
+            "pooled_prompt_embeds": pooled_prompt_embeds[0],
+            "prompt_embeds": prompt_embeds[0],
+            "empty_pooled_prompt_embeds": empty_pooled_prompt_embeds[0],
+            "empty_prompt_embeds": empty_prompt_embeds[0],
             "control_ids": control_ids,
             "text_ids": text_ids,
         }
         map_keys = {
             "image_latents": "image_hash",
             "control_latents": "control_hash",
-            "pooled_prompt_embed": "prompt_hash",
-            "prompt_embed": "prompt_hash",
-            "empty_pooled_prompt_embed": "prompt_hash",
-            "empty_prompt_embed": "prompt_hash",
+            "pooled_prompt_embeds": "prompt_hash",
+            "prompt_embeds": "prompt_hash",
+            "empty_pooled_prompt_embeds": "prompt_hash",
+            "empty_prompt_embeds": "prompt_hash",
             "control_ids": "control_hash",
             "text_ids": "prompt_hash",
         }
@@ -470,6 +470,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
             mask = batch["mask"]
             batch["mask"] = resize_bhw(mask, image_height, image_width)
             batch["mask"] = map_mask_to_latent(batch["mask"])
+        batch["control_ids"] = batch["control_ids"][0]  # remove batch dim
+        batch["text_ids"] = batch["text_ids"][0]  # remove batch dim
         return batch
 
     def _compute_loss(self, embeddings) -> torch.Tensor:
@@ -519,6 +521,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         pooled_prompt_embeds = pooled_prompt_embeds.to(self.weight_dtype)
         prompt_embeds = prompt_embeds.to(self.weight_dtype)
         guidance = guidance.to(self.weight_dtype)
+        image_latents = image_latents.to(self.weight_dtype).to(self.accelerator.device)
         t = t.to(self.weight_dtype)
 
         model_pred = self.dit(
@@ -535,7 +538,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         # noise_pred torch.Size([1, 8137, 64])
         model_pred = model_pred[:, : image_latents.size(1)]
         target = noise - image_latents
-        edit_mask = embeddings["mask"] if "mask" in embeddings else None
+        if "mask" in embeddings:
+            edit_mask = embeddings["mask"].to(self.weight_dtype).to(self.accelerator.device)
+        else:
+            edit_mask = None
         loss = self.forward_loss(
             model_pred, target, weighting=None, edit_mask=edit_mask
         )

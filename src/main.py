@@ -5,12 +5,13 @@ from src.utils.options import parse_args
 from src.utils.logger import get_logger
 from src.utils.seed import seed_everything
 from src.data.config import TrMode
+from src.data.config import Config
 
 logger = get_logger(__name__, log_level="INFO")
 
 
-def import_trainer(config):
-    trainer_type = config.train.trainer
+def import_trainer(config: Config):
+    trainer_type = config.trainer_type
     if trainer_type == 'QwenImageEdit':
         from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer as Trainer
     elif trainer_type == 'FluxKontext':
@@ -41,7 +42,6 @@ def main():
     if config.mode != TrMode.fit:
         # if not in training, skip caption dropout
         config.data.init_args.caption_dropout_rate = 0
-        config.caption_dropout_rate = 0
 
     # 加载数据
     train_dataloader = loader(

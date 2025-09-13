@@ -293,7 +293,8 @@ class ImageDataset(Dataset):
 
         # 2) 对每个 stem 按需拼装样本
         n = 0
-        from tqdm import tqdm
+        from tqdm.rich import tqdm
+
         num_controls = get_number_of_controls(control_dir, stems[0])
         logging.info('found %d controls', num_controls)
         logging.info(f'found with stem {control_dir}/{stems[0]}')

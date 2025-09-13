@@ -9,7 +9,8 @@ import sys
 from pathlib import Path
 from PIL import Image
 import argparse
-from tqdm import tqdm
+from tqdm.rich import tqdm
+
 
 
 def resize_image_if_needed(input_path, output_path, max_width=1024):

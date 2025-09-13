@@ -16,7 +16,8 @@ import shutil
 import json
 import numpy as np
 from src.utils.sampling import calculate_shift, retrieve_timesteps
-from tqdm import tqdm
+from tqdm.rich import tqdm
+
 import logging
 import PIL
 from src.data.config import Config
@@ -233,22 +234,8 @@ class BaseTrainer(ABC):
 
     def setup_validation(self, train_dataloader):
         """Setup validation"""
-        from src.validation.validation_sampler import ValidationSampler
-
-        if (
-            hasattr(self.config.logging, "sampling")
-            and self.config.logging.sampling.enable
-        ):
-            validation_sampler = ValidationSampler(
-                config=self.config.logging.sampling,
-                accelerator=self.accelerator,
-                weight_dtype=self.weight_dtype,
-            )
-            validation_sampler.setup_validation_dataset(train_dataloader.dataset)
-            validation_sampler.cache_embeddings()
-            self.validation_sampler = validation_sampler
-        else:
-            self.validation_sampler = None
+        self.validation_sampler = None
+        # TODO: do it later
 
     def clip_gradients(self):
         """Clip gradients"""
@@ -393,6 +380,7 @@ class BaseTrainer(ABC):
         print_model_summary_table(self.dit)
         self.fps_logger.start()
         self.save_train_config()
+        self.setup_progressbar()
         for epoch in range(self.start_epoch, self.num_epochs):
             self.train_epoch(epoch, train_dataloader)
         self.fps_logger.stop()
