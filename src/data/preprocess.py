@@ -68,17 +68,16 @@ class ImageProcessor:
         else:
             raise ValueError(f"Unsupported type: {type(any)}")
 
-    def preprocess(self, data):
+    def preprocess(self, data, target_size=None, controls_size=None):
         """处理图像、掩码和控制图像，支持多种处理模式：resize、center_crop和*_padding"""
         # 将图像转换为numpy数组
-        image = self.any2numpy(data['image'])
-        target_h, target_w = self.target_size
+        target_h, target_w = target_size if target_size is not None else self.target_size
+        controls_size = controls_size if controls_size is not None else self.controls_size
 
-        # 处理图像
-        processed_image = self._process_image(image, (target_h, target_w))
-
-        # 转换为张量，范围[-1, 1]
-        data['image'] = self._to_tensor(processed_image)
+        if 'image' in data:
+            image = self.any2numpy(data['image'])
+            processed_image = self._process_image(image, (target_h, target_w))
+            data['image'] = self._to_tensor(processed_image)
 
         # 处理mask（如果存在）
         if 'mask' in data:
@@ -92,9 +91,9 @@ class ImageProcessor:
 
         if 'controls' in data:  # extrol
             if len(self.controls_size) == 1:
-                data['controls'] = [self._process_image(control, self.controls_size[0]) for control in data['controls']]
+                data['controls'] = [self._process_image(control, controls_size[0]) for control in data['controls']]
             else:
-                assert len(self.controls_size) == len(data['controls'])+1, "the number of controls_size should be same of controls" # NOQA
+                assert len(controls_size) == len(data['controls'])+1, "the number of controls_size should be same of controls" # NOQA
                 data['controls'] = [self._process_image(control[i], self.controls_size[i+1]) for i in range(len(data['controls']))]  # NOQA
             data['controls'] = [self._to_tensor(control) for control in data['controls']]
         return data

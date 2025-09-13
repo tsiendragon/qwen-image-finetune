@@ -2,24 +2,12 @@
 Flux Kontext LoRA Trainer Implementation
 Following QwenImageEditTrainer patterns with dual text encoder support.
 """
-
-import copy
-import os
-import json
 import torch
 import PIL
-import random
 import gc
-import torch.nn.functional as F
 import inspect
-
-import numpy as np
 from typing import Optional, Union, List
 from tqdm.auto import tqdm
-from diffusers.training_utils import (
-    compute_density_for_timestep_sampling,
-    compute_loss_weighting_for_sd3,
-)
 from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.utils.torch_utils import randn_tensor
@@ -38,102 +26,6 @@ from src.loss.edit_mask_loss import map_mask_to_latent
 from src.utils.images import resize_bhw
 from src.trainer.base_trainer import BaseTrainer
 import logging
-
-
-def calculate_shift(
-    image_seq_len,
-    base_seq_len: int = 256,
-    max_seq_len: int = 4096,
-    base_shift: float = 0.5,
-    max_shift: float = 1.15,
-):
-    m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
-    b = base_shift - m * base_seq_len
-    mu = image_seq_len * m + b
-    return mu
-
-
-# Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
-def retrieve_timesteps(
-    scheduler,
-    num_inference_steps: Optional[int] = None,
-    device: Optional[Union[str, torch.device]] = None,
-    timesteps: Optional[List[int]] = None,
-    sigmas: Optional[List[float]] = None,
-    **kwargs,
-):
-    r"""
-    Calls the scheduler's `set_timesteps` method and retrieves timesteps from the scheduler after the call. Handles
-    custom timesteps. Any kwargs will be supplied to `scheduler.set_timesteps`.
-
-    Args:
-        scheduler (`SchedulerMixin`):
-            The scheduler to get timesteps from.
-        num_inference_steps (`int`):
-            The number of diffusion steps used when generating samples with a pre-trained model. If used, `timesteps`
-            must be `None`.
-        device (`str` or `torch.device`, *optional*):
-            The device to which the timesteps should be moved to. If `None`, the timesteps are not moved.
-        timesteps (`List[int]`, *optional*):
-            Custom timesteps used to override the timestep spacing strategy of the scheduler. If `timesteps` is passed,
-            `num_inference_steps` and `sigmas` must be `None`.
-        sigmas (`List[float]`, *optional*):
-            Custom sigmas used to override the timestep spacing strategy of the scheduler. If `sigmas` is passed,
-            `num_inference_steps` and `timesteps` must be `None`.
-
-    Returns:
-        `Tuple[torch.Tensor, int]`: A tuple where the first element is the timestep schedule from the scheduler and the
-        second element is the number of inference steps.
-    """
-    if timesteps is not None and sigmas is not None:
-        raise ValueError(
-            "Only one of `timesteps` or `sigmas` can be passed. Please choose one to set custom values"
-        )
-    if timesteps is not None:
-        accepts_timesteps = "timesteps" in set(
-            inspect.signature(scheduler.set_timesteps).parameters.keys()
-        )
-        if not accepts_timesteps:
-            raise ValueError(
-                f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
-                f" timestep schedules. Please check whether you are using the correct scheduler."
-            )
-        scheduler.set_timesteps(timesteps=timesteps, device=device, **kwargs)
-        timesteps = scheduler.timesteps
-        num_inference_steps = len(timesteps)
-    elif sigmas is not None:
-        accept_sigmas = "sigmas" in set(
-            inspect.signature(scheduler.set_timesteps).parameters.keys()
-        )
-        if not accept_sigmas:
-            raise ValueError(
-                f"The current scheduler class {scheduler.__class__}'s `set_timesteps` does not support custom"
-                f" sigmas schedules. Please check whether you are using the correct scheduler."
-            )
-        scheduler.set_timesteps(sigmas=sigmas, device=device, **kwargs)
-        timesteps = scheduler.timesteps
-        num_inference_steps = len(timesteps)
-    else:
-        scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
-        timesteps = scheduler.timesteps
-    return timesteps, num_inference_steps
-
-
-def get_lora_layers(model):
-    """Traverse the model to find all LoRA-related modules"""
-    lora_layers = {}
-
-    def fn_recursive_find_lora_layer(name: str, module: torch.nn.Module, processors):
-        if "lora" in name:
-            lora_layers[name] = module
-        for sub_name, child in module.named_children():
-            fn_recursive_find_lora_layer(f"{name}.{sub_name}", child, lora_layers)
-        return lora_layers
-
-    for name, module in model.named_children():
-        fn_recursive_find_lora_layer(name, module, lora_layers)
-
-    return lora_layers
 
 
 class FluxKontextLoraTrainer(BaseTrainer):
@@ -221,7 +113,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.text_encoder_2.requires_grad_(False)
         self.vae.requires_grad_(False)
 
-        if getattr(self, "transformer", None):
+        if self.dit is not None:
             self.num_channels_latents = self.dit.config.in_channels // 4
         else:
             self.num_channels_latents = 16
@@ -273,12 +165,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         with torch.inference_mode():
             pooled_prompt_embeds = self.get_clip_prompt_embeds(
                 prompt=prompt,
-                device=device_text_encoder,
             )
             prompt_embeds = self.get_t5_prompt_embeds(
                 prompt=prompt_2,
                 max_sequence_length=max_sequence_length,
-                device=device_text_encoder_2,
             )
             text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
                 device=device_text_encoder_2, dtype=self.weight_dtype
@@ -297,7 +187,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         # VAE applies 8x compression on images but we must also account for packing which requires
         # latent height and width to be divisible by 2.
-        height, width = image.shape[2:]
+        # height, width = image.shape[2:]
         height = 2 * (int(height) // (self.vae_scale_factor * 2))
         width = 2 * (int(width) // (self.vae_scale_factor * 2))
         shape = (batch_size, num_channels_latents, height, width)
@@ -327,7 +217,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         )
         return latents, image_latents, latent_ids, image_ids
 
-    def setup_model_device_train_mode(self, stage='fit', cache=False):
+    def setup_model_device_train_mode(self, stage="fit", cache=False):
         """Set model device allocation and train mode."""
         if stage == "train":
             assert hasattr(
@@ -380,9 +270,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         elif stage == "cache":
             # Cache mode: need encoders, don't need transformer
-            self.vae = self.vae.to(
-                self.config.cache.devices.vae, non_blocking=True
-            )
+            self.vae = self.vae.to(self.config.cache.devices.vae, non_blocking=True)
             self.vae.decoder.to("cpu")
             self.text_encoder = self.text_encoder.to(
                 self.config.cache.devices.text_encoder, non_blocking=True
@@ -413,53 +301,68 @@ class FluxKontextLoraTrainer(BaseTrainer):
             self.text_encoder_2.requires_grad_(False).eval()
             self.dit.requires_grad_(False).eval()
 
-    def prepare_embeddings(self, batch, stage='fit'):
+    def prepare_embeddings(self, batch, stage="fit"):
         # for predict, not 'image' key, but 'pixel_latent' key
         # torch.tensor of image, control [B,C,H,W], in range [0,1]
-        if 'image' in batch:
-            batch['image'] = self.normalize_image(batch['image'])
+        # for predict: add extra latent_ids, latents
+        # for cache: add empty_pooled_prompt_embeds, empty_prompt_embeds
+        if "image" in batch:
+            batch["image"] = self.normalize_image(batch["image"])
 
-        if 'control' in batch:
-            batch['control'] = self.normalize_image(batch['control'])
+        if "control" in batch:
+            batch["control"] = self.normalize_image(batch["control"])
 
         for i in range(100):
-            additional_control_key = f'control_{i}'
+            additional_control_key = f"control_{i}"
             if additional_control_key in batch:
-                batch[additional_control_key] = self.normalize_image(batch[additional_control_key])
+                batch[additional_control_key] = self.normalize_image(
+                    batch[additional_control_key]
+                )
             else:
                 num_additional_controls = i
                 break
 
-        if 'prompt_2' in batch:
-            prompt_2 = batch['prompt_2']
+        if "prompt_2" in batch:
+            prompt_2 = batch["prompt_2"]
         else:
-            prompt_2 = batch['prompt']
+            prompt_2 = batch["prompt"]
 
         pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
-                prompt=batch['prompt'],
-                prompt_2=prompt_2,
+            prompt=batch["prompt"],
+            prompt_2=prompt_2,
+            max_sequence_length=self.max_sequence_length,
+        )
+        batch["pooled_prompt_embeds"] = pooled_prompt_embeds
+        batch["prompt_embeds"] = prompt_embeds
+        batch["text_ids"] = text_ids
+
+        if stage == 'cache':
+            pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
+                prompt=[""],
+                prompt_2=None,
                 max_sequence_length=self.max_sequence_length,
             )
-        batch['pooled_prompt_embeds'] = pooled_prompt_embeds
-        batch['prompt_embeds'] = prompt_embeds
-        batch['text_ids'] = text_ids
+            batch["empty_pooled_prompt_embeds"] = pooled_prompt_embeds
+            batch["empty_prompt_embeds"] = prompt_embeds
 
-        if 'negative_prompt' in batch:
-            if 'negative_prompt_2' in batch:
-                prompt_2 = batch['negative_prompt_2']
+        if "negative_prompt" in batch:
+            if "negative_prompt_2" in batch:
+                prompt_2 = batch["negative_prompt_2"]
             else:
-                prompt_2 = batch['negative_prompt']
-            negative_pooled_prompt_embeds, negative_prompt_embeds, negative_text_ids = self.encode_prompt(
-                prompt=batch['negative_prompt'],
-                prompt_2=prompt_2,
-                max_sequence_length=self.max_sequence_length,
+                prompt_2 = batch["negative_prompt"]
+            negative_pooled_prompt_embeds, negative_prompt_embeds, negative_text_ids = (
+                self.encode_prompt(
+                    prompt=batch["negative_prompt"],
+                    prompt_2=prompt_2,
+                    max_sequence_length=self.max_sequence_length,
+                )
             )
-            batch['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
-            batch['negative_prompt_embeds'] = negative_prompt_embeds
-            batch['negative_text_ids'] = negative_text_ids
+            batch["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
+            batch["negative_prompt_embeds"] = negative_prompt_embeds
+            batch["negative_text_ids"] = negative_text_ids
 
-        if 'image' in batch:
-            image = batch['image']
+        if "image" in batch:
+            image = batch["image"]
             batch_size = image.shape[0]
             image_height, image_width = image.shape[2:]
             latents, image_latents, latent_ids, image_ids = self.prepare_latents(
@@ -469,17 +372,16 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 image_height,
                 image_width,
                 self.weight_dtype,
-                self.accelerator.device,
             )
 
-            batch['image_latents'] = image_latents
-            batch['image_ids'] = image_ids
-            if stage == 'predict':
-                batch['latents'] = latents
-                batch['latent_ids'] = latent_ids
+            batch["image_latents"] = image_latents
+            batch["image_ids"] = image_ids
+            if stage == "predict":
+                batch["latents"] = latents
+                batch["latent_ids"] = latent_ids
 
-        if 'control' in batch:
-            control = batch['control']
+        if "control" in batch:
+            control = batch["control"]
             batch_size = control.shape[0]
             control_height, control_width = control.shape[2:]
             _, control_latents, _, control_ids = self.prepare_latents(
@@ -489,14 +391,13 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 control_height,
                 control_width,
                 self.weight_dtype,
-                self.accelerator.device,
             )
             control_ids[..., 0] = 1
-            batch['control_latents'] = control_latents
-            batch['control_ids'] = control_ids
+            batch["control_latents"] = [control_latents]
+            batch["control_ids"] = [control_ids]
 
-        for i in range(1, num_additional_controls+1):
-            control_key = f'control_{i}'
+        for i in range(1, num_additional_controls + 1):
+            control_key = f"control_{i}"
             control = batch[control_key]
             batch_size = control.shape[0]
             control_height, control_width = control.shape[2:]
@@ -507,512 +408,108 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 control_height,
                 control_width,
                 self.weight_dtype,
-                self.accelerator.device,
             )
             control_ids[..., 0] = i + 1
-            batch[f'control_{i}_latents'] = control_latents
-            batch[f'control_{i}_ids'] = control_ids
-        if self.config.loss.mask_loss and 'mask' in batch:
-            mask = batch['mask']
-            batch['mask'] = resize_bhw(mask, image_height, image_width)
-            batch['mask'] = map_mask_to_latent(batch['mask'])
+            batch["control_latents"].append(control_latents)
+            batch["control_ids"].append(control_ids)
+
+        if "control_latents" in batch:
+            batch["control_latents"] = torch.cat(batch["control_latents"], dim=1)
+            batch["control_ids"] = torch.cat(batch["control_ids"], dim=0)
+
+        if self.config.loss.mask_loss and "mask" in batch:
+            mask = batch["mask"]
+            batch["mask"] = resize_bhw(mask, image_height, image_width)
+            batch["mask"] = map_mask_to_latent(batch["mask"])
         return batch
-
-    def prepare_cached_embeddings(self, batch):
-        if self.config.loss.mask_loss and 'mask' in batch:
-            image_height, image_width = batch['image'].shape[2:]
-            mask = batch['mask']
-            batch['mask'] = resize_bhw(mask, image_height, image_width)
-            batch['mask'] = map_mask_to_latent(batch['mask'])
-        return batch
-
-    def cache(self, train_dataloader):
-        """
-        Pre-compute and cache embeddings (exactly same signature as QwenImageEditTrainer).
-        Implements dual text encoder caching for CLIP + T5.
-        """
-        vae_encoder_device = self.config.cache.vae_encoder_device
-        text_encoder_device = self.config.cache.text_encoder_device
-        text_encoder_2_device = self.config.cache.text_encoder_2_device
-
-        logging.info("Starting embedding caching process...")
-
-        # Load models (following QwenImageEditTrainer pattern)
-        self.load_model()
-        self.text_encoder.eval()
-        self.text_encoder_2.eval()
-        self.vae.eval()
-        self.set_model_devices(mode="cache")
-
-        # Cache for each item (same loop structure as QwenImageEditTrainer)
-        dataset = train_dataloader.dataset
-        for data in tqdm(dataset, total=len(dataset), desc="cache_embeddings"):
-            self.cache_step(
-                data, vae_encoder_device, text_encoder_device, text_encoder_2_device
-            )
-
-        logging.info("Cache completed")
-
-        # Clean up models (same as QwenImageEditTrainer)
-        self.text_encoder.cpu()
-        self.text_encoder_2.cpu()
-        self.vae.cpu()
-        del self.text_encoder
-        del self.text_encoder_2
-        del self.vae
 
     def cache_step(
         self,
         data: dict,
-        vae_encoder_device: str,
-        text_encoder_device: str,
-        text_encoder_2_device: str,
     ):
         """
-        Cache VAE latents and dual prompt embeddings.
-        Follows QwenImageEditTrainer.cache_step() structure exactly.
+        cache image embedding and vae embedding.
+        which is calculated in prepare_embeddings()
         """
-        image, control, prompt = data["image"], data["control"], data["prompt"]
-        # image: RGB，C,H,W
-
-        image = torch.from_numpy(image).unsqueeze(0)  # [1,C,H,W]
-        image = self.preprocess_image(image)
-
-        control = torch.from_numpy(control).unsqueeze(0)  # [1,C,H,W]
-        control = self.preprocess_image(control)
-
-        # Calculate embeddings for both encoders
-        pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
-            prompt=prompt,
-            prompt_2=prompt,
-            device_text_encoder=text_encoder_device,
-            device_text_encoder_2=text_encoder_2_device,
-            max_sequence_length=self.max_sequence_length,
-        )
-
-        empty_pooled_prompt_embeds, empty_prompt_embeds, _ = self.encode_prompt(
-            prompt="",
-            prompt_2="",
-            device_text_encoder=text_encoder_device,
-            device_text_encoder_2=text_encoder_2_device,
-            max_sequence_length=self.max_sequence_length,
-        )
-        height_image, width_image = image.shape[2:]
-        heigth_control, width_control = control.shape[2:]
-
-        _, image_latents, _, _ = self.prepare_latents(
-            image,
-            1,
-            16,
-            height_image,
-            width_image,
-            self.weight_dtype,
-            vae_encoder_device,
-        )
-
-        _, control_latents, _, _ = self.prepare_latents(
-            control,
-            1,
-            16,
-            heigth_control,
-            width_control,
-            self.weight_dtype,
-            vae_encoder_device,
-        )
-
-        image_latents = image_latents[0].detach().cpu()
-        control_latents = control_latents[0].detach().cpu()
-        pooled_prompt_embeds = pooled_prompt_embeds[0].detach().cpu()
-        prompt_embeds = prompt_embeds[0].detach().cpu()
-        empty_pooled_prompt_embeds = empty_pooled_prompt_embeds[0].detach().cpu()
-        empty_prompt_embeds = empty_prompt_embeds[0].detach().cpu()
-        shape_info = torch.tensor([height_image, width_image, heigth_control, width_control], dtype=torch.int32)
-
+        image_latents = data["image_latents"].detach().cpu()
+        control_latents = data["control_latents"].detach().cpu()
+        pooled_prompt_embeds = data["pooled_prompt_embeds"].detach().cpu()
+        prompt_embeds = data["prompt_embeds"].detach().cpu()
+        empty_pooled_prompt_embeds = data["empty_pooled_prompt_embeds"].detach().cpu()
+        empty_prompt_embeds = data["empty_prompt_embeds"].detach().cpu()
+        text_ids = data["text_ids"].detach().cpu()
+        image_ids = data["image_ids"].detach().cpu()
+        control_ids = data["control_ids"].detach().cpu()
         cache_embeddings = {
-            'pixel_latent': image_latents,
-            'control_latent': control_latents,
-            'pooled_prompt_embed': pooled_prompt_embeds,
-            'prompt_embed': prompt_embeds,
-            'empty_pooled_prompt_embed': empty_pooled_prompt_embeds,
-            'empty_prompt_embed': empty_prompt_embeds,
-            'shape_info': shape_info,
+            "image_latents": image_latents,
+            "control_latent": control_latents,
+            "pooled_prompt_embed": pooled_prompt_embeds,
+            "prompt_embed": prompt_embeds,
+            "empty_pooled_prompt_embed": empty_pooled_prompt_embeds,
+            "empty_prompt_embed": empty_prompt_embeds,
+            "control_ids": control_ids,
+            "text_ids": text_ids,
+            "image_ids": image_ids,
         }
-
         map_keys = {
-            'pixel_latent', 'image_hash',
-            'control_latent', 'control_hash',
-            'pooled_prompt_embed', 'prompt_hash',
-            'prompt_embed', 'prompt_hash',
-            'empty_pooled_prompt_embed', 'prompt_hash',
-            'empty_prompt_embed', 'prompt_hash',
-            'shape_info', 'image_hash',
+            "image_latents": "image_hash",
+            "control_latent": "control_hash",
+            "pooled_prompt_embed": "prompt_hash",
+            "prompt_embed": "prompt_hash",
+            "empty_pooled_prompt_embed": "prompt_hash",
+            "empty_prompt_embed": "prompt_hash",
+            "control_ids": "control_hash",
+            "text_ids": "prompt_hash",
+            "image_ids": "image_hash",
         }
-
-        self.cache_manager.save_cache_embedding(cache_embeddings, map_keys, data["file_hashes"])
-
-    def fit(self, train_dataloader):
-        logging.info("Starting training process...")
-
-        # Setup components
-        self.setup_accelerator()
-        self.load_model()
-        if self.config.train.resume_from_checkpoint is not None:
-            # add the checkpoint in lora.pretrained_weight config
-            self.config.model.lora.pretrained_weight = os.path.join(
-                self.config.train.resume_from_checkpoint, "model.safetensors"
-            )
-            logging.info(
-                f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
-            )
-
-        self.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
-        self.text_encoder.requires_grad_(False).eval()
-        self.text_encoder_2.requires_grad_(False).eval()
-        self.vae.requires_grad_(False).eval()
-        self.set_model_devices(mode="train")
-
-        self.dit.requires_grad_(False)
-        self.dit.train()
-
-        # Train only LoRA parameters
-        trainable_params = 0
-        total_params = 0
-        for name, param in self.dit.named_parameters():
-            total_params += param.numel()
-            if "lora" in name:
-                param.requires_grad = True
-                trainable_params += param.numel()
-            else:
-                param.requires_grad = False
-
-        logging.info(
-            f"Trainable/Total parameters: {trainable_params / 1e6:.2f}M / {total_params / 1e9:.2f}B"
+        self.cache_manager.save_cache_embedding(
+            cache_embeddings, map_keys, data["file_hashes"]
         )
 
-        self.configure_optimizers()
+    def prepare_cached_embeddings(self, batch):
+        if self.config.loss.mask_loss and "mask" in batch:
+            image_height, image_width = batch["image"].shape[2:]
+            mask = batch["mask"]
+            batch["mask"] = resize_bhw(mask, image_height, image_width)
+            batch["mask"] = map_mask_to_latent(batch["mask"])
+        return batch
 
-        self.set_criterion()
-
-        train_dataloader = self.accelerator_prepare(train_dataloader)
-
-        # 添加validation sampling setup (如果启用)
-        validation_sampler = None
-        if hasattr(self.config.logging, 'sampling') and self.config.logging.sampling.enable:
-            from src.validation.validation_sampler import ValidationSampler
-
-            validation_sampler = ValidationSampler(
-                config=self.config.logging.sampling,
-                accelerator=self.accelerator,
-                weight_dtype=self.weight_dtype
-            )
-
-            # Setup validation dataset
-            validation_sampler.setup_validation_dataset(train_dataloader.dataset)
-
-            # Cache embeddings for validation using trainer methods
-            embeddings_config = {
-                'cache_vae_embeddings': True,      # Cache VAE latents
-                'cache_text_embeddings': True,     # Cache text embeddings
-            }
-            validation_sampler.cache_embeddings(self, embeddings_config)
-
-            logging.info("Validation sampling setup completed")
-
-        logging.info("***** Running training *****")
-        logging.info(f"  Instantaneous batch size per device = {self.batch_size}")
-        logging.info(
-            f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}"
-        )
-        logging.info(f"  Use cache: {self.use_cache}, Cache exists: {self.cache_exist}")
-        if validation_sampler:
-            logging.info(f"  Validation sampling enabled: every {self.config.logging.sampling.validation_steps} steps")
-
-        # Training loop implementation (following QwenImageEditTrainer structure)
-        # Progress bar
-
-        # Training loop
-        train_loss = 0.0
-        running_loss = 0.0
-        if self.config.train.resume_from_checkpoint is not None:
-            with open(
-                os.path.join(self.config.train.resume_from_checkpoint, "state.json")
-            ) as f:
-                st = json.load(f)
-            self.global_step = st["global_step"]
-            start_epoch = st["epoch"]
-        else:
-            self.global_step = 0
-            start_epoch = 0
-        # Progress bar
-        progress_bar = tqdm(
-            range(self.global_step, self.config.train.max_train_steps),
-            desc="train",
-            disable=not self.accelerator.is_local_main_process,
-        )
-        for epoch in range(start_epoch, self.config.train.num_epochs):
-            for _, batch in enumerate(train_dataloader):
-                with self.accelerator.accumulate(self.dit):
-                    loss = self.training_step(batch)
-
-                    # Backward pass
-                    self.accelerator.backward(loss)
-                    if self.accelerator.sync_gradients:
-                        self.accelerator.clip_grad_norm_(
-                            self.dit.parameters(),
-                            self.config.train.max_grad_norm,
-                        )
-
-                    self.optimizer.step()
-                    self.lr_scheduler.step()
-                    self.optimizer.zero_grad()
-
-                # Update when syncing gradients
-                lr = self.lr_scheduler.get_last_lr()[0]
-                if self.accelerator.sync_gradients:
-                    progress_bar.update(1)
-                    self.global_step += 1
-
-                    # Calculate average loss
-                    avg_loss = self.accelerator.gather(
-                        loss.repeat(self.batch_size)
-                    ).mean()
-                    train_loss += (
-                        avg_loss.item() / self.config.train.gradient_accumulation_steps
-                    )
-                    running_loss = train_loss
-
-                    # Log metrics
-                    self.accelerator.log(
-                        {"train_loss": train_loss}, step=self.global_step
-                    )
-                    self.accelerator.log({"lr": lr}, step=self.global_step)
-                    train_loss = 0.0
-
-                    # Save checkpoint
-                    if self.global_step % self.config.train.checkpointing_steps == 0:
-                        self.save_checkpoint(epoch, self.global_step)
-
-                    # 添加validation sampling
-                    if validation_sampler and validation_sampler.should_run_validation(self.global_step):
-                        try:
-                            validation_sampler.run_validation_loop(
-                                global_step=self.global_step,
-                                trainer=self  # 传入trainer实例
-                            )
-                        except Exception as e:
-                            self.accelerator.print(f"Validation sampling failed: {e}")
-
-                # Update progress bar
-                logs = {
-                    "loss": f"{running_loss:.3f}",
-                    "lr": f"{lr:.1e}",
-                }
-                progress_bar.set_postfix(**logs)
-
-                # Check if maximum steps reached
-                if self.global_step >= self.config.train.max_train_steps:
-                    break
-
-        self.accelerator.wait_for_everyone()
-        self.accelerator.end_training()
-
-    def training_step(self, batch):
-        """Execute a single training step (same signature as QwenImageEditTrainer)."""
-        # Check if cached data is available (same logic as QwenImageEditTrainer)
-        if self.use_cache and self.cache_exist:
-            return self._training_step_cached(batch)
-        else:
-            return self._training_step_compute(batch)
-
-    def _training_step_cached(self, batch):
-        """Training step using cached embeddings (follows QwenImageEditTrainer pattern)."""
-        pixel_latents = batch["pixel_latent"].to(
-            self.accelerator.device, dtype=self.weight_dtype
-        )
-        control_latents = batch["control_latent"].to(
-            self.accelerator.device, dtype=self.weight_dtype
-        )
-
-        # Dual encoder embeddings (Flux-specific)
-        pooled_prompt_embed = batch["pooled_prompt_embed"].to(
-            self.accelerator.device, dtype=self.weight_dtype
-        )
-        prompt_embed = batch["prompt_embed"].to(
-            self.accelerator.device, dtype=self.weight_dtype
-        )
-
-        image = batch["image"]  # torch.tensor: B,C,H,W
-        control = batch["control"]  # torch.tensor: B,C,H,W
-        image = self.preprocess_image(image)
-        control = self.preprocess_image(control)
-        image_height, image_width = image.shape[2:]
-        control_height, control_width = control.shape[2:]
-
-        if self.config.loss.mask_loss:
-            edit_mask = batch["mask"]  # torch.tensor: B,H,W
-            edit_mask = resize_bhw(edit_mask, image_height, image_width)
-            edit_mask = map_mask_to_latent(edit_mask)
-        else:
-            edit_mask = None
-
-        return self._compute_loss(
-            pixel_latents,
-            control_latents,
-            prompt_embed,
-            pooled_prompt_embed,
-            image_width=image_width,
-            image_height=image_height,
-            control_width=control_width,
-            control_height=control_height,
-            edit_mask=edit_mask,
-        )
-
-    def _training_step_compute(self, batch):
-        """Training step with embedding computation (no cache)"""
-        # Similar to QwenImageEditTrainer but with dual encoders
-        image, control, prompt = batch["image"], batch["control"], batch["prompt"]
-        # torch.tensor of image, control [B,C,H,W], could be different shape
-        image = self.preprocess_image(image)
-        control = self.preprocess_image(control)
-        image_height, image_width = image.shape[2:]
-        control_height, control_width = control.shape[2:]
-
-        batch_size = image.shape[0]
-
-        # random drop prompt to ""
-        if self.config.data.init_args.get("caption_dropout_rate", 0.0) > 0:
-            prompt = [
-                (
-                    ""
-                    if random.random()
-                    < self.config.data.init_args.get("caption_dropout_rate", 0.0)
-                    else p
-                )
-                for p in prompt
-            ]
-
-        pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
-            prompt=prompt,
-            prompt_2=None,
-            device_text_encoder=self.accelerator.device,
-            device_text_encoder_2=self.accelerator.device,
-            max_sequence_length=self.max_sequence_length,
-        )
-
-        _, image_latents, _, _ = self.prepare_latents(
-            image,
-            batch_size,
-            16,
-            image_height,
-            image_width,
-            self.weight_dtype,
-            self.accelerator.device,
-        )
-
-        _, control_latents, _, _ = self.prepare_latents(
-            control,
-            batch_size,
-            16,
-            control_height,
-            control_width,
-            self.weight_dtype,
-            self.accelerator.device,
-        )
-
-        return self._compute_loss(
-            image_latents,
-            control_latents,
-            prompt_embeds,
-            pooled_prompt_embeds,
-            image_width=image_width,
-            image_height=image_height,
-            control_width=control_width,
-            control_height=control_height,
-            edit_mask=None,
-        )
-
-    def _compute_loss(
-        self,
-        pixel_latents,
-        control_latents,
-        prompt_embeds,
-        pooled_prompt_embeds,
-        image_width: int = 0,
-        image_height: int = 0,
-        control_width: int = 0,
-        control_height: int = 0,
-        edit_mask=None,
-    ) -> torch.Tensor:
-        """Calculate the flow matching loss (same structure as QwenImageEditTrainer).
-        args:
-            image_width: width of the ground truth image, image to be generated. After preprocess
-            image_height: height of the ground truth image
-            control_width: width of the control image
-            control_height: height of the control image
-        """
+    def _compute_loss(self, embeddings) -> torch.Tensor:
+        image_latents = embeddings["image_latents"]
+        text_ids = embeddings["text_ids"]
+        control_latents = embeddings["control_latents"]
+        control_ids = embeddings["control_ids"]
+        pooled_prompt_embeds = embeddings["pooled_prompt_embeds"]
+        prompt_embeds = embeddings["prompt_embeds"]
+        device = self.accelerator.device
+        # image_height, image_width = embeddings["image"].shape
 
         with torch.no_grad():
-            batch_size = pixel_latents.shape[0]
+            # batch_size = image_latents.shape[0]
             noise = torch.randn_like(
-                pixel_latents, device=self.accelerator.device, dtype=self.weight_dtype
+                image_latents, device=self.accelerator.device, dtype=self.weight_dtype
             )
-
-            # # Sample timesteps
-            # u = compute_density_for_timestep_sampling(
-            #     weighting_scheme="none",
-            #     batch_size=batch_size,
-            #     logit_mean=0.0,
-            #     logit_std=1.0,
-            #     mode_scale=1.29,
-            # )
-            # indices = (u * self.scheduler.config.num_train_timesteps).long()
-            # timesteps = self.scheduler.timesteps[indices].to(
-            #     device=pixel_latents.device
-            # )
-
-            # sigmas = self._get_sigmas(
-            #     timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype
-            # )
-            t = torch.rand((noise.shape[0],), device=self.accelerator.device, dtype=self.weight_dtype)  # random time t
+            t = torch.rand(
+                (noise.shape[0],), device=device, dtype=self.weight_dtype
+            )  # random time t
             t_ = t.unsqueeze(1).unsqueeze(1)
+            noisy_model_input = (1.0 - t_) * image_latents + t_ * noise
 
-            noisy_model_input = (1.0 - t_) * pixel_latents + t_ * noise
-            # noisy_model_input = (1.0 - sigmas) * pixel_latents + sigmas * noise
+            # image_width = int(image_width) // (self.vae_scale_factor * 2)
+            # image_height = int(image_height) // (self.vae_scale_factor * 2)
 
-            # prepare text ids
-            text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
-                device=self.accelerator.device, dtype=self.weight_dtype
-            )
-
-            # prepare laten_id and image_id
-
-            image_width = int(image_width) // (self.vae_scale_factor * 2)
-            image_height = int(image_height) // (self.vae_scale_factor * 2)
-
-            latent_ids = self._prepare_latent_image_ids(
-                batch_size,
-                image_height,
-                image_width,
-                self.accelerator.device,
-                self.weight_dtype,
-            )
-
-            control_width = int(control_width) // (self.vae_scale_factor * 2)
-            control_height = int(control_height) // (self.vae_scale_factor * 2)
-            image_ids = self._prepare_latent_image_ids(
-                batch_size,
-                control_height,
-                control_width,
-                self.accelerator.device,
-                self.weight_dtype,
-            )
-            image_ids[..., 0] = 1  # for reference image ids
-
+            # latent_ids = self._prepare_latent_image_ids(
+            #     batch_size,
+            #     image_height,
+            #     image_width,
+            #     self.accelerator.device,
+            #     self.weight_dtype,
+            # )
+            latent_ids = embeddings['image_ids'].to(device).to(self.weight_dtype)
             # Prepare input for transformer
             latent_model_input = torch.cat([noisy_model_input, control_latents], dim=1)
-            latent_ids = torch.cat(
-                [latent_ids, image_ids], dim=0
-            )  # dim 0 is sequence dimension
+            latent_ids = torch.cat([latent_ids, control_ids], dim=0)
+            # dim 0 is sequence dimension
 
         # Prepare guidance
         guidance = (
@@ -1029,7 +526,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         model_pred = self.dit(
             hidden_states=latent_model_input,
-            # timestep=timesteps / 1000,
             timestep=t,
             guidance=guidance,  # must pass to guidance for FluxKontextDev
             pooled_projections=pooled_prompt_embeds,
@@ -1040,72 +536,13 @@ class FluxKontextLoraTrainer(BaseTrainer):
             return_dict=False,
         )[0]
         # noise_pred torch.Size([1, 8137, 64])
-        model_pred = model_pred[:, : pixel_latents.size(1)]
-
-        # Calculate loss
-        # weighting = compute_loss_weighting_for_sd3(
-        #     weighting_scheme="none", sigmas=sigmas
-        # )
-
-        target = noise - pixel_latents
-
-        loss = self.forward_loss(model_pred, target, weighting=None, edit_mask=edit_mask)
-        return loss
-
-    def forward_loss(self, model_pred, target, weighting=None, edit_mask=None):
-        if edit_mask is None:
-            if weighting is None:
-                loss = torch.nn.functional.mse_loss(model_pred, target, reduction="mean")
-            else:
-                loss = torch.mean(
-                    (
-                        weighting.float() * (model_pred.float() - target.float()) ** 2
-                    ).reshape(target.shape[0], -1),
-                    1,
-                )
-                loss = loss.mean()
-        else:
-            # shape torch.Size([4, 864, 1216]) torch.Size([4, 4104, 64]) torch.Size([4, 4104, 64]) torch.Size([4, 1, 1])
-            loss = self.criterion(edit_mask, model_pred, target, weighting)
-        return loss
-
-    def _get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
-        """Calculate sigma values for noise scheduler"""
-        noise_scheduler_copy = copy.deepcopy(self.scheduler)
-        sigmas = noise_scheduler_copy.sigmas.to(
-            device=self.accelerator.device, dtype=dtype
+        model_pred = model_pred[:, : image_latents.size(1)]
+        target = noise - image_latents
+        edit_mask = embeddings["mask"] if "mask" in embeddings else None
+        loss = self.forward_loss(
+            model_pred, target, weighting=None, edit_mask=edit_mask
         )
-        schedule_timesteps = noise_scheduler_copy.timesteps.to(self.accelerator.device)
-        timesteps = timesteps.to(self.accelerator.device)
-        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
-        sigma = sigmas[step_indices].flatten()
-        while len(sigma.shape) < n_dim:
-            sigma = sigma.unsqueeze(-1)
-        return sigma
-
-    def preprocess_image(self, image: torch.Tensor) -> torch.Tensor:
-        """Preprocess image for Flux Kontext VAE.
-        image: RGB tensor input [B,C,H,W]
-        Logic is
-        1. Resize it make it devisible by 16
-        2. Input should be RGB format
-        3. Convert to [-1,1] range by devide 255
-        4. Input shape should be [B,3,H,W]
-        """
-        # get proper image shape
-        h, w = image.shape[2:]
-        h = h // 16 * 16
-        w = w // 16 * 16
-        image = image.to(self.weight_dtype)
-        if image.shape[2] != h or image.shape[3] != w:
-            image = F.interpolate(
-                image, size=(h, w), mode="bilinear", align_corners=False
-            )
-        image = image / 255.0
-        # image = image.astype(self.weight_dtype)
-        image = image.to(self.weight_dtype)
-        image = 2.0 * image - 1.0
-        return image
+        return loss
 
     def get_clip_prompt_embeds(self, prompt: str) -> torch.Tensor:
         """
@@ -1214,54 +651,24 @@ class FluxKontextLoraTrainer(BaseTrainer):
         ) * self.vae.config.scaling_factor
         return image_latents
 
-    def setup_predict(self):
-        if not hasattr(self, "vae") or self.vae is None:
-            logging.info("Loading model...")
-            self.load_model()
-
-        self.guidance = 3.5
-        #  Get device configurations
-        device_vae = self.config.predict.devices.get("vae", "cuda:0")
-        device_text_encoder = self.config.predict.devices.get("text_encoder", "cuda:0")
-        device_text_encoder_2 = self.config.predict.devices.get(
-            "text_encoder_2", "cuda:0"
-        )
-        device_transformer = self.config.predict.devices.get("transformer", "cuda:0")
-
-        logging.info(
-            f"Using devices - VAE: {device_vae}, Text Encoders: {device_text_encoder}/"
-            + f"{device_text_encoder_2}, Transformer: {device_transformer}"
-        )
-
-        self.vae = self.vae.to(device_vae)
-        self.text_encoder = self.text_encoder.to(device_text_encoder)
-        self.text_encoder_2 = self.text_encoder_2.to(device_text_encoder_2)
-        self.dit = self.dit.to(device_transformer)
-        self.vae.eval()
-        self.text_encoder.eval()
-        self.text_encoder_2.eval()
-        self.dit.eval()
-        if self.config.model.lora.pretrained_weight:
-            self.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
-        self.predict_setted = True
-
     def sampling_from_embeddings(self, embeddings: dict) -> torch.Tensor:
-        num_additional_controls = embeddings['num_additional_controls']
-        num_inference_steps = embeddings['num_inference_steps']
-        true_cfg_scale = embeddings['true_cfg_scale']
-        latent_ids = []
-        if 'latent_ids' in embeddings:
-            latent_ids.append(embeddings['latent_ids'])
-        if 'control_ids' in embeddings:
-            latent_ids.append(embeddings['control_ids'])
-        for i in range(1, num_additional_controls+1):
-            control_ids = f'control_{i}_ids'
-            if control_ids in embeddings:
-                latent_ids.append(embeddings[control_ids])
-        latent_ids = torch.cat(latent_ids, dim=0)
-        batch_size = embeddings['latents'].shape[0]
-        image_seq_len = embeddings['latents'].shape[1]
-        timesteps, num_inference_steps = self.prepare_predict_timesteps(num_inference_steps, image_seq_len)
+        """
+        embeddgings dict from prepare embeddings
+        """
+
+        # num_additional_controls = embeddings["num_additional_controls"]
+        num_inference_steps = embeddings["num_inference_steps"]
+        true_cfg_scale = embeddings["true_cfg_scale"]
+        latent_ids = embeddings["latent_ids"]
+        control_ids = embeddings["control_ids"]
+        control_latents = embeddings["control_latents"]
+
+        latent_ids = torch.cat([latent_ids, control_ids], dim=0)
+        batch_size = embeddings["latents"].shape[0]
+        image_seq_len = embeddings["latents"].shape[1]
+        timesteps, num_inference_steps = self.prepare_predict_timesteps(
+            num_inference_steps, image_seq_len
+        )
         dit_device = next(self.dit.parameters()).device
         guidance = torch.full(
             [1], self.guidance, device=dit_device, dtype=torch.float32
@@ -1271,14 +678,29 @@ class FluxKontextLoraTrainer(BaseTrainer):
         # move all tensors to dit_device
         latent_ids = latent_ids.to(dit_device)
         guidance = guidance.to(dit_device)
-        pooled_prompt_embeds = embeddings['pooled_prompt_embeds'].to(dit_device).to(self.weight_dtype)
-        prompt_embeds = embeddings['prompt_embeds'].to(dit_device).to(self.weight_dtype)
-        text_ids = embeddings['text_ids'].to(dit_device).to(self.weight_dtype)
-        latents = embeddings['latents'].to(dit_device).to(self.weight_dtype)
-        if true_cfg_scale > 1.0 and 'negative_pooled_prompt_embeds' in embeddings:
-            negative_pooled_prompt_embeds = embeddings['negative_pooled_prompt_embeds'].to(dit_device).to(self.weight_dtype)
-            negative_prompt_embeds = embeddings['negative_prompt_embeds'].to(dit_device).to(self.weight_dtype)
-            negative_text_ids = embeddings['negative_text_ids'].to(dit_device).to(self.weight_dtype)
+        pooled_prompt_embeds = (
+            embeddings["pooled_prompt_embeds"].to(dit_device).to(self.weight_dtype)
+        )
+        prompt_embeds = embeddings["prompt_embeds"].to(dit_device).to(self.weight_dtype)
+        text_ids = embeddings["text_ids"].to(dit_device).to(self.weight_dtype)
+        latents = (
+            embeddings["latents"].to(dit_device).to(self.weight_dtype)
+        )  # initial noise tensor
+        control_latents = control_latents.to(dit_device).to(self.weight_dtype)
+        if true_cfg_scale > 1.0 and "negative_pooled_prompt_embeds" in embeddings:
+            negative_pooled_prompt_embeds = (
+                embeddings["negative_pooled_prompt_embeds"]
+                .to(dit_device)
+                .to(self.weight_dtype)
+            )
+            negative_prompt_embeds = (
+                embeddings["negative_prompt_embeds"]
+                .to(dit_device)
+                .to(self.weight_dtype)
+            )
+            negative_text_ids = (
+                embeddings["negative_text_ids"].to(dit_device).to(self.weight_dtype)
+            )
 
         with torch.inference_mode():
             for _, t in enumerate(
@@ -1286,16 +708,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
                     timesteps, total=num_inference_steps, desc="Flux Kontext Generation"
                 )
             ):
-            latent_model_input =[latents]
-            if 'control_latents' in embeddings:
-                latent_model_input.append(embeddings['control_latents'].to(dit_device).to(self.weight_dtype))
-            for i in range(1, num_additional_controls+1):
-                control_latents = f'control_{i}_latents'
-                if control_latents in embeddings:
-                    latent_model_input.append(embeddings[control_latents].to(dit_device).to(self.weight_dtype))
-            latent_model_input = torch.cat(latent_model_input, dim=1)
-            timestep = t.expand(batch_size).to(dit_device).to(self.weight_dtype)
-            noise_pred = self.dit(
+                latent_model_input = torch.cat([latents, control_latents], dim=1)
+                timestep = t.expand(batch_size).to(dit_device).to(self.weight_dtype)
+                noise_pred = self.dit(
                     hidden_states=latent_model_input,
                     timestep=timestep / 1000,
                     guidance=guidance,
@@ -1306,9 +721,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
                     joint_attention_kwargs={},
                     return_dict=False,
                 )[0]
-            noise_pred = noise_pred[:, : image_seq_len]
-            if true_cfg_scale > 1.0 and 'negative_pooled_prompt_embeds' in embeddings:
-                neg_noise_pred = self.dit(
+                noise_pred = noise_pred[:, :image_seq_len]
+                if (
+                    true_cfg_scale > 1.0
+                    and "negative_pooled_prompt_embeds" in embeddings
+                ):
+                    neg_noise_pred = self.dit(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
                         guidance=guidance,
@@ -1318,18 +736,19 @@ class FluxKontextLoraTrainer(BaseTrainer):
                         img_ids=latent_ids,
                         joint_attention_kwargs={},
                         return_dict=False,
-                )[0]
-                neg_noise_pred = neg_noise_pred[:, : image_seq_len]
-                noise_pred = neg_noise_pred + true_cfg_scale * (
+                    )[0]
+                    neg_noise_pred = neg_noise_pred[:, :image_seq_len]
+                    noise_pred = neg_noise_pred + true_cfg_scale * (
                         noise_pred - neg_noise_pred
-                )
-            latents = self.scheduler.step(
-                noise_pred, t, latents, return_dict=False
-            )[0]
+                    )
+                latents = self.scheduler.step(
+                    noise_pred, t, latents, return_dict=False
+                )[0]
         return latents
 
-
-    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    def decode_vae_latent(
+        self, latents: torch.Tensor, height: int, width: int
+    ) -> torch.Tensor:
         latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
         # latents after unpack torch.Size([1, 16, 106, 154])
         latents = (
@@ -1341,21 +760,101 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
     def prepare_predict_batch_data(
         self,
-        prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]],
-        prompt: Union[str, List[str]],
+        prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]] = None,
+        prompt: Union[str, List[str]] = None,
+        additional_controls: List[PIL.Image.Image] = [],
         prompt_2: Optional[Union[str, List[str]]] = None,
         negative_prompt: Union[None, str, List[str]] = None,
         negative_prompt_2: Optional[Union[str, List[str]]] = None,
         num_inference_steps: int = 20,
         height: Optional[int] = None,
         width: Optional[int] = None,
+        additional_controls_size: Optional[List[int]] = None,
         generator: Optional[torch.Generator] = None,
         weight_dtype: torch.dtype = torch.bfloat16,
         true_cfg_scale: float = 1.0,
         **kwargs,
     ) -> dict:
+        """
+        Prepare batch data for prediction.
+        args:
+            additional_controls: [[control_1, control2], [control_1, control_2]]
+            additional_controls_size: [(h1,w1), (h2,w2)]
+            height: height for the generated image
+            width: width for the generated image
+        """
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
         self.weight_dtype = weight_dtype
+        if additional_controls_size:
+            assert len(additional_controls_size) == len(
+                additional_controls[0]
+            ), "the number of additional_controls_size should be same of additional_controls"  # NOQA
+            assert (
+                len(additional_controls_size[0]) == 2
+            ), "the size of additional_controls_size should be (h,w)"  # NOQA
+            controls_size = [[height, width]] + additional_controls_size
+        else:
+            controls_size = [[height, width]]
+
         if not isinstance(prompt_image, list):
             prompt_image = [prompt_image]
+
+        data = {}
+        control = []
+        for img in prompt_image:
+            img = self.preprocessor.preprocess(
+                {"control": img}, controls_size=controls_size
+            )["control"]
+            control.append(img)
+        control = torch.stack(control, dim=0)
+        data["control"] = control
+
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        data["prompt"] = prompt
+
+        if additional_controls:
+            new_controls = {f"control_{i}": [] for i in range(len(additional_controls))}
+            # [control_1_batch1, control1_batch2, ..], [control2_batch1, control2_batch2, ..]
+            for contorls in additional_controls:
+                controls = self.preprocessor.preprocess(
+                    {"control": contorls}, controls_size=controls_size
+                )["controls"]
+                for i, control in enumerate(controls):
+                    new_controls[f"control_{i}"].append(control)
+            for i in range(len(additional_controls)):
+                new_controls[f"control_{i}"] = torch.stack(
+                    new_controls[f"control_{i}"], dim=0
+                )
+                data[f"control_{i}"] = new_controls[f"control_{i}"]
+
+        if prompt_2 is not None:
+            if isinstance(prompt_2, str):
+                prompt_2 = [prompt_2]
+            assert len(prompt_2) == len(
+                data["prompt"]
+            ), "the number of prompt_2 should be same of control"  # NOQA
+            data["prompt_2"] = prompt_2
+
+        if negative_prompt is not None:
+            if isinstance(negative_prompt, str):
+                negative_prompt = [negative_prompt]
+            assert len(negative_prompt) == len(
+                data["prompt"]
+            ), "the number of negative_prompt should be same of control"  # NOQA
+            data["negative_prompt"] = negative_prompt
+
+        if negative_prompt_2 is not None:
+            if isinstance(negative_prompt_2, str):
+                negative_prompt_2 = [negative_prompt_2]
+            assert len(negative_prompt_2) == len(
+                data["prompt"]
+            ), "the number of negative_prompt_2 should be same of control"  # NOQA
+            data["negative_prompt_2"] = negative_prompt_2
+
+        data["num_inference_steps"] = num_inference_steps
+        data["height"] = height
+        data["width"] = width
+        data["true_cfg_scale"] = true_cfg_scale
+        return data

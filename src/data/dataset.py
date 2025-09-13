@@ -147,11 +147,10 @@ class ImageDataset(Dataset):
 
     def load_processor(self):
         """load processor"""
+        from src.utils.tools import instantiate_class
         class_path = self.data_config.class_path
         init_args = self.data_config.init_args
-        module_path, module_name = class_path.rsplit('.', 1)
-        module = importlib.import_module(module_path)
-        self.preprocessor = getattr(module, module_name)(init_args)
+        self.preprocessor = instantiate_class(class_path, init_args)
 
     def _load_all_datasets(self):
         """Load datasets from local directories or Hugging Face repositories."""

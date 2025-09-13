@@ -103,7 +103,7 @@ class ImageProcessorInitArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     process_type: str = "center_crop"  # resize, _padding, center_crop
     resize_mode: str = "bilinear"
-    target_size: List[int] = Field(default_factory=lambda: [832, 576])
+    target_size: List[int] = Field(default_factory=lambda: [576, 832])
     controls_size: Optional[Union[List[int], List[List[int]]]] = (
         None  # None -> use target_size
     )
@@ -501,6 +501,7 @@ class TrMode(str, Enum):
     fit = "fit"
     predict = "predict"
 
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     trainer: TrainerKind = TrainerKind.QwenImageEdit
@@ -618,11 +619,11 @@ if __name__ == "__main__":
     config = load_config_from_yaml("configs/example_fluxkontext_fp16.yaml")
     print(config)
     x = config.model_dump_json(indent=2, exclude_none=True)
-    print('type of x', type(x))
+    print("type of x", type(x))
     print(config.model_dump_json(indent=2, exclude_none=True))
     d_json = config.model_dump(mode="json", exclude_none=True)
     print(d_json, type(d_json))
     import yaml
+
     with open("test_config.yaml", "w") as f:
         yaml.dump(d_json, f, default_flow_style=False, sort_keys=False)
-

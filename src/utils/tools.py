@@ -6,6 +6,7 @@ import PIL
 import os
 from typing import Union
 import hashlib
+import importlib
 import subprocess
 
 
@@ -99,6 +100,15 @@ def get_git_info():
         "remote": remote or None,
         "root": root or None,
     }
+
+
+def instantiate_class(class_path, init_args):
+    """load processor"""
+    module_path, module_name = class_path.rsplit('.', 1)
+    module = importlib.import_module(module_path)
+    instance = getattr(module, module_name)(init_args)
+    return instance
+
 
 if __name__ == "__main__":
     print(get_git_info())

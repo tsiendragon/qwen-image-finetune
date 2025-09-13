@@ -7,7 +7,8 @@ from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from src.data.cache_manager import EmbeddingCacheManager
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Any
+from typing import Dict, Optional
+
 import torch
 import torch.nn as nn
 import os
@@ -22,6 +23,7 @@ from src.data.config import Config
 from src.utils.model_summary import print_model_summary_table
 from src.utils.lora_utils import FpsLogger
 from src.utils.tools import get_git_info
+from src.utils.tools import instantiate_class
 from src.scheduler.custom_flowmatch_scheduler import FlowMatchEulerDiscreteScheduler
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,14 @@ class BaseTrainer(ABC):
         self.cache_exist = self.cache_manager.exist(self.cache_dir)
         self.quantize = self.config.model.quantize
         self.adapter_name = self.config.model.lora.adapter_name
+
         self.log_model_info()
+        self.load_preprocessor()
+
+    def load_preprocessor(self):
+        class_path = self.config.data.init_args.processor.class_path
+        init_args = self.config.data.init_args.processor.init_args
+        self.preprocessor = instantiate_class(class_path, init_args)
 
     def __repr__(self) -> str:
         msg = f"{self.__class__.__name__}(config={self.config})"
@@ -60,8 +69,6 @@ class BaseTrainer(ABC):
 
     def log_model_info(self):
         """Log model information."""
-        logger.info(f"Model Type: {self.get_model_type()}")
-        logger.info(f"Precision Info: {self.get_precision_info()}")
         logger.info(f"Batch Size: {self.batch_size}")
         logger.info(f"Use Cache: {self.use_cache}")
 
@@ -185,6 +192,12 @@ class BaseTrainer(ABC):
         self.dit.merge_adapter()
         logging.info("Merged LoRA weights into base model")
 
+    def cache_step_add_batch_dim(self, data: dict):
+        """Add batch dimension to the data"""
+        for key, value in data.items():
+            if isinstance(value, torch.Tensor):
+                data[key] = value.unsqueeze(0)
+        return data
 
     def cache(self, train_dataloader):
         """Pre-compute and cache embeddings/latents for training efficiency."""
@@ -196,11 +209,11 @@ class BaseTrainer(ABC):
         # Cache for each item (same loop structure as QwenImageEditTrainer)
         dataset = train_dataloader.dataset
         for data in tqdm(dataset, total=len(dataset), desc="cache_embeddings"):
-            self.cache_step(data, self.config.cache.devices)
+            data = self.cache_step_add_batch_dim(data)
+            data = self.prepare_embeddings(data, stage="cache")
+            self.cache_step(data)
         self.destroy_models()
         logging.info("Cache completed")
-
-
 
     def destroy_models(self):
         import gc
@@ -220,8 +233,6 @@ class BaseTrainer(ABC):
             del self.vit
         torch.cuda.empty_cache()
         gc.collect()
-
-
 
     def setup_validation(self, train_dataloader):
         """Setup validation"""
@@ -263,8 +274,32 @@ class BaseTrainer(ABC):
 
     def _training_step_compute(self, batch: dict) -> torch.Tensor:
         """Training step with real-time data"""
-        embeddings = self.prepare_embeddings(batch)
+        embeddings = self.prepare_embeddings(batch, stage="fit")
         return self._compute_loss(embeddings)
+
+    @abstractmethod
+    def _compute_loss(self, embeddings: dict) -> torch.Tensor:
+        """Compute loss. returned the flow matching loss tensor"""
+        pass
+
+    def forward_loss(self, model_pred, target, weighting=None, edit_mask=None):
+        if edit_mask is None:
+            if weighting is None:
+                loss = torch.nn.functional.mse_loss(
+                    model_pred, target, reduction="mean"
+                )
+            else:
+                loss = torch.mean(
+                    (
+                        weighting.float() * (model_pred.float() - target.float()) ** 2
+                    ).reshape(target.shape[0], -1),
+                    1,
+                )
+                loss = loss.mean()
+        else:
+            # shape torch.Size([4, 864, 1216]) torch.Size([4, 4104, 64]) torch.Size([4, 4104, 64]) torch.Size([4, 1, 1])
+            loss = self.criterion(edit_mask, model_pred, target, weighting)
+        return loss
 
     def train_epoch(self, epoch, train_dataloader):
         for _, batch in enumerate(train_dataloader):
@@ -349,7 +384,7 @@ class BaseTrainer(ABC):
             logging.info(
                 f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
             )
-        self.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
+        BaseTrainer.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
 
         self.setup_model_device_train_mode(stage="fit", cache=self.use_cache)
         self.configure_optimizers()
@@ -386,7 +421,6 @@ class BaseTrainer(ABC):
         if not hasattr(self, "dit") or self.vae is None:
             logging.info("Loading model...")
             self.load_model()
-        self.guidance = 3.5
         self.load_pretrain_lora_model(
             self.dit, self.config, self.config.lora_adapter_name
         )
@@ -409,9 +443,11 @@ class BaseTrainer(ABC):
         """
         self.setup_predict()
         batch = self.prepare_predict_batch_data(*args)
-        embeddings: dict = self.prepare_embeddings(batch)
+        embeddings: dict = self.prepare_embeddings(batch, stage="predict")
+        target_height = embeddings["height"]
+        target_width = embeddings["width"]
         latents = self.sampling_from_embeddings(embeddings)
-        image = self.decode_vae_latent(latents)
+        image = self.decode_vae_latent(latents, target_height, target_width)
         if output_type == "pil":
             image = image.detach().permute(0, 2, 3, 1).float().numpy()
             image = (image * 255).round().astype("uint8")
@@ -425,7 +461,6 @@ class BaseTrainer(ABC):
 
             return pil_images
         return image
-
 
     def setup_accelerator(self):
         """Initialize accelerator and logging configuration"""
@@ -508,8 +543,11 @@ class BaseTrainer(ABC):
 
     def save_train_config(self):
         import yaml
+
         d_json = self.config.model_dump(mode="json", exclude_none=True)
-        train_yaml_file = os.path.join(self.config.logging.output_dir, "train_config.yaml")
+        train_yaml_file = os.path.join(
+            self.config.logging.output_dir, "train_config.yaml"
+        )
         with open(train_yaml_file, "w") as f:
             yaml.dump(d_json, f, default_flow_style=False, sort_keys=False)
 
@@ -633,7 +671,9 @@ class BaseTrainer(ABC):
         image = image.to(self.weight_dtype)
         return image * 2.0 - 1.0
 
-    def prepare_predict_timesteps(self, num_inference_steps: int, image_seq_len: int) -> torch.Tensor:
+    def prepare_predict_timesteps(
+        self, num_inference_steps: int, image_seq_len: int
+    ) -> torch.Tensor:
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         mu = calculate_shift(
             image_seq_len,
@@ -673,7 +713,9 @@ class BaseTrainer(ABC):
         pass
 
     @abstractmethod
-    def prepare_embeddings(self, batch: dict) -> Dict[str, torch.Tensor]:
+    def prepare_embeddings(
+        self, batch: dict, stage: str = "fit"
+    ) -> Dict[str, torch.Tensor]:
         """Prepare embeddings for prediction. Call vae encoder and prompt encoder
         to get the embeddings. Used in fit & predict
         Update the embeddings keys in batch dict
@@ -689,7 +731,7 @@ class BaseTrainer(ABC):
         return batch
 
     @abstractmethod
-    def decode_vae_latent(self, latents: torch.Tensor) -> torch.Tensor:
+    def decode_vae_latent(self, latents: torch.Tensor, target_height: int, target_width: int) -> torch.Tensor:
         """Decode VAE latent vectors to RGB images. In range [0,1]"""
         pass
 
@@ -711,7 +753,7 @@ class BaseTrainer(ABC):
         pass
 
     @abstractmethod
-    def cache_step(self, data: dict, devices: dict):
+    def cache_step(self, data: dict):
         """Cache step"""
         pass
 
