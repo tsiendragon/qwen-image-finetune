@@ -81,7 +81,11 @@ class ImageProcessor:
 
         # 处理mask（如果存在）
         if 'mask' in data:
-            data['mask'] = self._process_image(data['mask'], (target_h, target_w))
+            mask = self._process_image(data['mask'], (target_h, target_w))
+            mask = mask / 255.0
+            mask = torch.from_numpy(mask).to(torch.float32)
+            data['mask'] = mask
+
 
         # 处理控制图像（如果存在）
         if 'control' in data:
@@ -90,6 +94,7 @@ class ImageProcessor:
             data['control'] = self._to_tensor(processed_control)
 
         if 'controls' in data:  # extrol
+            data['controls'] = [self.any2numpy(x) for x in data['controls']]
             if len(self.controls_size) == 1:
                 data['controls'] = [self._process_image(control, controls_size[0]) for control in data['controls']]
             else:
@@ -105,7 +110,6 @@ class ImageProcessor:
 
     def _process_image(self, image, target_size):
         """根据处理类型处理图像"""
-        h, w = image.shape[:2]
         target_h, target_w = target_size
 
         if self.processor_config.process_type == 'resize':

@@ -28,20 +28,23 @@ def _first_existing(base_dir: str, stem: str, exts=IMG_EXTS) -> Optional[str]:
     return None
 
 
-def _collect_extra_controls(control_dir: str, stem: str) -> List[str]:
+def get_number_of_controls(control_dir: str, stem: str) -> int:
+    for ext in IMG_EXTS:
+        control_paths = glob.glob(os.path.join(control_dir, f"{stem}_[0-9]*{ext}"))
+        if len(control_paths) > 0:
+            return len(control_paths)
+    return 0
+
+
+def _collect_extra_controls(control_dir: str, stem: str, num_controls: int) -> List[str]:
     """匹配 stem_1.*, stem_2.*, …（只收集数值后缀），排除 *_mask."""
     out = []
-    for ext in IMG_EXTS:
-        for p in glob.glob(os.path.join(control_dir, f"{stem}_*{ext}")):
-            bn = os.path.basename(p)
-            name_no_ext = os.path.splitext(bn)[0]
-            if name_no_ext.endswith("_mask"):
+    for i in range(1, num_controls + 1):
+        for ext in IMG_EXTS:
+            control_path = os.path.join(control_dir, f"{stem}_{i}{ext}")
+            if os.path.exists(control_path):
+                out.append(control_path)
                 continue
-            suf = name_no_ext[len(stem) + 1:]  # 去掉 'stem_'
-            if suf.isdigit():
-                out.append(p)
-    # 依据数字后缀排序，确保确定性
-    out.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))
     return out
 
 
@@ -281,29 +284,35 @@ class ImageDataset(Dataset):
         start_idx = len(self.all_samples)
 
         # 用 stem 归并（同 stem 出现两边时优先 images_dir 文本）
-        stem_to_prompt = {}
-        for p in prompt_files:
-            stem = os.path.splitext(os.path.basename(p))[0]
-            # 如果已存在 images_dir 的 prompt，就不被 control_dir 覆盖
-            if stem in stem_to_prompt:
-                # 维持优先级：images_dir 优先；否则若当前是 images_dir 则覆盖
-                if os.path.dirname(stem_to_prompt[stem]) != images_dir and os.path.dirname(p) == images_dir:
-                    stem_to_prompt[stem] = p
-            else:
-                stem_to_prompt[stem] = p
+        stems = [os.path.splitext(os.path.basename(p))[0] for p in prompt_files]
+
+        # filter these stems that dont have correspoding images
+        stems = [s for s in stems if _first_existing(images_dir, s) is not None]
+
+        logging.info('found %d prompts', len(stems))
 
         # 2) 对每个 stem 按需拼装样本
         n = 0
-        for stem, ptxt in sorted(stem_to_prompt.items()):
+        from tqdm import tqdm
+        num_controls = get_number_of_controls(control_dir, stems[0])
+        logging.info('found %d controls', num_controls)
+        logging.info(f'found with stem {control_dir}/{stems[0]}')
+        for stem in tqdm(stems, desc='matching prompts'):
             # source image（必须在 images_dir）
             image_path = _first_existing(images_dir, stem)
+            if image_path is None:
+                logging.info(f'skipping {stem} because no image found')
+                continue
 
             # control image（必须在 control_dir）
             main_control = _first_existing(control_dir, stem)
 
             # 额外控制图
-            extras = _collect_extra_controls(control_dir, stem)
-            controls = [main_control] + extras
+            if main_control is not None:
+                extras = _collect_extra_controls(control_dir, stem, num_controls)
+                controls = [main_control] + extras
+            else:
+                controls = [None]
 
             img_txt = os.path.join(images_dir, f"{stem}.txt")
             ctl_txt = os.path.join(control_dir, f"{stem}.txt")
@@ -329,6 +338,7 @@ class ImageDataset(Dataset):
                 }
             )
             n += 1
+        logging.info(f" samples[0]: {samples[0]}")
         return samples
 
     def __repr__(self) -> str:
@@ -395,35 +405,35 @@ class ImageDataset(Dataset):
             if self.use_cache:
                 file_hashes = self.get_file_hashes(data)
                 data['file_hashes'] = file_hashes
-            else:  # loaded locally
-                data_item = self.all_samples[idx]
-                #  {
-                #         "image": image_path,
-                #         "control": controls,
-                #         "caption": prompt_file,
-                #         "mask_file": mask_file,
-                #         "dataset_type": "local",
-                #         "local_index": n,
-                #         "global_index": start_idx + n,
-                #     }
-                # ) If, not exist return None
-                # 读取提示文本
-                if self.data_key_exist(data_item, 'image'):
-                    data['image'] = data_item['image']
-                if self.data_key_exist(data_item, 'control'):
-                    data['control'] = data_item['control'][0]
-                    if len(data_item['control']) > 1:
-                        data['controls'] = [data_item['control'][i] for i in range(1, len(data_item['control']))]
-                        if self.selected_control_indexes is not None:
-                            data['controls'] = [data['controls'][i] for i in self.selected_control_indexes]
-                if self.data_key_exist(data_item, 'mask_file'):
-                    data['mask'] = cv2.imread(data_item['mask_file'], 0)
-                if self.data_key_exist(data_item, 'caption'):
-                    with open(data_item['caption'], 'r', encoding='utf-8') as f:
-                        prompt = f.read().strip()
-                    data['prompt'] = prompt
-                file_hashes = self.get_file_hashes(data_item)
-                data['file_hashes'] = file_hashes
+        else:  # loaded locally
+            data_item = self.all_samples[idx]
+            #  {
+            #         "image": image_path,
+            #         "control": controls,
+            #         "caption": prompt_file,
+            #         "mask_file": mask_file,
+            #         "dataset_type": "local",
+            #         "local_index": n,
+            #         "global_index": start_idx + n,
+            #     }
+            # ) If, not exist return None
+            # 读取提示文本
+            if self.data_key_exist(data_item, 'image'):
+                data['image'] = data_item['image']
+            if self.data_key_exist(data_item, 'control'):
+                data['control'] = data_item['control'][0]
+                if len(data_item['control']) > 1:
+                    data['controls'] = data_item['control'][1:]
+                    if self.selected_control_indexes is not None:
+                        data['controls'] = [data['controls'][i] for i in self.selected_control_indexes]
+            if self.data_key_exist(data_item, 'mask_file'):
+                data['mask'] = cv2.imread(data_item['mask_file'], 0)
+            if self.data_key_exist(data_item, 'caption'):
+                with open(data_item['caption'], 'r', encoding='utf-8') as f:
+                    prompt = f.read().strip()
+                data['prompt'] = prompt
+            file_hashes = self.get_file_hashes(data)
+            data['file_hashes'] = file_hashes
         return data
 
     def __getitem__(self, idx):

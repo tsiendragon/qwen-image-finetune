@@ -19,14 +19,14 @@ data:
     caption_dropout_rate: 0.1
     prompt_image_dropout_rate: 0.1
     use_edit_mask: true  # if true, dataset output edit mask
-    selected_control_indexes: [1]
+    selected_control_indexes: [0,1,2]
     processor:
       class_path: src.data.preprocess.ImageProcessor
       init_args:
         process_type: resize
         resize_mode: bilinear
-        target_size: [832, 576]
-        controls_size: [[832, 576]]
+        target_size: [576,832]
+        controls_size: [[576,832]]
 
   batch_size: 8  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
