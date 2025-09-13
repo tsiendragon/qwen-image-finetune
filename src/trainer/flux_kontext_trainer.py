@@ -430,14 +430,33 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 num_additional_controls = i
                 break
 
+        if 'prompt_2' in batch:
+            prompt_2 = batch['prompt_2']
+        else:
+            prompt_2 = batch['prompt']
+
         pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
                 prompt=batch['prompt'],
-                prompt_2=None,
+                prompt_2=prompt_2,
                 max_sequence_length=self.max_sequence_length,
             )
         batch['pooled_prompt_embeds'] = pooled_prompt_embeds
         batch['prompt_embeds'] = prompt_embeds
         batch['text_ids'] = text_ids
+
+        if 'negative_prompt' in batch:
+            if 'negative_prompt_2' in batch:
+                prompt_2 = batch['negative_prompt_2']
+            else:
+                prompt_2 = batch['negative_prompt']
+            negative_pooled_prompt_embeds, negative_prompt_embeds, negative_text_ids = self.encode_prompt(
+                prompt=batch['negative_prompt'],
+                prompt_2=prompt_2,
+                max_sequence_length=self.max_sequence_length,
+            )
+            batch['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
+            batch['negative_prompt_embeds'] = negative_prompt_embeds
+            batch['negative_text_ids'] = negative_text_ids
 
         if 'image' in batch:
             image = batch['image']
@@ -463,7 +482,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             control = batch['control']
             batch_size = control.shape[0]
             control_height, control_width = control.shape[2:]
-            _, control_latents, latent_ids, control_ids = self.prepare_latents(
+            _, control_latents, _, control_ids = self.prepare_latents(
                 control,
                 batch_size,
                 16,
@@ -481,7 +500,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             control = batch[control_key]
             batch_size = control.shape[0]
             control_height, control_width = control.shape[2:]
-            _, control_latents, latent_ids, control_ids = self.prepare_latents(
+            _, control_latents, _, control_ids = self.prepare_latents(
                 control,
                 batch_size,
                 16,
@@ -493,17 +512,25 @@ class FluxKontextLoraTrainer(BaseTrainer):
             control_ids[..., 0] = i + 1
             batch[f'control_{i}_latents'] = control_latents
             batch[f'control_{i}_ids'] = control_ids
+        if self.config.loss.mask_loss and 'mask' in batch:
+            mask = batch['mask']
+            batch['mask'] = resize_bhw(mask, image_height, image_width)
+            batch['mask'] = map_mask_to_latent(batch['mask'])
         return batch
 
     def prepare_cached_embeddings(self, batch):
+        if self.config.loss.mask_loss and 'mask' in batch:
+            image_height, image_width = batch['image'].shape[2:]
+            mask = batch['mask']
+            batch['mask'] = resize_bhw(mask, image_height, image_width)
+            batch['mask'] = map_mask_to_latent(batch['mask'])
+        return batch
 
     def cache(self, train_dataloader):
         """
         Pre-compute and cache embeddings (exactly same signature as QwenImageEditTrainer).
         Implements dual text encoder caching for CLIP + T5.
         """
-        from src.data.cache_manager import CacheManager
-        self.cache_manager: CacheManager = train_dataloader.cache_manager
         vae_encoder_device = self.config.cache.vae_encoder_device
         text_encoder_device = self.config.cache.text_encoder_device
         text_encoder_2_device = self.config.cache.text_encoder_2_device
@@ -1218,7 +1245,101 @@ class FluxKontextLoraTrainer(BaseTrainer):
             self.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
         self.predict_setted = True
 
-    def predict(
+    def sampling_from_embeddings(self, embeddings: dict) -> torch.Tensor:
+        num_additional_controls = embeddings['num_additional_controls']
+        num_inference_steps = embeddings['num_inference_steps']
+        true_cfg_scale = embeddings['true_cfg_scale']
+        latent_ids = []
+        if 'latent_ids' in embeddings:
+            latent_ids.append(embeddings['latent_ids'])
+        if 'control_ids' in embeddings:
+            latent_ids.append(embeddings['control_ids'])
+        for i in range(1, num_additional_controls+1):
+            control_ids = f'control_{i}_ids'
+            if control_ids in embeddings:
+                latent_ids.append(embeddings[control_ids])
+        latent_ids = torch.cat(latent_ids, dim=0)
+        batch_size = embeddings['latents'].shape[0]
+        image_seq_len = embeddings['latents'].shape[1]
+        timesteps, num_inference_steps = self.prepare_predict_timesteps(num_inference_steps, image_seq_len)
+        dit_device = next(self.dit.parameters()).device
+        guidance = torch.full(
+            [1], self.guidance, device=dit_device, dtype=torch.float32
+        )
+        guidance = guidance.expand(batch_size)
+        self.scheduler.set_begin_index(0)
+        # move all tensors to dit_device
+        latent_ids = latent_ids.to(dit_device)
+        guidance = guidance.to(dit_device)
+        pooled_prompt_embeds = embeddings['pooled_prompt_embeds'].to(dit_device).to(self.weight_dtype)
+        prompt_embeds = embeddings['prompt_embeds'].to(dit_device).to(self.weight_dtype)
+        text_ids = embeddings['text_ids'].to(dit_device).to(self.weight_dtype)
+        latents = embeddings['latents'].to(dit_device).to(self.weight_dtype)
+        if true_cfg_scale > 1.0 and 'negative_pooled_prompt_embeds' in embeddings:
+            negative_pooled_prompt_embeds = embeddings['negative_pooled_prompt_embeds'].to(dit_device).to(self.weight_dtype)
+            negative_prompt_embeds = embeddings['negative_prompt_embeds'].to(dit_device).to(self.weight_dtype)
+            negative_text_ids = embeddings['negative_text_ids'].to(dit_device).to(self.weight_dtype)
+
+        with torch.inference_mode():
+            for _, t in enumerate(
+                tqdm(
+                    timesteps, total=num_inference_steps, desc="Flux Kontext Generation"
+                )
+            ):
+            latent_model_input =[latents]
+            if 'control_latents' in embeddings:
+                latent_model_input.append(embeddings['control_latents'].to(dit_device).to(self.weight_dtype))
+            for i in range(1, num_additional_controls+1):
+                control_latents = f'control_{i}_latents'
+                if control_latents in embeddings:
+                    latent_model_input.append(embeddings[control_latents].to(dit_device).to(self.weight_dtype))
+            latent_model_input = torch.cat(latent_model_input, dim=1)
+            timestep = t.expand(batch_size).to(dit_device).to(self.weight_dtype)
+            noise_pred = self.dit(
+                    hidden_states=latent_model_input,
+                    timestep=timestep / 1000,
+                    guidance=guidance,
+                    pooled_projections=pooled_prompt_embeds,
+                    encoder_hidden_states=prompt_embeds,
+                    txt_ids=text_ids,
+                    img_ids=latent_ids,
+                    joint_attention_kwargs={},
+                    return_dict=False,
+                )[0]
+            noise_pred = noise_pred[:, : image_seq_len]
+            if true_cfg_scale > 1.0 and 'negative_pooled_prompt_embeds' in embeddings:
+                neg_noise_pred = self.dit(
+                        hidden_states=latent_model_input,
+                        timestep=timestep / 1000,
+                        guidance=guidance,
+                        pooled_projections=negative_pooled_prompt_embeds,
+                        encoder_hidden_states=negative_prompt_embeds,
+                        txt_ids=negative_text_ids,
+                        img_ids=latent_ids,
+                        joint_attention_kwargs={},
+                        return_dict=False,
+                )[0]
+                neg_noise_pred = neg_noise_pred[:, : image_seq_len]
+                noise_pred = neg_noise_pred + true_cfg_scale * (
+                        noise_pred - neg_noise_pred
+                )
+            latents = self.scheduler.step(
+                noise_pred, t, latents, return_dict=False
+            )[0]
+        return latents
+
+
+    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
+        # latents after unpack torch.Size([1, 16, 106, 154])
+        latents = (
+            latents / self.vae.config.scaling_factor
+        ) + self.vae.config.shift_factor
+        image = self.vae.decode(latents, return_dict=False)[0]
+        image = self.image_processor.postprocess(image, output_type="pt")
+        return image
+
+    def prepare_predict_batch_data(
         self,
         prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]],
         prompt: Union[str, List[str]],
@@ -1232,297 +1353,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
         weight_dtype: torch.dtype = torch.bfloat16,
         true_cfg_scale: float = 1.0,
         **kwargs,
-    ) -> Union[np.ndarray, List[np.ndarray]]:
-        """
-        Prediction method for Flux Kontext model inference.
-        Implements the complete Flux Kontext inference pipeline.
-
-        Args:
-            prompt_image: Input image(s) for conditioning
-            prompt: Text prompt(s) for generation
-            negative_prompt: Negative text prompt(s) for CFG
-            num_inference_steps: Number of denoising steps
-            guidance_scale: Classifier-free guidance scale for guided distilled model
-            height: Output image height (if None, calculated from input)
-            width: Output image width (if None, calculated from input)
-            generator: Random generator for reproducible results
-            weight_dtype: Weight data type for computations
-
-        Returns:
-            Generated image(s) as numpy arrays
-        """
-        logging.info(
-            f"Starting Flux Kontext prediction with {num_inference_steps} steps, "
-        )
-
+    ) -> dict:
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
         self.weight_dtype = weight_dtype
-        if not hasattr(self, "vae") or self.vae is None:
-            logging.info("Loading model...")
-            self.load_model()
-
-        if not self.predict_setted:
-            self.setup_predict()
-
-        # 1. Process input format
-        # convert imgage to tensor
         if not isinstance(prompt_image, list):
             prompt_image = [prompt_image]
-        image = []
-        for img in prompt_image:
-            if isinstance(img, PIL.Image.Image):
-                img = img.convert("RGB")
-                img = np.array(img).astype(np.float32)
-            if isinstance(img, np.ndarray):
-                img = torch.from_numpy(img.astype(np.float32))
-            if len(img.shape) == 2:
-                img = img.unsqueeze(0)
-                img = img.repeat(3, 1, 1)
-            if len(img.shape) == 3 and img.shape[-1] == 3:
-                img = img.permute(2, 0, 1)  # [H,W,C] ->  [C,H,W]
-            image.append(img)
-        image = torch.stack(image, dim=0)
-        image = self.preprocess_image(image)
-
-        batch_size = image.shape[0]
-        if isinstance(prompt, str):
-            prompt = [prompt] * batch_size
-        elif len(prompt) != batch_size:
-            raise ValueError(
-                f"Number of prompts ({len(prompt)}) must match number of "
-                + f"images ({batch_size})"
-            )
-        # if  negative_prompt is not None and isinstance(negative_prompt, str):
-        #     negative_prompt = [negative_prompt]
-
-        logging.info(f"prompt: {prompt}")
-        logging.info(f"negative_prompt: {negative_prompt}")
-        # 2. Calculate image dimensions
-        height, width = image.shape[2:]  # use original image size
-
-        # 3. Get device configurations
-        device_vae = self.config.predict.devices.get("vae", "cuda:0")
-        device_text_encoder = self.config.predict.devices.get("text_encoder", "cuda:0")
-        device_text_encoder_2 = self.config.predict.devices.get(
-            "text_encoder_2", "cuda:0"
-        )
-        device_transformer = self.config.predict.devices.get("transformer", "cuda:0")
-
-        logging.info(
-            f"Using devices - VAE: {device_vae}, Text Encoders: {device_text_encoder}/"
-            + f"{device_text_encoder_2}, Transformer: {device_transformer}"
-        )
-
-        # 4. Encode prompts (dual encoder: CLIP + T5)
-        pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
-            prompt=prompt,
-            prompt_2=prompt_2,
-            device_text_encoder=device_text_encoder,
-            device_text_encoder_2=device_text_encoder_2,
-            max_sequence_length=self.max_sequence_length,
-        )
-        if true_cfg_scale > 1.0 and negative_prompt is not None:
-            (
-                negative_pooled_prompt_embeds,
-                negative_prompt_embeds,
-                negative_text_ids,
-            ) = self.encode_prompt(
-                prompt=negative_prompt,
-                prompt_2=negative_prompt_2,
-                device_text_encoder=device_text_encoder,
-                device_text_encoder_2=device_text_encoder_2,
-                max_sequence_length=self.max_sequence_length,
-            )
-            logging.info(f"negative_prompt_embeds shape {negative_prompt_embeds.shape}")
-            logging.info(f"negative_text_ids shape {negative_text_ids.shape}")
-            logging.info(f"negative_text_ids {negative_text_ids}")
-            logging.info(
-                f"negative_pooled_prompt_embeds shape {negative_pooled_prompt_embeds.shape}"
-            )
-
-        # 5. Prepare latents
-        print("image", image.shape)
-        print("batch_size", batch_size)
-        print("height", height)
-        print("width", width)
-        print("self.weight_dtype", self.weight_dtype)
-        print("device_vae", device_vae)
-        latents, image_latents, latent_ids, image_ids = self.prepare_latents(
-            image,
-            batch_size,
-            16,
-            height,
-            width,
-            self.weight_dtype,
-            device_vae,
-        )
-        print("shape of latents", latents.shape)
-        print("shape of image_latents", image_latents.shape)
-        print("shape of latent_ids", latent_ids.shape)
-        print("shape of image_ids", image_ids.shape)
-
-        latent_ids = torch.cat(
-            [latent_ids, image_ids], dim=0
-        )  # dim 0 is sequence dimension
-
-        # 6. timesteps
-        sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
-        # sigmas [1.   0.95 0.9  0.85 0.8  0.75 0.7  0.65 0.6  0.55 0.5  0.45 0.4  0.35
-        #  0.3  0.25 0.2  0.15 0.1  0.05]
-        # image_seq_len 4081
-        image_seq_len = latents.shape[1]
-        mu = calculate_shift(
-            image_seq_len,
-            self.scheduler.config.get("base_image_seq_len", 256),
-            self.scheduler.config.get("max_image_seq_len", 4096),
-            self.scheduler.config.get("base_shift", 0.5),
-            self.scheduler.config.get("max_shift", 1.15),
-        )
-        # mu: 1.1474609375
-        timesteps, num_inference_steps = retrieve_timesteps(
-            self.scheduler,
-            num_inference_steps,
-            device_transformer,
-            sigmas=sigmas,
-            mu=mu,
-        )
-
-        # 7. Guidance
-        guidance = torch.full(
-            [1], self.guidance, device=device_transformer, dtype=torch.float32
-        )
-        guidance = guidance.expand(latents.shape[0])
-
-        # 8. Denoising loop
-        # # move all tensors to device_transformer
-        latents = latents.to(device_transformer)
-        guidance = guidance.to(device_transformer)
-        pooled_prompt_embeds = pooled_prompt_embeds.to(device_transformer)
-        prompt_embeds = prompt_embeds.to(device_transformer)
-        text_ids = text_ids.to(device_transformer)
-        if true_cfg_scale > 1.0 and negative_prompt is not None:
-            negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.to(
-                device_transformer
-            )
-            negative_prompt_embeds = negative_prompt_embeds.to(device_transformer)
-            negative_text_ids = negative_text_ids.to(device_transformer)
-
-        self.scheduler.set_begin_index(0)
-        with torch.inference_mode():
-            for _, t in enumerate(
-                tqdm(
-                    timesteps, total=num_inference_steps, desc="Flux Kontext Generation"
-                )
-            ):
-                latent_model_input = latents
-                if image_latents is not None:
-                    latent_model_input = torch.cat([latents, image_latents], dim=1)
-                timestep = t.expand(latents.shape[0]).to(latents.dtype)
-                # latent_model_input torch.Size([1, 8137, 64])
-                # latent_model_input shape torch.Size([1, 183040, 64])
-                # timestep tensor([1000.], device='cuda:0', dtype=torch.bfloat16)
-                # guidance None
-                # pooled_prompt_embeds torch.Size([1, 768])
-                # prompt_embeds torch.Size([1, 512, 4096])
-                # text_ids torch.Size([512, 3])
-                # latent_ids torch.Size([183040, 3])
-                noise_pred = self.dit(
-                    hidden_states=latent_model_input,
-                    timestep=timestep / 1000,
-                    guidance=guidance,
-                    pooled_projections=pooled_prompt_embeds,
-                    encoder_hidden_states=prompt_embeds,
-                    txt_ids=text_ids,
-                    img_ids=latent_ids,
-                    joint_attention_kwargs={},
-                    return_dict=False,
-                )[0]
-                # noise_pred torch.Size([1, 8137, 64])
-                noise_pred = noise_pred[:, : latents.size(1)]
-                # noise_pred after choose first 4081 torch.Size([1, 4081, 64])
-                if true_cfg_scale > 1.0 and negative_prompt is not None:
-                    neg_noise_pred = self.dit(
-                        hidden_states=latent_model_input,
-                        timestep=timestep / 1000,
-                        guidance=guidance,
-                        pooled_projections=negative_pooled_prompt_embeds,
-                        encoder_hidden_states=negative_prompt_embeds,
-                        txt_ids=negative_text_ids,
-                        img_ids=latent_ids,
-                        joint_attention_kwargs={},
-                        return_dict=False,
-                    )[0]
-                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
-                    noise_pred = neg_noise_pred + true_cfg_scale * (
-                        noise_pred - neg_noise_pred
-                    )
-
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(
-                    noise_pred, t, latents, return_dict=False
-                )[0]
-
-        latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
-        # latents after unpack torch.Size([1, 16, 106, 154])
-        latents = (
-            latents / self.vae.config.scaling_factor
-        ) + self.vae.config.shift_factor
-        image = self.vae.decode(latents, return_dict=False)[0]
-        image = self.image_processor.postprocess(image, output_type="pil")
-        return image
-
-
-    # Validation sampling methods
-    def encode_vae_image_for_validation(self, image):
-        """Encode image for validation using existing VAE encoding logic"""
-        if isinstance(image, str):  # 如果是路径，先加载图片
-            from PIL import Image
-            image = Image.open(image)
-
-        # 使用现有的preprocess_image和encode_vae_image方法
-        import numpy as np
-        image_tensor = self.preprocess_image(torch.from_numpy(np.array(image)).permute(2, 0, 1).unsqueeze(0))
-
-        # 临时移动VAE到GPU进行编码
-        original_device = self.vae.device
-        self.vae.to(self.accelerator.device)
-
-        try:
-            with torch.no_grad():
-                latents = self.encode_vae_image(image_tensor)
-        finally:
-            # 恢复VAE设备
-            self.vae.to(original_device)
-
-        return latents[0].cpu()  # 返回CPU上的latents以节省显存
-
-    def encode_prompt_for_validation(self, prompt, control_image=None):
-        """Encode prompt for validation using existing dual encoder logic"""
-        # 临时移动编码器到GPU
-        original_text_encoder_device = self.text_encoder.device
-        original_text_encoder_2_device = self.text_encoder_2.device
-
-        self.text_encoder.to(self.accelerator.device)
-        self.text_encoder_2.to(self.accelerator.device)
-
-        try:
-            with torch.no_grad():
-                # 复用现有的encode_prompt方法
-                pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
-                    prompt=prompt,
-                    prompt_2=prompt,
-                    device_text_encoder=self.accelerator.device,
-                    device_text_encoder_2=self.accelerator.device,
-                    max_sequence_length=self.max_sequence_length,
-                )
-        finally:
-            # 恢复编码器设备
-            self.text_encoder.to(original_text_encoder_device)
-            self.text_encoder_2.to(original_text_encoder_2_device)
-
-        return {
-            'pooled_prompt_embeds': pooled_prompt_embeds[0].cpu(),
-            'prompt_embeds': prompt_embeds[0].cpu(),
-            'text_ids': text_ids.cpu()
-        }

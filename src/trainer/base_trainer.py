@@ -13,6 +13,8 @@ import torch.nn as nn
 import os
 import shutil
 import json
+import numpy as np
+from src.utils.sampling import calculate_shift, retrieve_timesteps
 from tqdm import tqdm
 import logging
 import PIL
@@ -20,6 +22,7 @@ from src.data.config import Config
 from src.utils.model_summary import print_model_summary_table
 from src.utils.lora_utils import FpsLogger
 from src.utils.tools import get_git_info
+from src.scheduler.custom_flowmatch_scheduler import FlowMatchEulerDiscreteScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,7 @@ class BaseTrainer(ABC):
         self.optimizer = None
         self.lr_scheduler = None
         self.global_step = 0
+        self.scheduler: FlowMatchEulerDiscreteScheduler = None
 
         # Common attributes that all trainers should have
         self.weight_dtype = torch.bfloat16
@@ -629,6 +633,25 @@ class BaseTrainer(ABC):
         image = image.to(self.weight_dtype)
         return image * 2.0 - 1.0
 
+    def prepare_predict_timesteps(self, num_inference_steps: int, image_seq_len: int) -> torch.Tensor:
+        sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+        mu = calculate_shift(
+            image_seq_len,
+            self.scheduler.config.get("base_image_seq_len", 256),
+            self.scheduler.config.get("max_image_seq_len", 4096),
+            self.scheduler.config.get("base_shift", 0.5),
+            self.scheduler.config.get("max_shift", 1.15),
+        )
+        device = next(self.dit.parameters()).device
+        timesteps, num_inference_steps = retrieve_timesteps(
+            self.scheduler,
+            num_inference_steps,
+            device,
+            sigmas=sigmas,
+            mu=mu,
+        )
+        return timesteps, num_inference_steps
+
     @abstractmethod
     def load_model(self, **kwargs):
         """Load and initialize model components."""
@@ -686,8 +709,6 @@ class BaseTrainer(ABC):
         We want to reuse the same data preparation code in the training step.
         """
         pass
-
-
 
     @abstractmethod
     def cache_step(self, data: dict, devices: dict):
