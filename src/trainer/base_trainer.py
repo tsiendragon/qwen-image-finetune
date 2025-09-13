@@ -201,10 +201,8 @@ class BaseTrainer(ABC):
 
     def cache(self, train_dataloader):
         """Pre-compute and cache embeddings/latents for training efficiency."""
-        from src.data.cache_manager import EmbeddingCacheManager
-
-        self.cache_manager: EmbeddingCacheManager = train_dataloader.cache_manager
         logging.info("Starting embedding caching process...")
+        self.load_model()
         self.setup_model_device_train_mode(stage="cache", cache=True)
         # Cache for each item (same loop structure as QwenImageEditTrainer)
         dataset = train_dataloader.dataset
@@ -227,7 +225,6 @@ class BaseTrainer(ABC):
         if hasattr(self, "vae"):
             self.vae.cpu()
             del self.vae
-            del self.vae.decoder
         if hasattr(self, "vit"):
             self.vit.cpu()
             del self.vit
@@ -422,7 +419,7 @@ class BaseTrainer(ABC):
             logging.info("Loading model...")
             self.load_model()
         self.load_pretrain_lora_model(
-            self.dit, self.config, self.config.lora_adapter_name
+            self.dit, self.config, self.config.lora_adapter_name, stage="predict"
         )
         if self.config.model.quantize:
             self.dit = self.quantize_model(
@@ -430,26 +427,35 @@ class BaseTrainer(ABC):
                 self.config.predict.devices.dit,
             )
         self.setup_model_device_train_mode(stage="predict")
+        logging.info("setup_model_device_train_mode done")
         print_model_summary_table(self.dit)
+        logging.info(f"setup_predict done")
+
+    @abstractmethod
+    def prepare_predict_batch_data(self, *args, **kwargs) -> dict:
+        """Prepare predict batch data.
+        prepare the data to batch dict that can be used to prepare embeddings similar in the training step.
+        We want to reuse the same data preparation code in the training step.
+        """
+        pass
 
     def predict(
         self,
-        *args,
-        output_type="pil",
         **kwargs,
     ):
         """Inference/prediction method.
         Prepare the data, prepare the embeddings, sample the latents, decode the latents to images.
         """
         self.setup_predict()
-        batch = self.prepare_predict_batch_data(*args)
+        batch = self.prepare_predict_batch_data(**kwargs)
         embeddings: dict = self.prepare_embeddings(batch, stage="predict")
         target_height = embeddings["height"]
         target_width = embeddings["width"]
         latents = self.sampling_from_embeddings(embeddings)
         image = self.decode_vae_latent(latents, target_height, target_width)
+        output_type = kwargs.get("output_type", "pil")
         if output_type == "pil":
-            image = image.detach().permute(0, 2, 3, 1).float().numpy()
+            image = image.detach().permute(0, 2, 3, 1).float().cpu().numpy()
             image = (image * 255).round().astype("uint8")
             if image.shape[-1] == 1:
                 # special case for grayscale (single channel) images
@@ -630,7 +636,7 @@ class BaseTrainer(ABC):
 
     @classmethod
     def load_pretrain_lora_model(
-        cls, transformer: torch.nn.Module, config, adapter_name: str
+        cls, transformer: torch.nn.Module, config, adapter_name: str, stage='fit',
     ):
         from src.utils.lora_utils import classify_lora_weight
 
@@ -663,7 +669,8 @@ class BaseTrainer(ABC):
                 logging.info(f"missing keys: {len(missing)}, {missing[0]}")
                 # self.load_lora(self.config.model.lora.pretrained_weight)
             logging.info(f"set_lora: Loaded lora from {pretrained_weight}")
-        else:
+
+        elif stage == 'fit':
             cls.add_lora_adapter(transformer, config, adapter_name)
 
     def normalize_image(self, image: torch.Tensor) -> torch.Tensor:
@@ -744,13 +751,6 @@ class BaseTrainer(ABC):
         """
         pass
 
-    @abstractmethod
-    def prepare_predict_batch_data(self, *args) -> dict:
-        """Prepare predict batch data.
-        prepare the data to batch dict that can be used to prepare embeddings similar in the training step.
-        We want to reuse the same data preparation code in the training step.
-        """
-        pass
 
     @abstractmethod
     def cache_step(self, data: dict):

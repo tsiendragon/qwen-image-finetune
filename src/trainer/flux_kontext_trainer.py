@@ -6,7 +6,7 @@ import torch
 import PIL
 import gc
 import inspect
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Tuple
 from tqdm.auto import tqdm
 from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
@@ -304,8 +304,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
     def prepare_embeddings(self, batch, stage="fit"):
         # for predict, not 'image' key, but 'pixel_latent' key
         # torch.tensor of image, control [B,C,H,W], in range [0,1]
-        # for predict: add extra latent_ids, latents
+        # for predict: add extra latent_ids, latents, guidance
         # for cache: add empty_pooled_prompt_embeds, empty_prompt_embeds
+        logging.info('prepare_embeddings')
         if "image" in batch:
             batch["image"] = self.normalize_image(batch["image"])
 
@@ -375,11 +376,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
 
             batch["image_latents"] = image_latents
-            batch["image_ids"] = image_ids
-            if stage == "predict":
-                batch["latents"] = latents
-                batch["latent_ids"] = latent_ids
+            logging.info(f"stage: {stage}")
 
+        logging.info(f"batch: {batch.keys()}")
         if "control" in batch:
             control = batch["control"]
             batch_size = control.shape[0]
@@ -395,6 +394,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             control_ids[..., 0] = 1
             batch["control_latents"] = [control_latents]
             batch["control_ids"] = [control_ids]
+            logging.info(f"control_ids: {control_ids}")
 
         for i in range(1, num_additional_controls + 1):
             control_key = f"control_{i}"
@@ -438,29 +438,27 @@ class FluxKontextLoraTrainer(BaseTrainer):
         empty_pooled_prompt_embeds = data["empty_pooled_prompt_embeds"].detach().cpu()
         empty_prompt_embeds = data["empty_prompt_embeds"].detach().cpu()
         text_ids = data["text_ids"].detach().cpu()
-        image_ids = data["image_ids"].detach().cpu()
+        # image_ids = data["image_ids"].detach().cpu()
         control_ids = data["control_ids"].detach().cpu()
         cache_embeddings = {
-            "image_latents": image_latents,
-            "control_latent": control_latents,
-            "pooled_prompt_embed": pooled_prompt_embeds,
-            "prompt_embed": prompt_embeds,
-            "empty_pooled_prompt_embed": empty_pooled_prompt_embeds,
-            "empty_prompt_embed": empty_prompt_embeds,
+            "image_latents": image_latents[0],
+            "control_latents": control_latents[0],
+            "pooled_prompt_embed": pooled_prompt_embeds[0],
+            "prompt_embed": prompt_embeds[0],
+            "empty_pooled_prompt_embed": empty_pooled_prompt_embeds[0],
+            "empty_prompt_embed": empty_prompt_embeds[0],
             "control_ids": control_ids,
             "text_ids": text_ids,
-            "image_ids": image_ids,
         }
         map_keys = {
             "image_latents": "image_hash",
-            "control_latent": "control_hash",
+            "control_latents": "control_hash",
             "pooled_prompt_embed": "prompt_hash",
             "prompt_embed": "prompt_hash",
             "empty_pooled_prompt_embed": "prompt_hash",
             "empty_prompt_embed": "prompt_hash",
             "control_ids": "control_hash",
             "text_ids": "prompt_hash",
-            "image_ids": "image_hash",
         }
         self.cache_manager.save_cache_embedding(
             cache_embeddings, map_keys, data["file_hashes"]
@@ -482,10 +480,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         pooled_prompt_embeds = embeddings["pooled_prompt_embeds"]
         prompt_embeds = embeddings["prompt_embeds"]
         device = self.accelerator.device
-        # image_height, image_width = embeddings["image"].shape
+        image_height, image_width = embeddings['image'].shape[2:]
 
         with torch.no_grad():
-            # batch_size = image_latents.shape[0]
+            batch_size = image_latents.shape[0]
             noise = torch.randn_like(
                 image_latents, device=self.accelerator.device, dtype=self.weight_dtype
             )
@@ -495,17 +493,16 @@ class FluxKontextLoraTrainer(BaseTrainer):
             t_ = t.unsqueeze(1).unsqueeze(1)
             noisy_model_input = (1.0 - t_) * image_latents + t_ * noise
 
-            # image_width = int(image_width) // (self.vae_scale_factor * 2)
-            # image_height = int(image_height) // (self.vae_scale_factor * 2)
+            image_width = int(image_width) // (self.vae_scale_factor * 2)
+            image_height = int(image_height) // (self.vae_scale_factor * 2)
 
-            # latent_ids = self._prepare_latent_image_ids(
-            #     batch_size,
-            #     image_height,
-            #     image_width,
-            #     self.accelerator.device,
-            #     self.weight_dtype,
-            # )
-            latent_ids = embeddings['image_ids'].to(device).to(self.weight_dtype)
+            latent_ids = self._prepare_latent_image_ids(
+                batch_size,
+                image_height,
+                image_width,
+                self.accelerator.device,
+                self.weight_dtype,
+            )
             # Prepare input for transformer
             latent_model_input = torch.cat([noisy_model_input, control_latents], dim=1)
             latent_ids = torch.cat([latent_ids, control_ids], dim=0)
@@ -651,6 +648,23 @@ class FluxKontextLoraTrainer(BaseTrainer):
         ) * self.vae.config.scaling_factor
         return image_latents
 
+    def create_sampling_latents(self,
+                                height: int,
+                                width: int,
+                                batch_size: int,
+                                num_channels_latents: int,
+                                device=None,
+                                dtype=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        height = 2 * (int(height) // (self.vae_scale_factor * 2))
+        width = 2 * (int(width) // (self.vae_scale_factor * 2))
+        shape = (batch_size, num_channels_latents, height, width)
+        latent_ids = self._prepare_latent_image_ids(
+            batch_size, height // 2, width // 2, device, dtype
+        )
+        latents = randn_tensor(shape, device=device, dtype=self.weight_dtype)
+        latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
+        return latents, latent_ids
+
     def sampling_from_embeddings(self, embeddings: dict) -> torch.Tensor:
         """
         embeddgings dict from prepare embeddings
@@ -659,19 +673,26 @@ class FluxKontextLoraTrainer(BaseTrainer):
         # num_additional_controls = embeddings["num_additional_controls"]
         num_inference_steps = embeddings["num_inference_steps"]
         true_cfg_scale = embeddings["true_cfg_scale"]
-        latent_ids = embeddings["latent_ids"]
         control_ids = embeddings["control_ids"]
         control_latents = embeddings["control_latents"]
+        dit_device = next(self.dit.parameters()).device
+        batch_size = embeddings["control_latents"].shape[0]
+
+        latents, latent_ids = self.create_sampling_latents(
+            embeddings["height"],
+            embeddings["width"],
+            batch_size,
+            16,
+            dit_device,
+            self.weight_dtype)
 
         latent_ids = torch.cat([latent_ids, control_ids], dim=0)
-        batch_size = embeddings["latents"].shape[0]
-        image_seq_len = embeddings["latents"].shape[1]
+        image_seq_len = latents.shape[1]
         timesteps, num_inference_steps = self.prepare_predict_timesteps(
             num_inference_steps, image_seq_len
         )
-        dit_device = next(self.dit.parameters()).device
         guidance = torch.full(
-            [1], self.guidance, device=dit_device, dtype=torch.float32
+            [1], embeddings['guidance'], device=dit_device, dtype=torch.float32
         )
         guidance = guidance.expand(batch_size)
         self.scheduler.set_begin_index(0)
@@ -683,9 +704,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         )
         prompt_embeds = embeddings["prompt_embeds"].to(dit_device).to(self.weight_dtype)
         text_ids = embeddings["text_ids"].to(dit_device).to(self.weight_dtype)
-        latents = (
-            embeddings["latents"].to(dit_device).to(self.weight_dtype)
-        )  # initial noise tensor
         control_latents = control_latents.to(dit_device).to(self.weight_dtype)
         if true_cfg_scale > 1.0 and "negative_pooled_prompt_embeds" in embeddings:
             negative_pooled_prompt_embeds = (
@@ -769,6 +787,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         num_inference_steps: int = 20,
         height: Optional[int] = None,
         width: Optional[int] = None,
+        guidance_scale: float = 3.5,
         additional_controls_size: Optional[List[int]] = None,
         generator: Optional[torch.Generator] = None,
         weight_dtype: torch.dtype = torch.bfloat16,
@@ -857,4 +876,5 @@ class FluxKontextLoraTrainer(BaseTrainer):
         data["height"] = height
         data["width"] = width
         data["true_cfg_scale"] = true_cfg_scale
+        data['guidance'] = guidance_scale
         return data

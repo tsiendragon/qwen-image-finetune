@@ -60,6 +60,7 @@ class EmbeddingCacheManager:
         ), "hash_maps values must be a subset of file_hashes keys"
         main_hash = file_hashes["image_hash"]
         metadata_path = self.get_metadata_path(self.cache_root, main_hash)
+        os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
         metadata = {}
 
         for key in data.keys():
@@ -67,6 +68,7 @@ class EmbeddingCacheManager:
             hash_value = file_hashes[hash_type]
             embedding = data[key].detach().cpu().to(torch.float16)
             cache_path = self.get_cache_embedding_path(key, hash_value)
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             torch.save(embedding, cache_path)
             metadata[key] = hash_value
 
@@ -96,8 +98,5 @@ class EmbeddingCacheManager:
     @classmethod
     def exist(cls, cache_root: str):
         """check if metadata exists"""
-        meta_folder = cls.get_metadata_path(cache_root, "image_hash")
-        if os.path.exists(meta_folder):
-            metadata_files = glob.glob(os.path.join(meta_folder, "*.json"))
-            return len(metadata_files) > 0
-        return False
+        metadatas = glob.glob(os.path.join(cache_root, "*_metadata.json"))
+        return len(metadatas) > 0
