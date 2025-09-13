@@ -4,6 +4,7 @@ from src.data.dataset import loader
 from src.utils.options import parse_args
 from src.utils.logger import get_logger
 from src.utils.seed import seed_everything
+from src.data.config import TrMode
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -37,6 +38,10 @@ def main():
     # 创建训练器
     Trainer = import_trainer(config)
     trainer = Trainer(config)
+    if config.mode != TrMode.fit:
+        # if not in training, skip caption dropout
+        config.data.init_args.caption_dropout_rate = 0
+        config.caption_dropout_rate = 0
 
     # 加载数据
     train_dataloader = loader(

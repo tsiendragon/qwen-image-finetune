@@ -7,12 +7,15 @@ import os
 from typing import Dict, Any, Optional, List, Union
 import re
 import torch
-import yaml
 from omegaconf import OmegaConf
-from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
-from pydantic import BaseModel, Field, ConfigDict, field_serializer
-
-from pydantic import field_validator, ValidationInfo
+from pydantic import (
+    BaseModel,
+    Field,
+    ConfigDict,
+    field_validator,
+    model_validator,
+    field_serializer,
+)
 
 from pydantic import computed_field
 from enum import Enum
@@ -493,12 +496,16 @@ class LossConfig(BaseModel):
 # ----------------------------
 # Root Config
 # ----------------------------
-
+class TrMode(str, Enum):
+    cache = "cache"
+    fit = "fit"
+    predict = "predict"
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     trainer: TrainerKind = TrainerKind.QwenImageEdit
     resume: str | None = None
+    mode: TrMode = TrMode.predict
     model: ModelConfig = Field(default_factory=ModelConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
@@ -548,6 +555,11 @@ class Config(BaseModel):
     @property
     def target_size(self) -> str:
         return self.data.init_args.processor.init_args.target_size
+
+    @computed_field  # type: ignore[prop-declared]
+    @property
+    def caption_dropout_rate(self) -> float:
+        return self.data.init_args.caption_dropout_rate
 
     # 1) 纯计算，不读 computed 字段，不改状态
     def _compute_quantization_type(self) -> str:
@@ -605,6 +617,12 @@ def load_config_from_yaml(yaml_path: str) -> Config:
 if __name__ == "__main__":
     config = load_config_from_yaml("configs/example_fluxkontext_fp16.yaml")
     print(config)
+    x = config.model_dump_json(indent=2, exclude_none=True)
+    print('type of x', type(x))
     print(config.model_dump_json(indent=2, exclude_none=True))
     d_json = config.model_dump(mode="json", exclude_none=True)
-    print(d_json)
+    print(d_json, type(d_json))
+    import yaml
+    with open("test_config.yaml", "w") as f:
+        yaml.dump(d_json, f, default_flow_style=False, sort_keys=False)
+

@@ -5,13 +5,21 @@ Defines the core interface that all trainers must implement.
 
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
+from src.data.cache_manager import EmbeddingCacheManager
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Any
 import torch
+import torch.nn as nn
 import os
 import shutil
 import json
+from tqdm import tqdm
 import logging
+import PIL
+from src.data.config import Config
+from src.utils.model_summary import print_model_summary_table
+from src.utils.lora_utils import FpsLogger
+from src.utils.tools import get_git_info
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +30,7 @@ class BaseTrainer(ABC):
     Defines the core interface that all trainers must implement.
     """
 
-    def __init__(self, config):
+    def __init__(self, config: Config):
         """Initialize trainer with configuration."""
         self.config = config
         self.accelerator: Optional[Accelerator] = None
@@ -32,15 +40,26 @@ class BaseTrainer(ABC):
 
         # Common attributes that all trainers should have
         self.weight_dtype = torch.bfloat16
-        self.batch_size = config.data.batch_size
-        self.use_cache = config.cache.use_cache
-        self.cache_dir = config.cache.cache_dir
-
-        logger.info(f"Initialized {self.__class__.__name__} with config")
+        self.batch_size = self.config.data.batch_size
+        self.use_cache = self.config.cache.use_cache
+        self.cache_dir = self.config.cache.cache_dir
+        self.fps_logger = FpsLogger()
+        self.cache_manager = EmbeddingCacheManager(self.cache_dir)
+        self.cache_exist = self.cache_manager.exist(self.cache_dir)
+        self.quantize = self.config.model.quantize
+        self.adapter_name = self.config.model.lora.adapter_name
+        self.log_model_info()
 
     def __repr__(self) -> str:
         msg = f"{self.__class__.__name__}(config={self.config})"
         return msg
+
+    def log_model_info(self):
+        """Log model information."""
+        logger.info(f"Model Type: {self.get_model_type()}")
+        logger.info(f"Precision Info: {self.get_precision_info()}")
+        logger.info(f"Batch Size: {self.batch_size}")
+        logger.info(f"Use Cache: {self.use_cache}")
 
     def setup_versioned_logging_dir(self):
         """设置版本化的日志目录"""
@@ -131,30 +150,20 @@ class BaseTrainer(ABC):
         from diffusers.loaders import AttnProcsLayers
         from src.utils.lora_utils import get_lora_layers
 
-        lora_layers_model = AttnProcsLayers(get_lora_layers(self.transformer))
+        lora_layers_model = AttnProcsLayers(get_lora_layers(self.dit))
 
         # 根据配置决定是否启用梯度检查点
         if self.config.train.gradient_checkpointing:
-            self.transformer.enable_gradient_checkpointing()
-        if self.config.train.resume_from_checkpoint is not None:
+            self.dit.enable_gradient_checkpointing()
+        if self.config.resume is not None:
             # self.accelerator.load_state(self.config.train.resume_from_checkpoint)
             self.optimizer.load_state_dict(
-                torch.load(
-                    os.path.join(
-                        self.config.train.resume_from_checkpoint, "optimizer.bin"
-                    )
-                )
+                torch.load(os.path.join(self.config.resume, "optimizer.bin"))
             )
             self.lr_scheduler.load_state_dict(
-                torch.load(
-                    os.path.join(
-                        self.config.train.resume_from_checkpoint, "scheduler.bin"
-                    )
-                )
+                torch.load(os.path.join(self.config.resume, "scheduler.bin"))
             )
-            logging.info(
-                f"Loaded optimizer and scheduler from {self.config.train.resume_from_checkpoint}"
-            )
+            logging.info(f"Loaded optimizer and scheduler from {self.config.resume}")
 
         lora_layers_model, optimizer, train_dataloader, lr_scheduler = (
             self.accelerator.prepare(
@@ -169,41 +178,250 @@ class BaseTrainer(ABC):
 
     def merge_lora(self):
         """Merge LoRA weights into base model"""
-        self.transformer.merge_adapter()
+        self.dit.merge_adapter()
         logging.info("Merged LoRA weights into base model")
 
-    @abstractmethod
-    def load_model(self, **kwargs):
-        """Load and initialize model components."""
-        pass
 
-    @abstractmethod
     def cache(self, train_dataloader):
         """Pre-compute and cache embeddings/latents for training efficiency."""
-        pass
+        from src.data.cache_manager import EmbeddingCacheManager
 
-    @abstractmethod
+        self.cache_manager: EmbeddingCacheManager = train_dataloader.cache_manager
+        logging.info("Starting embedding caching process...")
+        self.setup_model_device_train_mode(stage="cache", cache=True)
+        # Cache for each item (same loop structure as QwenImageEditTrainer)
+        dataset = train_dataloader.dataset
+        for data in tqdm(dataset, total=len(dataset), desc="cache_embeddings"):
+            self.cache_step(data, self.config.cache.devices)
+        self.destroy_models()
+        logging.info("Cache completed")
+
+
+
+    def destroy_models(self):
+        import gc
+
+        if hasattr(self, "text_encoder"):
+            self.text_encoder.cpu()
+            del self.text_encoder
+        if hasattr(self, "text_encoder_2"):
+            self.text_encoder_2.cpu()
+            del self.text_encoder_2
+        if hasattr(self, "vae"):
+            self.vae.cpu()
+            del self.vae
+            del self.vae.decoder
+        if hasattr(self, "vit"):
+            self.vit.cpu()
+            del self.vit
+        torch.cuda.empty_cache()
+        gc.collect()
+
+
+
+    def setup_validation(self, train_dataloader):
+        """Setup validation"""
+        from src.validation.validation_sampler import ValidationSampler
+
+        if (
+            hasattr(self.config.logging, "sampling")
+            and self.config.logging.sampling.enable
+        ):
+            validation_sampler = ValidationSampler(
+                config=self.config.logging.sampling,
+                accelerator=self.accelerator,
+                weight_dtype=self.weight_dtype,
+            )
+            validation_sampler.setup_validation_dataset(train_dataloader.dataset)
+            validation_sampler.cache_embeddings()
+            self.validation_sampler = validation_sampler
+        else:
+            self.validation_sampler = None
+
+    def clip_gradients(self):
+        """Clip gradients"""
+        if self.accelerator.sync_gradients:
+            self.accelerator.clip_grad_norm_(
+                self.dit.parameters(),
+                self.config.train.max_grad_norm,
+            )
+
+    def training_step(self, batch: dict) -> torch.Tensor:
+        """Training step"""
+        if all(batch["cached"]):
+            return self._training_step_cached(batch)
+        return self._training_step_compute(batch)
+
+    def _training_step_cached(self, batch: dict) -> torch.Tensor:
+        """Training step with cached data"""
+        embeddings = self.prepare_cached_embeddings(batch)
+        return self._compute_loss(embeddings)
+
+    def _training_step_compute(self, batch: dict) -> torch.Tensor:
+        """Training step with real-time data"""
+        embeddings = self.prepare_embeddings(batch)
+        return self._compute_loss(embeddings)
+
+    def train_epoch(self, epoch, train_dataloader):
+        for _, batch in enumerate(train_dataloader):
+            with self.accelerator.accumulate(self.dit):
+                loss = self.training_step(batch)
+                self.fps_logger.update(
+                    batch_size=self.batch_size * self.accelerator.num_processes,
+                    num_tokens=None,
+                )
+                self.accelerator.backward(loss)
+                self.clip_gradients()
+                self.optimizer.step()
+                self.lr_scheduler.step()
+                self.optimizer.zero_grad()
+            if self.accelerator.sync_gradients:
+                avg_loss = self.accelerator.gather(loss.repeat(self.batch_size)).mean()
+                self.train_loss += (
+                    avg_loss.item() / self.config.train.gradient_accumulation_steps
+                )
+                self.running_loss = 0.9 * self.running_loss + 0.1 * self.train_loss
+                self.update_progressbar(
+                    logs={
+                        "train_loss": f"{self.train_loss:.3f}",
+                        "loss": f"{self.running_loss:.3f}",
+                        "lr": f"{self.lr_scheduler.get_last_lr()[0]:.1e}",
+                        "epoch": epoch,
+                        "fps": f"{self.fps_logger.total_fps():.2f}",
+                    }
+                )
+                self.save_checkpoint(epoch, self.global_step)
+                if (
+                    self.validation_sampler
+                    and self.validation_sampler.should_run_validation(self.global_step)
+                ):
+                    self.fps_logger.pause()
+                    try:
+                        self.validation_sampler.run_validation_loop(
+                            global_step=self.global_step,
+                            trainer=self,  # 传入trainer实例
+                        )
+                    except Exception as e:
+                        self.accelerator.print(f"Validation sampling failed: {e}")
+                    self.fps_logger.resume()
+
+    def setup_progressbar(self):
+        self.train_loss = 0.0
+        self.running_loss = 0.0
+        if self.config.resume is not None:
+            with open(os.path.join(self.config.resume, "state.json")) as f:
+                st = json.load(f)
+            self.global_step = st["global_step"]
+            self.start_epoch = st["epoch"]
+        else:
+            self.global_step = 0
+            self.start_epoch = 0
+        self.progress_bar = tqdm(
+            range(self.global_step, self.config.train.max_train_steps),
+            desc="train",
+            disable=(not self.accelerator.is_local_main_process),
+        )
+        self.num_epochs = int(
+            self.config.train.max_train_steps
+            / self.batch_size
+            / self.accelerator.num_processes
+        )
+
+    def update_progressbar(self, logs: dict):
+        self.progress_bar.update(1)
+        self.global_step += 1
+        self.progress_bar.set_postfix(logs)
+        self.accelerator.log(logs, step=self.global_step)
+
     def fit(self, train_dataloader):
         """Main training loop implementation."""
-        pass
+        self.setup_accelerator()
+        self.load_model()
+        if self.config.resume is not None:
+            # add the checkpoint in lora.pretrained_weight config
+            self.config.model.lora.pretrained_weight = os.path.join(
+                self.config.resume, "model.safetensors"
+            )
+            logging.info(
+                f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
+            )
+        self.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
 
-    @abstractmethod
-    def predict(self, *args, **kwargs):
-        """Inference/prediction method."""
-        pass
+        self.setup_model_device_train_mode(stage="fit", cache=self.use_cache)
+        self.configure_optimizers()
+        self.setup_criterion()
+        self.setup_validation(train_dataloader)
 
-    @abstractmethod
-    def set_model_devices(self, mode: str = "train"):
-        """Set model device allocation based on different modes."""
-        pass
+        train_dataloader = self.accelerator_prepare(train_dataloader)
+        logging.info("***** Running training *****")
+        print_model_summary_table(self.dit)
+        self.fps_logger.start()
+        self.save_train_config()
+        for epoch in range(self.start_epoch, self.num_epochs):
+            self.train_epoch(epoch, train_dataloader)
+        self.fps_logger.stop()
+        logging.info(f"FPS: {self.fps_logger.get_fps()}")
+        self.accelerator.wait_for_everyone()
+        self.accelerator.end_training()
 
-    def setup_predict(self,):
-        pass
+    def setup_criterion(self):
+        if self.config.loss.mask_loss:
+            from src.loss.edit_mask_loss import MaskEditLoss
 
-    @abstractmethod
-    def encode_prompt(self, *args, **kwargs):
-        """Encode text prompts to embeddings."""
-        pass
+            self.criterion = MaskEditLoss(
+                forground_weight=self.config.loss.forground_weight,
+                background_weight=self.config.loss.background_weight,
+            )
+        else:
+            self.criterion = nn.MSELoss()
+        self.criterion.to(self.accelerator.device)
+
+    def setup_predict(
+        self,
+    ):
+        if not hasattr(self, "dit") or self.vae is None:
+            logging.info("Loading model...")
+            self.load_model()
+        self.guidance = 3.5
+        self.load_pretrain_lora_model(
+            self.dit, self.config, self.config.lora_adapter_name
+        )
+        if self.config.model.quantize:
+            self.dit = self.quantize_model(
+                self.dit,
+                self.config.predict.devices.dit,
+            )
+        self.setup_model_device_train_mode(stage="predict")
+        print_model_summary_table(self.dit)
+
+    def predict(
+        self,
+        *args,
+        output_type="pil",
+        **kwargs,
+    ):
+        """Inference/prediction method.
+        Prepare the data, prepare the embeddings, sample the latents, decode the latents to images.
+        """
+        self.setup_predict()
+        batch = self.prepare_predict_batch_data(*args)
+        embeddings: dict = self.prepare_embeddings(batch)
+        latents = self.sampling_from_embeddings(embeddings)
+        image = self.decode_vae_latent(latents)
+        if output_type == "pil":
+            image = image.detach().permute(0, 2, 3, 1).float().numpy()
+            image = (image * 255).round().astype("uint8")
+            if image.shape[-1] == 1:
+                # special case for grayscale (single channel) images
+                pil_images = [
+                    PIL.Image.fromarray(image.squeeze(), mode="L") for image in image
+                ]
+            else:
+                pil_images = [PIL.Image.fromarray(image) for image in image]
+
+            return pil_images
+        return image
+
 
     def setup_accelerator(self):
         """Initialize accelerator and logging configuration"""
@@ -270,14 +488,26 @@ class BaseTrainer(ABC):
 
     def save_checkpoint(self, epoch, global_step):
         """Save checkpoint"""
+        self.fps_logger.pause()
         if not self.accelerator.is_main_process:
             return
         save_path = os.path.join(
             self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
         )
         self.accelerator.save_state(save_path)
+        state_info = {"global_step": global_step, "epoch": epoch}
+        git_info = get_git_info()
+        state_info.update(git_info)
         with open(os.path.join(save_path, "state.json"), "w") as f:
-            json.dump({"global_step": global_step, "epoch": epoch}, f)
+            json.dump(state_info, f)
+        self.fps_logger.resume()
+
+    def save_train_config(self):
+        import yaml
+        d_json = self.config.model_dump(mode="json", exclude_none=True)
+        train_yaml_file = os.path.join(self.config.logging.output_dir, "train_config.yaml")
+        with open(train_yaml_file, "w") as f:
+            yaml.dump(d_json, f, default_flow_style=False, sort_keys=False)
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler"""
@@ -285,13 +515,15 @@ class BaseTrainer(ABC):
 
         trainable_named_params = [
             (name, param)
-            for name, param in self.transformer.named_parameters()
+            for name, param in self.dit.named_parameters()
             if param.requires_grad
         ]
         lora_layers = [param for _, param in trainable_named_params]
 
         # Log how many parameters are in training and show one example
-        if (getattr(self, "accelerator", None) is None) or self.accelerator.is_main_process:
+        if (
+            getattr(self, "accelerator", None) is None
+        ) or self.accelerator.is_main_process:
             total_elements = sum(p.numel() for p in lora_layers)
             logging.info(
                 f"Trainable parameters: {len(lora_layers)} tensors, total elements: {total_elements}"
@@ -326,32 +558,6 @@ class BaseTrainer(ABC):
             num_training_steps=self.config.train.max_train_steps
             * self.accelerator.num_processes,
         )
-
-    def set_criterion(self):
-        import torch.nn as nn
-
-        if self.config.loss.mask_loss:
-            from src.loss.edit_mask_loss import MaskEditLoss
-
-            self.criterion = MaskEditLoss(
-                forground_weight=self.config.loss.forground_weight,
-                background_weight=self.config.loss.background_weight,
-            )
-        else:
-            self.criterion = nn.MSELoss()
-        self.criterion.to(self.accelerator.device)
-
-    def get_model_type(self) -> str:
-        """Get the model type identifier."""
-        return getattr(self.config.model, "model_type", "unknown")
-
-    def get_precision_info(self) -> Dict[str, Any]:
-        """Get precision and quantization information."""
-        return {
-            "weight_dtype": str(self.weight_dtype),
-            "mixed_precision": getattr(self.config.train, "mixed_precision", "none"),
-            "quantize": getattr(self.config.model, "quantize", False),
-        }
 
     @classmethod
     def quantize_model(cls, model, device):
@@ -418,32 +624,76 @@ class BaseTrainer(ABC):
         else:
             cls.add_lora_adapter(transformer, config, adapter_name)
 
-    def log_model_info(self):
-        """Log model information."""
-        logger.info(f"Model Type: {self.get_model_type()}")
-        logger.info(f"Precision Info: {self.get_precision_info()}")
-        logger.info(f"Batch Size: {self.batch_size}")
-        logger.info(f"Use Cache: {self.use_cache}")
+    def normalize_image(self, image: torch.Tensor) -> torch.Tensor:
+        """Normalize image from [0,1] to [-1,1]"""
+        image = image.to(self.weight_dtype)
+        return image * 2.0 - 1.0
 
     @abstractmethod
-    def encode_vae_image_for_validation(self, image):
-        """Encode image to latent space for validation. Used only for validation.
-        Input: np.ndarray, C,H,W, RGB
-        Output: dict from prepare latents: could be different from qwen & flux kontext
-        """
-        pass
-
-    @abstractmethod
-    def encode_prompt_for_validation(self, prompt, control):
-        """Encode prompt to latent space for validation. Used only for validation.
-        Input:
-            - prompt: str
-            - control: np.ndarray, C,H,W, Required for Qwen. Flux only need  prompt
-        Output: dict from encode_prompt: could be different from qwen & flux kontext.
-        """
+    def load_model(self, **kwargs):
+        """Load and initialize model components."""
         pass
 
     @abstractmethod
     def save_lora(self, save_path):
         """Save LoRA weights"""
+        pass
+
+    @abstractmethod
+    def encode_prompt(self, *args, **kwargs):
+        """Encode text prompts to embeddings. Qwen-Edit pass image and prompt, Flux-Kontext pass prompt"""
+        pass
+
+    @abstractmethod
+    def prepare_latents(self, *args, **kwargs):
+        """Prepare latents for fit & predict. Input usually be control images"""
+        pass
+
+    @abstractmethod
+    def prepare_embeddings(self, batch: dict) -> Dict[str, torch.Tensor]:
+        """Prepare embeddings for prediction. Call vae encoder and prompt encoder
+        to get the embeddings. Used in fit & predict
+        Update the embeddings keys in batch dict
+        """
+        return batch
+
+    @abstractmethod
+    def prepare_cached_embeddings(self, batch: dict) -> Dict[str, torch.Tensor]:
+        """Prepare cached embeddings for prediction. Loaded the cached embeddings from cache.
+        Used in fit
+        Update the embeddings keys in batch dict
+        """
+        return batch
+
+    @abstractmethod
+    def decode_vae_latent(self, latents: torch.Tensor) -> torch.Tensor:
+        """Decode VAE latent vectors to RGB images. In range [0,1]"""
+        pass
+
+    @abstractmethod
+    def sampling_from_embeddings(
+        self, embeddings: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Sampling from embeddings. Only handle the latent diffusion steps. Output the final latents. Need
+        to decode the latents to images.
+        """
+        pass
+
+    @abstractmethod
+    def prepare_predict_batch_data(self, *args) -> dict:
+        """Prepare predict batch data.
+        prepare the data to batch dict that can be used to prepare embeddings similar in the training step.
+        We want to reuse the same data preparation code in the training step.
+        """
+        pass
+
+
+
+    @abstractmethod
+    def cache_step(self, data: dict, devices: dict):
+        """Cache step"""
+        pass
+
+    @abstractmethod
+    def setup_model_device_train_mode(self, stage="fit", cache=False):
         pass

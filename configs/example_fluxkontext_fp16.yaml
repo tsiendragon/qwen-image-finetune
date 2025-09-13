@@ -1,5 +1,5 @@
 model:
-  pretrained_model_name_or_path: eramth/flux-kontext-4bit-fp4 #"black-forest-labs/FLUX.1-Kontext-dev"
+  pretrained_model_name_or_path: black-forest-labs/FLUX.1-Kontext-dev
   quantize: True
   lora:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
@@ -64,7 +64,6 @@ loss:
 train:
   gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
   max_train_steps: 10000  # face segmentation data is small, reduce training steps
-  num_epochs: 400  # increase epoch number
   checkpointing_steps: 100  # save checkpoints more frequently
   max_grad_norm: 1.0
   mixed_precision: "bf16"

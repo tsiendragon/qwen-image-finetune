@@ -25,11 +25,7 @@ from peft.utils import get_peft_model_state_dict
 from peft import LoraConfig
 
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
-    QwenImageEditPipeline,
-    calculate_shift,
-    calculate_dimensions,
-    retrieve_latents,
-    randn_tensor,
+    QwenImageEditPipeline, calculate_shift, calculate_dimensions, retrieve_latents, randn_tensor
 )
 from src.utils.logger import get_logger
 from src.data.cache_manager import check_cache_exists
@@ -80,17 +76,11 @@ def classify(lora_weight):
 
 
 def resize_bhw(x, h, w, mode="bilinear"):
-    x = x.unsqueeze(1)  # [B, 1, H, W]
+    x = x.unsqueeze(1)                        # [B, 1, H, W]
     x = F.interpolate(
-        x,
-        size=(h, w),
-        mode=mode,
+        x, size=(h, w), mode=mode,
         align_corners=False if mode in {"bilinear", "bicubic"} else None,
-        antialias=(
-            True
-            if mode in {"bilinear", "bicubic"} and (h < x.shape[-2] or w < x.shape[-1])
-            else False
-        ),
+        antialias=True if mode in {"bilinear", "bicubic"} and (h < x.shape[-2] or w < x.shape[-1]) else False,
     )
     return x.squeeze(1)
 
@@ -106,11 +96,11 @@ class QwenImageEditTrainer:
         self.global_step = 0
 
         # Component attributes
-        self.vae = None  # AutoencoderKLQwenImage
-        self.text_encoder = None  # Qwen2_5_VLForConditionalGeneration (text_encoder)
-        self.transformer = None  # QwenImageTransformer2DModel
-        self.tokenizer = None  # Qwen2Tokenizer
-        self.scheduler = None  # FlowMatchEulerDiscreteScheduler
+        self.vae = None                   # AutoencoderKLQwenImage
+        self.text_encoder = None          # Qwen2_5_VLForConditionalGeneration (text_encoder)
+        self.transformer = None           # QwenImageTransformer2DModel
+        self.tokenizer = None             # Qwen2Tokenizer
+        self.scheduler = None             # FlowMatchEulerDiscreteScheduler
 
         # Cache-related attributes
         self.use_cache = config.cache.use_cache
@@ -121,9 +111,7 @@ class QwenImageEditTrainer:
         self.quantize = config.model.quantize
         self.weight_dtype = torch.bfloat16
         self.batch_size = config.data.batch_size
-        self.prompt_image_dropout_rate = config.data.init_args.get(
-            "prompt_image_dropout_rate", 0.1
-        )
+        self.prompt_image_dropout_rate = config.data.init_args.get('prompt_image_dropout_rate', 0.1)
 
         # Parameters obtained from VAE configuration
         self.vae_scale_factor = None
@@ -134,14 +122,11 @@ class QwenImageEditTrainer:
 
     def set_criterion(self):
         import torch.nn as nn
-
         if self.config.loss.mask_loss:
             from src.loss.edit_mask_loss import MaskEditLoss
-
             self.criterion = MaskEditLoss(
                 forground_weight=self.config.loss.forground_weight,
-                background_weight=self.config.loss.background_weight,
-            )
+                background_weight=self.config.loss.background_weight)
         else:
             self.criterion = nn.MSELoss()
         self.criterion.to(self.accelerator.device)
@@ -157,35 +142,33 @@ class QwenImageEditTrainer:
             transformer=None,
             vae=None,
         )
-        pipe.to("cpu")
+        pipe.to('cpu')
         logging.info(f"excution device: {pipe._execution_device}")
 
         # Separate individual components
 
         from src.models.load_model import load_vae, load_qwenvl
-
         self.vae = load_vae(
-            "Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype  # use original one
+            "Qwen/Qwen-Image-Edit",  # use original one
+            weight_dtype=self.weight_dtype
         )
         # same to model constructed from vae self.vae = pipe.vae
         self.text_encoder = load_qwenvl(
-            "Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype  # use original one
+            "Qwen/Qwen-Image-Edit",  # use original one
+            weight_dtype=self.weight_dtype
         )
         logging.info(f"text_encoder device: {self.text_encoder.device}")
         # self.transformer = pipe.transformer this is same as the following, verified
         from src.models.load_model import load_transformer
-
         self.transformer = load_transformer(
             self.config.model.pretrained_model_name_or_path,  # could use quantized version
-            weight_dtype=self.weight_dtype,
+            weight_dtype=self.weight_dtype
         )
         # load_transformer is same as pipe.transformer
 
         from transformers.models.qwen2_vl.processing_qwen2_vl import Qwen2VLProcessor
         from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
-        from diffusers.schedulers.scheduling_flow_match_euler_discrete import (
-            FlowMatchEulerDiscreteScheduler,
-        )
+        from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
 
         self.processor: Qwen2VLProcessor = pipe.processor
         self.tokenizer: Qwen2Tokenizer = pipe.tokenizer
@@ -208,9 +191,7 @@ class QwenImageEditTrainer:
         self.prompt_template_encode = pipe.prompt_template_encode
         self.prompt_template_encode_start_idx = pipe.prompt_template_encode_start_idx
 
-        self.image_processor = VaeImageProcessor(
-            vae_scale_factor=self.vae_scale_factor * 2
-        )
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
         self.num_channels_latents = self.transformer.config.in_channels // 4
 
         # Set models to training/evaluation mode
@@ -219,9 +200,7 @@ class QwenImageEditTrainer:
         self.transformer.requires_grad_(False)
         torch.cuda.empty_cache()
 
-        logging.info(
-            f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}"
-        )
+        logging.info(f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}")
 
     def setup_accelerator(self):
         """Initialize accelerator and logging configuration"""
@@ -232,7 +211,7 @@ class QwenImageEditTrainer:
         # Use project_dir as logging_dir to avoid extra subdirectory creation
         accelerator_project_config = ProjectConfiguration(
             project_dir=self.config.logging.output_dir,
-            logging_dir=self.config.logging.output_dir,
+            logging_dir=self.config.logging.output_dir
         )
 
         self.accelerator = Accelerator(
@@ -247,15 +226,11 @@ class QwenImageEditTrainer:
             # Create a simple config dict with only basic types for TensorBoard
             try:
                 simple_config = {
-                    "learning_rate": float(
-                        self.config.optimizer.init_args.get("lr", 0.0001)
-                    ),
+                    "learning_rate": float(self.config.optimizer.init_args.get("lr", 0.0001)),
                     "batch_size": int(self.config.data.batch_size),
                     "max_train_steps": int(self.config.train.max_train_steps),
                     "num_epochs": int(self.config.train.num_epochs),
-                    "gradient_accumulation_steps": int(
-                        self.config.train.gradient_accumulation_steps
-                    ),
+                    "gradient_accumulation_steps": int(self.config.train.gradient_accumulation_steps),
                     "mixed_precision": str(self.config.train.mixed_precision),
                     "lora_r": int(self.config.model.lora.r),
                     "lora_alpha": int(self.config.model.lora.lora_alpha),
@@ -267,9 +242,7 @@ class QwenImageEditTrainer:
                 logging.warning(f"Failed to initialize trackers with config: {e}")
                 # Initialize without config if there's an error
                 self.accelerator.init_trackers("")
-        logging.info(
-            f"Number of devices used in DDP training: {self.accelerator.num_processes}"
-        )
+        logging.info(f"Number of devices used in DDP training: {self.accelerator.num_processes}")
 
         # Set weight data type
         if self.accelerator.mixed_precision == "fp16":
@@ -288,7 +261,6 @@ class QwenImageEditTrainer:
 
     def quantize_model(self, model, device):
         from src.models.quantize import quantize_model_to_fp8
-
         model = quantize_model_to_fp8(
             model,
             engine="bnb",
@@ -312,9 +284,7 @@ class QwenImageEditTrainer:
     def set_lora(self):
         """Set LoRA configuration"""
         if self.quantize:
-            self.transformer = self.quantize_model(
-                self.transformer, self.accelerator.device
-            )
+            self.transformer = self.quantize_model(self.transformer, self.accelerator.device)
         else:
             self.transformer.to(self.accelerator.device)
 
@@ -325,45 +295,30 @@ class QwenImageEditTrainer:
             target_modules=self.config.model.lora.target_modules,
         )
 
-        if (
-            hasattr(self.config.model.lora, "pretrained_weight")
-            and self.config.model.lora.pretrained_weight
-        ):
+        if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
             lora_type = classify(self.config.model.lora.pretrained_weight)
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
                 self.transformer.load_lora_adapter(
                     self.config.model.lora.pretrained_weight,
-                    adapter_name=self.adapter_name,
-                )
-                logging.info(
-                    f"set_lora: {lora_type}  {self.config.model.lora.pretrained_weight} {self.adapter_name}"
-                )
+                    adapter_name=self.adapter_name)
+                logging.info(f"set_lora: {lora_type}  {self.config.model.lora.pretrained_weight} {self.adapter_name}")
             else:
                 # add lora first
                 # Configure model
                 import safetensors.torch
-
-                self.transformer.add_adapter(
-                    lora_config, adapter_name=self.adapter_name
-                )
+                self.transformer.add_adapter(lora_config, adapter_name=self.adapter_name)
                 self.transformer.set_adapter(self.adapter_name)
                 missing, unexpected = self.transformer.load_state_dict(
-                    safetensors.torch.load_file(
-                        self.config.model.lora.pretrained_weight
-                    ),
+                    safetensors.torch.load_file(self.config.model.lora.pretrained_weight),
                     strict=False,
                 )
                 if len(unexpected) > 0:
                     raise ValueError(f"Unexpected keys: {unexpected}")
-                logging.info(
-                    f"set_lora: {lora_type} {self.config.model.lora.pretrained_weight} {self.adapter_name}"
-                )
+                logging.info(f"set_lora: {lora_type} {self.config.model.lora.pretrained_weight} {self.adapter_name}")
                 logging.info(f"missing keys: {len(missing)}, {missing[0]}")
                 # self.load_lora(self.config.model.lora.pretrained_weight)
-            logging.info(
-                f"set_lora: Loaded lora from {self.config.model.lora.pretrained_weight}"
-            )
+            logging.info(f"set_lora: Loaded lora from {self.config.model.lora.pretrained_weight}")
         else:
             self.transformer.add_adapter(lora_config, adapter_name=self.adapter_name)
             self.transformer.set_adapter(self.adapter_name)
@@ -389,28 +344,22 @@ class QwenImageEditTrainer:
 
         logging.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
 
-    def load_lora(self, pretrained_weight, adapter_name="default"):
+    def load_lora(self, pretrained_weight, adapter_name='default'):
         """Load pretrained LoRA weights"""
         lora_type = classify(self.config.model.lora.pretrained_weight)
         # DIFFUSERS can be loaded directly, otherwise, need to add lora first
         if lora_type != "PEFT":
-            self.transformer.load_lora_adapter(
-                pretrained_weight, adapter_name=adapter_name
-            )
+            self.transformer.load_lora_adapter(pretrained_weight, adapter_name=adapter_name)
             logging.info(f"Loaded LoRA weights from {pretrained_weight}")
         else:
             import safetensors.torch
-
             self.add_lora_adapter()
             missing, unexpected = self.transformer.load_state_dict(
-                safetensors.torch.load_file(pretrained_weight),
-                strict=False,
+                safetensors.torch.load_file(pretrained_weight), strict=False,
             )
             if len(unexpected) > 0:
                 raise ValueError(f"Unexpected keys: {unexpected}")
-            logging.info(
-                f"set_lora: {lora_type} {self.config.model.lora.pretrained_weight} {self.adapter_name}"
-            )
+            logging.info(f"set_lora: {lora_type} {self.config.model.lora.pretrained_weight} {self.adapter_name}")
             logging.info(f"missing keys: {len(missing)}, {missing[0]}")
 
     def save_lora(self, save_path):
@@ -420,9 +369,7 @@ class QwenImageEditTrainer:
             unwrapped_transformer = unwrapped_transformer._orig_mod
 
         lora_state_dict = convert_state_dict_to_diffusers(
-            get_peft_model_state_dict(
-                unwrapped_transformer, adapter_name=self.adapter_name
-            )
+            get_peft_model_state_dict(unwrapped_transformer, adapter_name=self.adapter_name)
         )
 
         QwenImageEditPipeline.save_lora_weights(
@@ -449,7 +396,7 @@ class QwenImageEditTrainer:
         existing_versions = []
         for item in os.listdir(project_dir):
             item_path = os.path.join(project_dir, item)
-            if os.path.isdir(item_path) and item.startswith("v") and item[1:].isdigit():
+            if os.path.isdir(item_path) and item.startswith('v') and item[1:].isdigit():
                 version_num = int(item[1:])
                 existing_versions.append((version_num, item_path))
 
@@ -482,12 +429,10 @@ class QwenImageEditTrainer:
         checkpoints = []
         if os.path.exists(version_path):
             for item in os.listdir(version_path):
-                if item.startswith("checkpoint-") and os.path.isdir(
-                    os.path.join(version_path, item)
-                ):
+                if item.startswith("checkpoint-") and os.path.isdir(os.path.join(version_path, item)):
                     try:
                         # 从 checkpoint-{epoch}-{global_step} 中提取 global_step
-                        parts = item.split("-")
+                        parts = item.split('-')
                         if len(parts) >= 3:
                             global_step = int(parts[2])
                             checkpoints.append(global_step)
@@ -499,7 +444,7 @@ class QwenImageEditTrainer:
         if os.path.exists(version_path):
             # 查找 tensorboard 事件文件，可能在项目名子目录中
             for root, dirs, files in os.walk(version_path):
-                log_files = [f for f in files if f.startswith("events.out.tfevents")]
+                log_files = [f for f in files if f.startswith('events.out.tfevents')]
                 if log_files:
                     has_logs = True
                     break
@@ -522,9 +467,7 @@ class QwenImageEditTrainer:
     def set_model_devices(self, mode="train"):
         """Set model device allocation based on different modes"""
         if mode == "train":
-            assert hasattr(
-                self, "accelerator"
-            ), "accelerator must be set before setting model devices"
+            assert hasattr(self, "accelerator"), "accelerator must be set before setting model devices"
 
         if self.cache_exist and self.use_cache and mode == "train":
             # Cache mode: only need transformer
@@ -549,12 +492,8 @@ class QwenImageEditTrainer:
 
         elif mode == "cache":
             # Cache mode: need encoders, don't need transformer
-            self.vae = self.vae.to(
-                self.config.cache.vae_encoder_device, non_blocking=True
-            )
-            self.text_encoder = self.text_encoder.to(
-                self.config.cache.text_encoder_device, non_blocking=True
-            )
+            self.vae = self.vae.to(self.config.cache.vae_encoder_device, non_blocking=True)
+            self.text_encoder = self.text_encoder.to(self.config.cache.text_encoder_device, non_blocking=True)
 
             torch.cuda.synchronize()
             self.transformer.cpu()
@@ -568,9 +507,9 @@ class QwenImageEditTrainer:
         elif mode == "predict":
             # Predict mode: allocate to different GPUs according to configuration
             devices = self.config.predict.devices
-            self.vae.to(devices["vae"])
-            self.text_encoder.to(devices["text_encoder"])
-            self.transformer.to(devices["transformer"])
+            self.vae.to(devices['vae'])
+            self.text_encoder.to(devices['text_encoder'])
+            self.transformer.to(devices['transformer'])
 
     def decode_vae_latent(self, latents):
         """Decode VAE latent vectors to RGB images"""
@@ -603,9 +542,7 @@ class QwenImageEditTrainer:
     _pack_latents = staticmethod(QwenImageEditPipeline._pack_latents)
     _unpack_latents = staticmethod(QwenImageEditPipeline._unpack_latents)
 
-    def _preprocess_image_for_cache(
-        self, image: torch.Tensor, adaptive_resolution=True
-    ):
+    def _preprocess_image_for_cache(self, image: torch.Tensor, adaptive_resolution=True):
         """Preprocess images for caching"""
         # Convert to PIL image
         image = Image.fromarray(image.permute(1, 2, 0).cpu().numpy().astype("uint8"))
@@ -614,9 +551,7 @@ class QwenImageEditTrainer:
                 1024 * 1024, image.size[0] / image.size[1]
             )
             # Use processor's resize method
-            image = self.processor.image_processor.resize(
-                image, calculated_height, calculated_width
-            )
+            image = self.processor.image_processor.resize(image, calculated_height, calculated_width)
         return image
 
     def _vae_image_standardization(self, image: PIL.Image):
@@ -641,30 +576,20 @@ class QwenImageEditTrainer:
     def training_step(self, batch):
         """Execute a single training step"""
         # Check if cached data is available
-        if (
-            "prompt_embed" in batch
-            and "pixel_latent" in batch
-            and "control_latent" in batch
-        ):
+        if 'prompt_embed' in batch and 'pixel_latent' in batch and 'control_latent' in batch:
             return self._training_step_cached(batch)
         else:
             return self._training_step_compute(batch)
 
     def _training_step_cached(self, batch):
         """Training step using cached embeddings"""
-        pixel_latents = batch["pixel_latent"].to(
-            self.accelerator.device, dtype=self.weight_dtype
-        )
-        control_latents = batch["control_latent"].to(
-            self.accelerator.device, dtype=self.weight_dtype
-        )
+        pixel_latents = batch["pixel_latent"].to(self.accelerator.device, dtype=self.weight_dtype)
+        control_latents = batch["control_latent"].to(self.accelerator.device, dtype=self.weight_dtype)
         prompt_embeds = batch["prompt_embed"].to(self.accelerator.device)
         prompt_embeds_mask = batch["prompt_embeds_mask"].to(self.accelerator.device)
-        prompt_embeds_mask = prompt_embeds_mask.to(
-            torch.int64
-        )  # original is int64 dtype
+        prompt_embeds_mask = prompt_embeds_mask.to(torch.int64)  # original is int64 dtype
 
-        image = batch["image"]  # torch.tensor: B,C,H,W
+        image = batch['image']  # torch.tensor: B,C,H,W
         image = image[0].cpu().numpy()
         image = image.transpose(1, 2, 0)
         image = Image.fromarray(image)
@@ -680,14 +605,14 @@ class QwenImageEditTrainer:
             edit_mask = None
 
         return self._compute_loss(
-            pixel_latents,
-            control_latents,
-            prompt_embeds,
-            prompt_embeds_mask,
-            height,
-            width,
-            edit_mask=edit_mask,
-        )
+                pixel_latents,
+                control_latents,
+                prompt_embeds,
+                prompt_embeds_mask,
+                height,
+                width,
+                edit_mask=edit_mask,
+            )
 
     def _training_step_compute(self, batch):
         """Training step with embedding computation (no cache)"""
@@ -700,9 +625,7 @@ class QwenImageEditTrainer:
 
         # doing preprocessing
 
-        control_tensor, prompt_image_processed, height_control, width_control = (
-            self.adjust_image_size(control)
-        )
+        control_tensor, prompt_image_processed, height_control, width_control = self.adjust_image_size(control)
         image_tensor, _, height_image, width_image = self.adjust_image_size(image)
 
         if self.config.loss.mask_loss:
@@ -716,9 +639,7 @@ class QwenImageEditTrainer:
         new_prompts = []
         # # random drop the prompt to be empty string
         for p in prompt:
-            if random.random() < self.config.data.init_args.get(
-                "caption_dropout_rate", 0.1
-            ):
+            if random.random() < self.config.data.init_args.get('caption_dropout_rate', 0.1):
                 new_prompts.append("")
             else:
                 new_prompts.append(p)
@@ -775,6 +696,7 @@ class QwenImageEditTrainer:
         width,
         edit_mask=None,
     ):
+
         """calculate the flowmatching loss
         pixel_latents: is the packed latent, shape is
           [batch_size, (height // 2) * (width // 2), num_channels_latents * 4]
@@ -798,28 +720,16 @@ class QwenImageEditTrainer:
                 mode_scale=1.29,
             )
             indices = (u * self.scheduler.config.num_train_timesteps).long()
-            timesteps = self.scheduler.timesteps[indices].to(
-                device=pixel_latents.device
-            )
+            timesteps = self.scheduler.timesteps[indices].to(device=pixel_latents.device)
 
-            sigmas = self._get_sigmas(
-                timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype
-            )
+            sigmas = self._get_sigmas(timesteps, n_dim=pixel_latents.ndim, dtype=pixel_latents.dtype)
             noisy_model_input = (1.0 - sigmas) * pixel_latents + sigmas * noise
 
             # image shape
             img_shapes = [
                 [
-                    (
-                        1,
-                        height // self.vae_scale_factor // 2,
-                        width // self.vae_scale_factor // 2,
-                    ),
-                    (
-                        1,
-                        height // self.vae_scale_factor // 2,
-                        width // self.vae_scale_factor // 2,
-                    ),
+                    (1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2),
+                    (1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2),
                 ]
             ] * batch_size
 
@@ -844,12 +754,10 @@ class QwenImageEditTrainer:
             return_dict=False,
         )[0]
 
-        model_pred = model_pred[:, : pixel_latents.size(1)]
+        model_pred = model_pred[:, :pixel_latents.size(1)]
 
         # Calculate loss
-        weighting = compute_loss_weighting_for_sd3(
-            weighting_scheme="none", sigmas=sigmas
-        )
+        weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
         target = noise - pixel_latents
         # pred shape [2, 4104, 64], target shape [2, 4104, 64]
         # target = target.permute(0, 2, 1, 3, 4)
@@ -859,9 +767,9 @@ class QwenImageEditTrainer:
     def forward_loss(self, model_pred, target, weighting, edit_mask=None):
         if edit_mask is None:
             loss = torch.mean(
-                (
-                    weighting.float() * (model_pred.float() - target.float()) ** 2
-                ).reshape(target.shape[0], -1),
+                (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(
+                    target.shape[0], -1
+                ),
                 1,
             )
             loss = loss.mean()
@@ -873,9 +781,7 @@ class QwenImageEditTrainer:
     def _get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
         """Calculate sigma values for noise scheduler"""
         noise_scheduler_copy = copy.deepcopy(self.scheduler)
-        sigmas = noise_scheduler_copy.sigmas.to(
-            device=self.accelerator.device, dtype=dtype
-        )
+        sigmas = noise_scheduler_copy.sigmas.to(device=self.accelerator.device, dtype=dtype)
         schedule_timesteps = noise_scheduler_copy.timesteps.to(self.accelerator.device)
         timesteps = timesteps.to(self.accelerator.device)
         step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
@@ -901,10 +807,8 @@ class QwenImageEditTrainer:
         self.lr_scheduler = get_scheduler(
             self.config.lr_scheduler.scheduler_type,
             optimizer=self.optimizer,
-            num_warmup_steps=self.config.lr_scheduler.warmup_steps
-            * self.accelerator.num_processes,
-            num_training_steps=self.config.train.max_train_steps
-            * self.accelerator.num_processes,
+            num_warmup_steps=self.config.lr_scheduler.warmup_steps * self.accelerator.num_processes,
+            num_training_steps=self.config.train.max_train_steps * self.accelerator.num_processes,
         )
 
     def accelerator_prepare(self, train_dataloader):
@@ -917,27 +821,15 @@ class QwenImageEditTrainer:
         if self.config.train.resume_from_checkpoint is not None:
             # self.accelerator.load_state(self.config.train.resume_from_checkpoint)
             self.optimizer.load_state_dict(
-                torch.load(
-                    os.path.join(
-                        self.config.train.resume_from_checkpoint, "optimizer.bin"
-                    )
-                )
+                torch.load(os.path.join(self.config.train.resume_from_checkpoint, "optimizer.bin"))
             )
             self.lr_scheduler.load_state_dict(
-                torch.load(
-                    os.path.join(
-                        self.config.train.resume_from_checkpoint, "scheduler.bin"
-                    )
-                )
+                torch.load(os.path.join(self.config.train.resume_from_checkpoint, "scheduler.bin"))
             )
-            logging.info(
-                f"Loaded optimizer and scheduler from {self.config.train.resume_from_checkpoint}"
-            )
+            logging.info(f"Loaded optimizer and scheduler from {self.config.train.resume_from_checkpoint}")
 
-        lora_layers_model, optimizer, train_dataloader, lr_scheduler = (
-            self.accelerator.prepare(
-                lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
-            )
+        lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
+            lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
         )
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
@@ -982,14 +874,10 @@ class QwenImageEditTrainer:
         # # Save LoRA weights
         # self.save_lora(save_path)
 
-    def adjust_image_size(
-        self, image: Union[Image.Image, List[Image.Image]]
-    ) -> Tuple[torch.Tensor, Image.Image]:
+    def adjust_image_size(self, image: Union[Image.Image, List[Image.Image]]) -> Tuple[torch.Tensor, Image.Image]:
         image_size = image[0].size if isinstance(image, list) else image.size
 
-        calculated_width, calculated_height, _ = calculate_dimensions(
-            1024 * 1024, image_size[0] / image_size[1]
-        )
+        calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, image_size[0] / image_size[1])
         height = calculated_height
         width = calculated_width
 
@@ -998,9 +886,7 @@ class QwenImageEditTrainer:
         height = height // multiple_of * multiple_of
         image = self.image_processor.resize(image, calculated_height, calculated_width)
         prompt_image_processed = image
-        image = self.image_processor.preprocess(
-            image, calculated_height, calculated_width
-        )
+        image = self.image_processor.preprocess(image, calculated_height, calculated_width)
         image = image.unsqueeze(2)
         return image, prompt_image_processed, height, width
 
@@ -1018,9 +904,7 @@ class QwenImageEditTrainer:
         control = [control]
         prompt = [prompt]
 
-        control_tensor, prompt_image_processed, height_control, width_control = (
-            self.adjust_image_size(control)
-        )
+        control_tensor, prompt_image_processed, height_control, width_control = self.adjust_image_size(control)
         image_tensor, _, height_image, width_image = self.adjust_image_size(image)
 
         file_hashes = data["file_hashes"]
@@ -1089,15 +973,9 @@ class QwenImageEditTrainer:
         self.cache_manager.save_cache("pixel_latent", image_hash, image_latents)
         self.cache_manager.save_cache("control_latent", control_hash, control_latents)
         self.cache_manager.save_cache("prompt_embed", prompt_hash, prompt_embeds)
-        self.cache_manager.save_cache(
-            "prompt_embeds_mask", prompt_hash, prompt_embeds_mask
-        )
-        self.cache_manager.save_cache(
-            "empty_prompt_embed", empty_prompt_hash, empty_prompt_embed
-        )
-        self.cache_manager.save_cache(
-            "empty_prompt_embeds_mask", empty_prompt_hash, empty_prompt_embeds_mask
-        )
+        self.cache_manager.save_cache("prompt_embeds_mask", prompt_hash, prompt_embeds_mask)
+        self.cache_manager.save_cache("empty_prompt_embed", empty_prompt_hash, empty_prompt_embed)
+        self.cache_manager.save_cache("empty_prompt_embeds_mask", empty_prompt_hash, empty_prompt_embeds_mask)
 
     def cache(self, train_dataloader):
         """Pre-compute and cache embeddings"""
@@ -1138,11 +1016,10 @@ class QwenImageEditTrainer:
         if self.config.train.resume_from_checkpoint is not None:
             # add the checkpoint in lora.pretrained_weight config
             self.config.model.lora.pretrained_weight = os.path.join(
-                self.config.train.resume_from_checkpoint, "model.safetensors"
+                self.config.train.resume_from_checkpoint,
+                "model.safetensors"
             )
-            logging.info(
-                f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
-            )
+            logging.info(f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}")
 
         self.set_lora()
         self.text_encoder.eval()
@@ -1154,18 +1031,14 @@ class QwenImageEditTrainer:
 
         logging.info("***** Running training *****")
         logging.info(f"  Instantaneous batch size per device = {self.batch_size}")
-        logging.info(
-            f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}"
-        )
+        logging.info(f"  Gradient Accumulation steps = {self.config.train.gradient_accumulation_steps}")
         logging.info(f"  Use cache: {self.use_cache}, Cache exists: {self.cache_exist}")
 
         # Training loop
         train_loss = 0.0
         running_loss = 0.0
         if self.config.train.resume_from_checkpoint is not None:
-            with open(
-                os.path.join(self.config.train.resume_from_checkpoint, "state.json")
-            ) as f:
+            with open(os.path.join(self.config.train.resume_from_checkpoint, "state.json")) as f:
                 st = json.load(f)
             self.global_step = st["global_step"]
             start_epoch = st["epoch"]
@@ -1174,16 +1047,13 @@ class QwenImageEditTrainer:
             start_epoch = 0
         # 添加validation sampling setup (如果启用)
         validation_sampler = None
-        if (
-            hasattr(self.config.logging, "sampling")
-            and self.config.logging.sampling.enable
-        ):
+        if hasattr(self.config.logging, 'sampling') and self.config.logging.sampling.enable:
             from src.validation.validation_sampler import ValidationSampler
 
             validation_sampler = ValidationSampler(
                 config=self.config.logging.sampling,
                 accelerator=self.accelerator,
-                weight_dtype=self.weight_dtype,
+                weight_dtype=self.weight_dtype
             )
 
             # Setup validation dataset
@@ -1191,8 +1061,8 @@ class QwenImageEditTrainer:
 
             # Cache embeddings for validation using trainer methods
             embeddings_config = {
-                "cache_vae_embeddings": True,  # Cache VAE latents
-                "cache_text_embeddings": True,  # Cache Qwen text embeddings
+                'cache_vae_embeddings': True,       # Cache VAE latents
+                'cache_text_embeddings': True,      # Cache Qwen text embeddings
             }
             validation_sampler.cache_embeddings(self, embeddings_config)
         # Progress bar
@@ -1228,28 +1098,22 @@ class QwenImageEditTrainer:
                     avg_loss = self.accelerator.gather(
                         loss.repeat(self.batch_size)
                     ).mean()
-                    train_loss += (
-                        avg_loss.item() / self.config.train.gradient_accumulation_steps
-                    )
+                    train_loss += avg_loss.item() / self.config.train.gradient_accumulation_steps
                     running_loss = train_loss
 
                     # Log metrics
-                    self.accelerator.log(
-                        {"train_loss": train_loss}, step=self.global_step
-                    )
+                    self.accelerator.log({"train_loss": train_loss}, step=self.global_step)
                     train_loss = 0.0
 
                     # Save checkpoint
                     if self.global_step % self.config.train.checkpointing_steps == 0:
                         self.save_checkpoint(epoch, self.global_step)
                     # 添加validation sampling
-                    if validation_sampler and validation_sampler.should_run_validation(
-                        self.global_step
-                    ):
+                    if validation_sampler and validation_sampler.should_run_validation(self.global_step):
                         try:
                             validation_sampler.run_validation_loop(
                                 global_step=self.global_step,
-                                trainer=self,  # 传入trainer实例
+                                trainer=self  # 传入trainer实例
                             )
                         except Exception as e:
                             self.accelerator.print(f"Validation sampling failed: {e}")
@@ -1294,19 +1158,11 @@ class QwenImageEditTrainer:
                 image_latents = self._encode_vae_image(image=image, generator=generator)
             else:
                 image_latents = image
-            if (
-                batch_size > image_latents.shape[0]
-                and batch_size % image_latents.shape[0] == 0
-            ):
+            if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
                 # expand init_latents for batch_size
                 additional_image_per_prompt = batch_size // image_latents.shape[0]
-                image_latents = torch.cat(
-                    [image_latents] * additional_image_per_prompt, dim=0
-                )
-            elif (
-                batch_size > image_latents.shape[0]
-                and batch_size % image_latents.shape[0] != 0
-            ):
+                image_latents = torch.cat([image_latents] * additional_image_per_prompt, dim=0)
+            elif batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] != 0:
                 raise ValueError(
                     f"Cannot duplicate `image` of batch size {image_latents.shape[0]} to {batch_size} text prompts."
                 )
@@ -1315,11 +1171,7 @@ class QwenImageEditTrainer:
 
             image_latent_height, image_latent_width = image_latents.shape[3:]
             image_latents = self._pack_latents(
-                image_latents,
-                batch_size,
-                num_channels_latents,
-                image_latent_height,
-                image_latent_width,
+                image_latents, batch_size, num_channels_latents, image_latent_height, image_latent_width
             )
 
         if isinstance(generator, list) and len(generator) != batch_size:
@@ -1328,12 +1180,8 @@ class QwenImageEditTrainer:
                 f" size of {batch_size}. Make sure the batch size matches the length of the generators."
             )
         if latents is None:
-            latents = randn_tensor(
-                shape, generator=generator, device=device, dtype=dtype
-            )
-            latents = self._pack_latents(
-                latents, batch_size, num_channels_latents, height, width
-            )
+            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
         else:
             latents = latents.to(device=device, dtype=dtype)
 
@@ -1343,18 +1191,12 @@ class QwenImageEditTrainer:
         # generator is None by default
         if isinstance(generator, list):
             image_latents = [
-                retrieve_latents(
-                    self.vae.encode(image[i : i + 1]),
-                    generator=generator[i],
-                    sample_mode="argmax",
-                )
+                retrieve_latents(self.vae.encode(image[i:i + 1]), generator=generator[i], sample_mode="argmax")
                 for i in range(image.shape[0])
             ]
             image_latents = torch.cat(image_latents, dim=0)
         else:
-            image_latents = retrieve_latents(
-                self.vae.encode(image), generator=generator, sample_mode="argmax"
-            )
+            image_latents = retrieve_latents(self.vae.encode(image), generator=generator, sample_mode="argmax")
         latents_mean = (
             torch.tensor(self.vae.config.latents_mean)
             .view(1, self.latent_channels, 1, 1, 1)
@@ -1374,17 +1216,13 @@ class QwenImageEditTrainer:
         self.load_model()
         if self.quantize:
             self.transformer = self.quantize_model(
-                self.transformer, self.config.predict.devices["transformer"]
+                self.transformer,
+                self.config.predict.devices['transformer']
             )
 
         # Load LoRA weights (if available)
-        if (
-            hasattr(self.config.model.lora, "pretrained_weight")
-            and self.config.model.lora.pretrained_weight
-        ):
-            self.load_lora(
-                self.config.model.lora.pretrained_weight, adapter_name=self.adapter_name
-            )
+        if hasattr(self.config.model.lora, 'pretrained_weight') and self.config.model.lora.pretrained_weight:
+            self.load_lora(self.config.model.lora.pretrained_weight, adapter_name=self.adapter_name)
 
         # Set evaluation mode
         self.transformer.eval()
@@ -1397,7 +1235,8 @@ class QwenImageEditTrainer:
         # Quantize (if enabled)
         if self.quantize:
             self.transformer = self.quantize_model(
-                self.transformer, self.config.predict.devices["transformer"]
+                self.transformer,
+                self.config.predict.devices['transformer']
             )
 
     def predict(
@@ -1426,10 +1265,7 @@ class QwenImageEditTrainer:
             Union[np.ndarray, List[np.ndarray]]: Generated images in RGB format
         """
         import logging
-
-        logging.info(
-            f"Starting prediction with {num_inference_steps} steps, CFG scale: {true_cfg_scale}"
-        )
+        logging.info(f"Starting prediction with {num_inference_steps} steps, CFG scale: {true_cfg_scale}")
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
 
@@ -1442,9 +1278,7 @@ class QwenImageEditTrainer:
 
         # 1. Calculate image dimensions (follows original pipeline logic)
         image_size = image[0].size if isinstance(image, list) else image.size
-        calculated_width, calculated_height, _ = calculate_dimensions(
-            1024 * 1024, image_size[0] / image_size[1]
-        )
+        calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, image_size[0] / image_size[1])
         height = calculated_height
         width = calculated_width
 
@@ -1461,22 +1295,15 @@ class QwenImageEditTrainer:
         else:
             raise ValueError(f"Invalid prompt type: {type(prompt)}")
 
-        device_text_encoder = self.config.predict.devices["text_encoder"]
-        device_transformer = self.config.predict.devices["transformer"]
-        device_vae = self.config.predict.devices["vae"]
+        device_text_encoder = self.config.predict.devices['text_encoder']
+        device_transformer = self.config.predict.devices['transformer']
+        device_vae = self.config.predict.devices['vae']
 
         # 3. 预处理图像 (遵循原始pipeline逻辑)
-        if image is not None and not (
-            isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels
-        ):
-            image = [
-                self.image_processor.resize(xx, calculated_height, calculated_width)
-                for xx in image
-            ]
+        if image is not None and not (isinstance(image, torch.Tensor) and image.size(1) == self.latent_channels):
+            image = [self.image_processor.resize(xx, calculated_height, calculated_width) for xx in image]
             prompt_image_processed = image
-            image = self.image_processor.preprocess(
-                image, calculated_height, calculated_width
-            )
+            image = self.image_processor.preprocess(image, calculated_height, calculated_width)
             image = image.unsqueeze(2)
 
         has_neg_prompt = negative_prompt is not None
@@ -1508,16 +1335,10 @@ class QwenImageEditTrainer:
                 prompt=negative_prompt,
                 device=device_text_encoder,
             )
-            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(
-                device_transformer, dtype=torch.int64
-            )
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer, dtype=torch.int64)
 
-        logging.info(
-            f"mask shape: {prompt_embeds_mask.shape}, dtype: {prompt_embeds_mask.dtype}"
-        )
-        logging.info(
-            f"prompt_embeds shape: {prompt_embeds.shape}, dtype: {prompt_embeds.dtype}"
-        )
+        logging.info(f"mask shape: {prompt_embeds_mask.shape}, dtype: {prompt_embeds_mask.dtype}")
+        logging.info(f"prompt_embeds shape: {prompt_embeds.shape}, dtype: {prompt_embeds.dtype}")
 
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
@@ -1527,15 +1348,8 @@ class QwenImageEditTrainer:
             width_latent = 2 * (int(width) // (self.vae_scale_factor * 2))
 
             shape = (batch_size, 1, num_channels_latents, height_latent, width_latent)
-            latents = randn_tensor(
-                shape,
-                generator=None,
-                device=device_transformer,
-                dtype=prompt_embeds.dtype,
-            )
-            latents = self._pack_latents(
-                latents, batch_size, num_channels_latents, height_latent, width_latent
-            )
+            latents = randn_tensor(shape, generator=None, device=device_transformer, dtype=prompt_embeds.dtype)
+            latents = self._pack_latents(latents, batch_size, num_channels_latents, height_latent, width_latent)
             latents = latents.to(device=device_transformer, dtype=prompt_embeds.dtype)
         else:
             latents, image_latents = self.prepare_latents(
@@ -1556,16 +1370,8 @@ class QwenImageEditTrainer:
 
         img_shapes = [
             [
-                (
-                    1,
-                    height // self.vae_scale_factor // 2,
-                    width // self.vae_scale_factor // 2,
-                ),
-                (
-                    1,
-                    calculated_height // self.vae_scale_factor // 2,
-                    calculated_width // self.vae_scale_factor // 2,
-                ),
+                (1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2),
+                (1, calculated_height // self.vae_scale_factor // 2, calculated_width // self.vae_scale_factor // 2),
             ]
         ] * batch_size
 
@@ -1578,9 +1384,7 @@ class QwenImageEditTrainer:
 
         # 6. 准备时间步 (遵循原始pipeline逻辑)
         import numpy as np
-        from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
-            retrieve_timesteps,
-        )
+        from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import retrieve_timesteps
 
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         image_seq_len = latents.shape[1]
@@ -1604,9 +1408,7 @@ class QwenImageEditTrainer:
         # 处理guidance
         guidance_scale = 1.0
         if self.transformer.config.guidance_embeds:
-            guidance = torch.full(
-                [1], guidance_scale, device=device_transformer, dtype=torch.float32
-            )
+            guidance = torch.full([1], guidance_scale, device=device_transformer, dtype=torch.float32)
             guidance = guidance.expand(latents.shape[0])
         else:
             guidance = None
@@ -1614,7 +1416,7 @@ class QwenImageEditTrainer:
             f"prompt_embeds_mask.sum(dim=1): {prompt_embeds_mask.sum(dim=1)}",
             f"prompt_embeds_mask[:2]: {prompt_embeds_mask[:2]}",
             f"prompt_embeds_mask[:2]: {prompt_embeds_mask[:2]}",
-            f"prompt_embeds_mask.sum(dim=1).tolist(): {prompt_embeds_mask.sum(dim=1).tolist()}",
+            f"prompt_embeds_mask.sum(dim=1).tolist(): {prompt_embeds_mask.sum(dim=1).tolist()}"
         )
         txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
         negative_txt_seq_lens = (
@@ -1629,17 +1431,11 @@ class QwenImageEditTrainer:
 
         # set to proper device
         prompt_embeds = prompt_embeds.to(device_transformer, dtype=self.weight_dtype)
-        prompt_embeds_mask = prompt_embeds_mask.to(
-            device_transformer, dtype=torch.int64
-        )
+        prompt_embeds_mask = prompt_embeds_mask.to(device_transformer, dtype=torch.int64)
 
         if do_true_cfg:
-            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(
-                device_transformer, dtype=torch.int64
-            )
-            negative_prompt_embeds = negative_prompt_embeds.to(
-                device_transformer, dtype=self.weight_dtype
-            )
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device_transformer, dtype=torch.int64)
+            negative_prompt_embeds = negative_prompt_embeds.to(device_transformer, dtype=self.weight_dtype)
 
         logging.info(f"timesteps: {timesteps}")
         logging.info(f"num_inference_steps: {num_inference_steps}")
@@ -1656,9 +1452,7 @@ class QwenImageEditTrainer:
 
                 latent_model_input = latents
                 if image_latents is not None:
-                    image_latents = image_latents.to(
-                        device_transformer, dtype=self.weight_dtype
-                    )
+                    image_latents = image_latents.to(device_transformer, dtype=self.weight_dtype)
                     latent_model_input = torch.cat([latents, image_latents], dim=1)
 
                 # broadcast to batch dimension
@@ -1709,9 +1503,7 @@ class QwenImageEditTrainer:
 
                     # 将正面推理结果移回 GPU 进行合并
                     noise_pred = noise_pred_cpu.to(device_transformer)
-                    comb_pred = neg_noise_pred + true_cfg_scale * (
-                        noise_pred - neg_noise_pred
-                    )
+                    comb_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 
                     cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
                     noise_norm = torch.norm(comb_pred, dim=-1, keepdim=True)
@@ -1723,9 +1515,7 @@ class QwenImageEditTrainer:
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
-                latents = self.scheduler.step(
-                    noise_pred, t, latents, return_dict=False
-                )[0]
+                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
@@ -1741,9 +1531,9 @@ class QwenImageEditTrainer:
             .view(1, self.vae.config.z_dim, 1, 1, 1)
             .to(latents.device, latents.dtype)
         )
-        latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(
-            1, self.vae.config.z_dim, 1, 1, 1
-        ).to(latents.device, latents.dtype)
+        latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
+            latents.device, latents.dtype
+        )
         latents = latents / latents_std + latents_mean
         final_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
 
@@ -1779,18 +1569,12 @@ class QwenImageEditTrainer:
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
         with torch.inference_mode():
-            prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(
-                prompt, image, device
-            )
+            prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, image, device)
         _, seq_len, _ = prompt_embeds.shape
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
-        prompt_embeds = prompt_embeds.view(
-            batch_size * num_images_per_prompt, seq_len, -1
-        )
+        prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
         prompt_embeds_mask = prompt_embeds_mask.repeat(1, num_images_per_prompt, 1)
-        prompt_embeds_mask = prompt_embeds_mask.view(
-            batch_size * num_images_per_prompt, seq_len
-        )
+        prompt_embeds_mask = prompt_embeds_mask.view(batch_size * num_images_per_prompt, seq_len)
         return prompt_embeds, prompt_embeds_mask
 
     def _extract_masked_hidden(self, hidden_states: torch.Tensor, mask: torch.Tensor):
@@ -1821,9 +1605,7 @@ class QwenImageEditTrainer:
             return_tensors="pt",
         ).to(device)
 
-        with torch.cuda.device(
-            model_inputs.input_ids.device
-        ):  # 作用域内的 'cuda' 都指向同一张卡
+        with torch.cuda.device(model_inputs.input_ids.device):          # 作用域内的 'cuda' 都指向同一张卡
             outputs = self.text_encoder(
                 input_ids=model_inputs.input_ids,
                 attention_mask=model_inputs.attention_mask,
@@ -1833,26 +1615,15 @@ class QwenImageEditTrainer:
             )
 
         hidden_states = outputs.hidden_states[-1]
-        split_hidden_states = self._extract_masked_hidden(
-            hidden_states, model_inputs.attention_mask
-        )
+        split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
         split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
-        attn_mask_list = [
-            torch.ones(e.size(0), dtype=torch.long, device=e.device)
-            for e in split_hidden_states
-        ]
+        attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
         max_seq_len = max([e.size(0) for e in split_hidden_states])
         prompt_embeds = torch.stack(
-            [
-                torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))])
-                for u in split_hidden_states
-            ]
+            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
         )
         encoder_attention_mask = torch.stack(
-            [
-                torch.cat([u, u.new_zeros(max_seq_len - u.size(0))])
-                for u in attn_mask_list
-            ]
+            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
         )
 
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
@@ -1864,7 +1635,6 @@ class QwenImageEditTrainer:
         """Encode image for validation using existing VAE encoding logic"""
         if isinstance(image, str):  # 如果是路径，先加载图片
             from PIL import Image
-
             image = Image.open(image)
 
         # 转换为tensor并预处理
@@ -1875,13 +1645,8 @@ class QwenImageEditTrainer:
         # 使用现有的图像预处理和VAE编码逻辑
         image_tensor, _, height, width = self.adjust_image_size([image])
         _, image_latents = self.prepare_latents(
-            image_tensor,
-            1,
-            self.vae_z_dim,
-            height,
-            width,
-            self.weight_dtype,
-            self.accelerator.device,
+            image_tensor, 1, self.vae_z_dim,
+            height, width, self.weight_dtype, self.accelerator.device
         )
         return image_latents[0].cpu()  # 返回CPU上的latents以节省显存
 
@@ -1890,7 +1655,6 @@ class QwenImageEditTrainer:
         # 准备control image用于prompt encoding
         if isinstance(control_image, str):
             from PIL import Image
-
             control_image = Image.open(control_image)
 
         control_image_processed = [control_image] if control_image else None
@@ -1902,25 +1666,19 @@ class QwenImageEditTrainer:
             device=self.accelerator.device,
         )
         return {
-            "prompt_embeds": prompt_embeds[0].cpu(),  # 返回CPU上的embeddings
-            "prompt_embeds_mask": prompt_embeds_mask[0].cpu(),
+            'prompt_embeds': prompt_embeds[0].cpu(),  # 返回CPU上的embeddings
+            'prompt_embeds_mask': prompt_embeds_mask[0].cpu()
         }
 
     def _generate_latents_for_validation(self, cached_sample):
         """Generate latents using cached embeddings and current model"""
         # 使用缓存的embeddings进行推理生成
-        text_embeddings = cached_sample["text_embeddings"]
-        control_latents = cached_sample.get("control_latents")
+        text_embeddings = cached_sample['text_embeddings']
+        control_latents = cached_sample.get('control_latents')
 
         # 移动embeddings到GPU
-        prompt_embeds = (
-            text_embeddings["prompt_embeds"].unsqueeze(0).to(self.accelerator.device)
-        )
-        prompt_embeds_mask = (
-            text_embeddings["prompt_embeds_mask"]
-            .unsqueeze(0)
-            .to(self.accelerator.device)
-        )
+        prompt_embeds = text_embeddings['prompt_embeds'].unsqueeze(0).to(self.accelerator.device)
+        prompt_embeds_mask = text_embeddings['prompt_embeds_mask'].unsqueeze(0).to(self.accelerator.device)
 
         if control_latents is not None:
             control_latents = control_latents.unsqueeze(0).to(self.accelerator.device)
@@ -1931,20 +1689,13 @@ class QwenImageEditTrainer:
 
         # 准备latents
         latents, _ = self.prepare_latents(
-            None,
-            batch_size,
-            self.vae_z_dim,
-            height,
-            width,
-            self.weight_dtype,
-            self.accelerator.device,
+            None, batch_size, self.vae_z_dim,
+            height, width, self.weight_dtype, self.accelerator.device
         )
 
         # 使用简化的推理步骤 (fewer steps for validation)
         num_inference_steps = 10
-        timesteps = torch.linspace(
-            1000, 0, num_inference_steps, device=self.accelerator.device
-        )
+        timesteps = torch.linspace(1000, 0, num_inference_steps, device=self.accelerator.device)
 
         with torch.no_grad():
             for t in timesteps:
@@ -1956,14 +1707,7 @@ class QwenImageEditTrainer:
 
                 # 准备其他输入
                 img_shapes = [
-                    [
-                        (
-                            1,
-                            height // self.vae_scale_factor // 2,
-                            width // self.vae_scale_factor // 2,
-                        )
-                    ]
-                    * 2
+                    [(1, height // self.vae_scale_factor // 2, width // self.vae_scale_factor // 2)] * 2
                 ] * batch_size
                 txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
 
@@ -1979,7 +1723,7 @@ class QwenImageEditTrainer:
                 )[0]
 
                 # 只取前面对应latents的部分
-                noise_pred = noise_pred[:, : latents.size(1)]
+                noise_pred = noise_pred[:, :latents.size(1)]
 
                 # 简化的调度器步骤
                 latents = latents - 0.1 * noise_pred  # 简化的更新规则
@@ -1992,16 +1736,12 @@ class QwenImageEditTrainer:
         latents = self._unpack_latents(latents, 512, 512, self.vae_scale_factor)
 
         # 反标准化
-        latents_mean = (
-            torch.tensor(self.vae_latent_mean)
-            .view(1, self.vae_z_dim, 1, 1, 1)
-            .to(latents.device, latents.dtype)
-        )
-        latents_std = (
-            torch.tensor(self.vae_latent_std)
-            .view(1, self.vae_z_dim, 1, 1, 1)
-            .to(latents.device, latents.dtype)
-        )
+        latents_mean = torch.tensor(self.vae_latent_mean).view(
+            1, self.vae_z_dim, 1, 1, 1
+        ).to(latents.device, latents.dtype)
+        latents_std = torch.tensor(self.vae_latent_std).view(
+            1, self.vae_z_dim, 1, 1, 1
+        ).to(latents.device, latents.dtype)
         latents = latents * latents_std + latents_mean
 
         # 调整维度格式
@@ -2018,7 +1758,6 @@ class QwenImageEditTrainer:
                 image = self._postprocess_image(image)
                 # 转换为PIL格式
                 from PIL import Image as PILImage
-
                 image = PILImage.fromarray(image)
         finally:
             # 恢复VAE设备

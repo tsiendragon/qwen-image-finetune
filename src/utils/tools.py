@@ -6,6 +6,7 @@ import PIL
 import os
 from typing import Union
 import hashlib
+import subprocess
 
 
 def sample_indices_per_rank(accelerator, dataset_size: int, num_samples: int,
@@ -64,3 +65,40 @@ def extract_file_hash(image_path: Union[str, PIL.Image.Image]) -> str:
         return content_hash_blake3(image_path)
     else:
         raise ValueError(f"Invalid image path: {image_path}")
+
+
+def _git(cmd, default=""):
+    try:
+        return subprocess.check_output(["git"] + cmd, stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        return default
+
+
+def get_git_info():
+    # commit hash
+    commit = _git(["rev-parse", "HEAD"])
+    short_commit = _git(["rev-parse", "--short", "HEAD"])
+
+    # branch (detached HEAD -> empty)
+    branch = _git(["symbolic-ref", "--short", "-q", "HEAD"])
+
+    # remote url (try origin, else first remote)
+    remote = _git(["remote", "get-url", "origin"])
+    if not remote:
+        remotes = _git(["remote"]).splitlines()
+        if remotes:
+            remote = _git(["remote", "get-url", remotes[0]])
+
+    # repo root (optional)
+    root = _git(["rev-parse", "--show-toplevel"])
+
+    return {
+        "commit": commit,
+        "short_commit": short_commit,
+        "branch": branch or None,  # None if detached
+        "remote": remote or None,
+        "root": root or None,
+    }
+
+if __name__ == "__main__":
+    print(get_git_info())

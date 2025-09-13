@@ -58,10 +58,15 @@ class ImageProcessor:
         elif isinstance(any, np.ndarray):
             return any
         elif isinstance(any, PIL.Image.Image):
-            return np.array(any.convert('RGB'))
+            # 检查图像模式
+            if any.mode == 'L':  # 灰度图像
+                # 对于灰度图像，转换为3通道灰度图
+                gray_array = np.array(any)
+                return gray_array
+            else:  # RGB或其他模式
+                return np.array(any.convert('RGB'))
         else:
             raise ValueError(f"Unsupported type: {type(any)}")
-
 
     def preprocess(self, data):
         """处理图像、掩码和控制图像，支持多种处理模式：resize、center_crop和*_padding"""
@@ -77,7 +82,7 @@ class ImageProcessor:
 
         # 处理mask（如果存在）
         if 'mask' in data:
-            data['mask'] = self._process_mask(data['mask'], (target_h, target_w))
+            data['mask'] = self._process_image(data['mask'], (target_h, target_w))
 
         # 处理控制图像（如果存在）
         if 'control' in data:
@@ -89,31 +94,15 @@ class ImageProcessor:
             if len(self.controls_size) == 1:
                 data['controls'] = [self._process_image(control, self.controls_size[0]) for control in data['controls']]
             else:
-                assert len(self.controls_size) == len(data['controls'])+1, "the number of controls_size should be same of controls"
+                assert len(self.controls_size) == len(data['controls'])+1, "the number of controls_size should be same of controls" # NOQA
                 data['controls'] = [self._process_image(control[i], self.controls_size[i+1]) for i in range(len(data['controls']))]  # NOQA
             data['controls'] = [self._to_tensor(control) for control in data['controls']]
         return data
 
     def _to_tensor(self, image):
-        """将图像转换为范围[-1, 1]的张量"""
-        image = image.astype(np.float32) / 127.5 - 1.0
+        """将图像转换为范围[0, 1]的张量"""
+        image = image.astype(np.float32) / 255.0
         return torch.from_numpy(image).permute(2, 0, 1)
-
-    def _process_mask(self, mask, target_size):
-        """处理掩码图像"""
-        mask = self.any2numpy(mask)
-        target_h, target_w = target_size
-
-        # 调整mask大小与图像一致
-        if mask.shape[:2] != (target_h, target_w):
-            mask = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
-
-        # 确保mask是单通道，并转换为[0,1]范围
-        if len(mask.shape) == 3 and mask.shape[2] > 1:
-            mask = mask[:, :, 0]
-
-        mask = mask.astype(np.float32) / 255.0
-        return torch.from_numpy(mask) # 添加通道维度
 
     def _process_image(self, image, target_size):
         """根据处理类型处理图像"""
@@ -160,7 +149,10 @@ class ImageProcessor:
         resized = cv2.resize(image, (new_w, new_h), interpolation=self.interpolation)
 
         # 创建目标尺寸的空白画布
-        result = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        if len(image.shape) == 2:
+            result = np.zeros((target_h, target_w), dtype=np.uint8)
+        else:
+            result = np.zeros((target_h, target_w, 3), dtype=np.uint8)
 
         # 根据填充类型确定位置
         if self.processor_config.process_type == 'center_padding':
@@ -178,20 +170,3 @@ class ImageProcessor:
         # 将调整大小后的图像放置在画布上
         result[start_y:start_y+new_h, start_x:start_x+new_w] = resized
         return result
-
-    def _pad_to_size(self, image, target_size):
-        """将图像填充到目标大小"""
-        h, w = image.shape[:2]
-        target_h, target_w = target_size
-
-        pad_h = max(0, target_h - h)
-        pad_w = max(0, target_w - w)
-        pad_top = pad_h // 2
-        pad_bottom = pad_h - pad_top
-        pad_left = pad_w // 2
-        pad_right = pad_w - pad_left
-
-        return cv2.copyMakeBorder(
-            image, pad_top, pad_bottom, pad_left, pad_right,
-            cv2.BORDER_CONSTANT, value=(0, 0, 0)
-        )

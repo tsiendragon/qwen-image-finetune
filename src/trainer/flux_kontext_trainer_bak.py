@@ -26,6 +26,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from peft.utils import get_peft_model_state_dict
 
 from diffusers import FluxKontextPipeline
+from src.trainer.base_trainer import BaseTrainer
 from src.models.flux_kontext_loader import (
     load_flux_kontext_vae,
     load_flux_kontext_clip,
@@ -34,10 +35,14 @@ from src.models.flux_kontext_loader import (
     load_flux_kontext_tokenizers,
     load_flux_kontext_scheduler,
 )
+from src.utils.logger import get_logger
+from src.data.cache_manager import check_cache_exists
 from src.loss.edit_mask_loss import map_mask_to_latent
 from src.utils.images import resize_bhw
-from src.trainer.base_trainer import BaseTrainer
 import logging
+
+
+logger = get_logger(__name__, log_level="INFO")
 
 
 def calculate_shift(
@@ -150,10 +155,19 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.vae = None  # FluxVAE
         self.text_encoder = None  # CLIP text encoder
         self.text_encoder_2 = None  # T5 text encoder
-        self.dit = None  # Flux transformer
+        self.transformer = None  # Flux transformer
         self.tokenizer = None  # CLIP tokenizer
         self.tokenizer_2 = None  # T5 tokenizer
         self.scheduler = None  # FlowMatchEulerDiscreteScheduler
+
+        # Cache-related attributes (following QwenImageEditTrainer pattern)
+        self.cache_exist = check_cache_exists(config.cache.cache_dir)
+
+        # Flux-specific configurations
+        self.quantize = config.model.quantize
+        self.prompt_image_dropout_rate = config.data.init_args.get(
+            "prompt_image_dropout_rate", 0.1
+        )
 
         # VAE parameters (similar to QwenImageEditTrainer)
         self.vae_scale_factor = None
@@ -167,6 +181,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self._attention_kwargs = None
         self._current_timestep = None
         self._interrupt = False
+        self.adapter_name = self.config.model.lora.adapter_name
+        self.log_model_info()
+
+    def __repr__(self) -> str:
+        msg = f"FluxKontextLoraTrainer(config={self.config})"
+        return msg
 
     def load_model(self):
         """
@@ -188,7 +208,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             self.config.model.pretrained_model_name_or_path,
             weight_dtype=self.weight_dtype,
         )
-        self.dit = load_flux_kontext_transformer(
+        self.transformer = load_flux_kontext_transformer(
             self.config.model.pretrained_model_name_or_path,
             weight_dtype=self.weight_dtype,
         )
@@ -222,7 +242,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.vae.requires_grad_(False)
 
         if getattr(self, "transformer", None):
-            self.num_channels_latents = self.dit.config.in_channels // 4
+            self.num_channels_latents = self.transformer.config.in_channels // 4
         else:
             self.num_channels_latents = 16
         self.tokenizer_max_length = 77  # clip encoder maximal token length
@@ -239,263 +259,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         logging.info(
             f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}"
         )
-
-    def save_lora(self, save_path):
-        """Save LoRA weights"""
-        unwrapped_transformer = self.accelerator.unwrap_model(self.dit)
-        if is_compiled_module(unwrapped_transformer):
-            unwrapped_transformer = unwrapped_transformer._orig_mod
-
-        lora_state_dict = convert_state_dict_to_diffusers(
-            get_peft_model_state_dict(unwrapped_transformer)
-        )
-        # Use FluxKontextPipeline's save method if available, otherwise use generic method
-        FluxKontextPipeline.save_lora_weights(
-            save_path, lora_state_dict, safe_serialization=True
-        )
-        logging.info(f"Saved LoRA weights to {save_path}")
-
-    def encode_prompt(
-        self,
-        prompt: Union[str, List[str]],
-        prompt_2: Optional[Union[str, List[str]]] = None,
-        device_text_encoder: Optional[torch.device] = None,
-        device_text_encoder_2: Optional[torch.device] = None,
-        max_sequence_length: int = 512,
-    ) -> List[torch.Tensor]:
-        """
-        Encode prompts using both CLIP and T5 encoders.
-        """
-        prompt = [prompt] if isinstance(prompt, str) else prompt
-        prompt_2 = prompt_2 or prompt
-        prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
-        # We only use the pooled prompt output from the CLIPTextModel
-        with torch.inference_mode():
-            pooled_prompt_embeds = self.get_clip_prompt_embeds(
-                prompt=prompt,
-                device=device_text_encoder,
-            )
-            prompt_embeds = self.get_t5_prompt_embeds(
-                prompt=prompt_2,
-                max_sequence_length=max_sequence_length,
-                device=device_text_encoder_2,
-            )
-            text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
-                device=device_text_encoder_2, dtype=self.weight_dtype
-            )
-        return pooled_prompt_embeds, prompt_embeds, text_ids
-
-    def prepare_latents(
-        self,
-        image: Optional[torch.Tensor],
-        batch_size: int,
-        num_channels_latents: int,
-        height: int,
-        width: int,
-        dtype: torch.dtype,
-    ):
-
-        # VAE applies 8x compression on images but we must also account for packing which requires
-        # latent height and width to be divisible by 2.
-        height, width = image.shape[2:]
-        height = 2 * (int(height) // (self.vae_scale_factor * 2))
-        width = 2 * (int(width) // (self.vae_scale_factor * 2))
-        shape = (batch_size, num_channels_latents, height, width)
-        device = next(self.vae.parameters()).device
-        image = image.to(device=device, dtype=dtype)
-        with torch.inference_mode():
-            image_latents = self.encode_vae_image(image=image)
-        image_latent_height, image_latent_width = image_latents.shape[2:]
-        image_latents = self._pack_latents(
-            image_latents,
-            batch_size,
-            num_channels_latents,
-            image_latent_height,
-            image_latent_width,
-        )
-        image_ids = self._prepare_latent_image_ids(
-            batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
-        )
-        # image ids are the same as latent ids with the first dimension set to 1 instead of 0
-        image_ids[..., 0] = 1  # for reference image ids
-        latent_ids = self._prepare_latent_image_ids(
-            batch_size, height // 2, width // 2, device, dtype
-        )
-        latents = randn_tensor(shape, device=device, dtype=dtype)
-        latents = self._pack_latents(
-            latents, batch_size, num_channels_latents, height, width
-        )
-        return latents, image_latents, latent_ids, image_ids
-
-    def setup_model_device_train_mode(self, stage='fit', cache=False):
-        """Set model device allocation and train mode."""
-        if stage == "train":
-            assert hasattr(
-                self, "accelerator"
-            ), "accelerator must be set before setting model devices"
-
-        if self.cache_exist and self.use_cache and stage == "fit":
-            # Cache mode: only need transformer
-            self.text_encoder.cpu()
-            self.text_encoder_2.cpu()
-            torch.cuda.empty_cache()
-            self.vae.cpu()
-            torch.cuda.empty_cache()
-            del self.text_encoder
-            del self.text_encoder_2
-
-            if not self.config.logging.sampling.enable:
-                del self.vae
-            else:
-                self.vae.requires_grad_(False).eval()
-
-            gc.collect()
-            self.dit.to(self.accelerator.device)
-            self.dit.requires_grad_(False)
-            self.dit.train()
-            for name, param in self.dit.named_parameters():
-                if "lora" in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-
-        elif stage == "train":
-            # Non-cache mode: need all encoders
-            self.vae.to(self.accelerator.device)
-            self.text_encoder.to(self.accelerator.device)
-            self.text_encoder_2.to(self.accelerator.device)
-            self.dit.to(self.accelerator.device)
-            self.vae.decoder.to("cpu")
-
-            self.vae.requires_grad_(False).eval()
-            self.text_encoder.requires_grad_(False).eval()
-            self.text_encoder_2.requires_grad_(False).eval()
-            self.dit.requires_grad_(False)
-            self.dit.train()
-            for name, param in self.dit.named_parameters():
-                if "lora" in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-
-        elif stage == "cache":
-            # Cache mode: need encoders, don't need transformer
-            self.vae = self.vae.to(
-                self.config.cache.devices.vae, non_blocking=True
-            )
-            self.vae.decoder.to("cpu")
-            self.text_encoder = self.text_encoder.to(
-                self.config.cache.devices.text_encoder, non_blocking=True
-            )
-            self.text_encoder_2 = self.text_encoder_2.to(
-                self.config.cache.devices.text_encoder_2,
-                non_blocking=True,
-            )
-
-            torch.cuda.synchronize()
-            self.dit.cpu()
-            torch.cuda.empty_cache()
-            del self.dit
-            gc.collect()
-            self.vae.requires_grad_(False).eval()
-            self.text_encoder.requires_grad_(False).eval()
-            self.text_encoder_2.requires_grad_(False).eval()
-
-        elif stage == "predict":
-            # Predict mode: allocate to different GPUs according to configuration
-            devices = self.config.predict.devices
-            self.vae.to(devices.vae)
-            self.text_encoder.to(devices.text_encoder)
-            self.text_encoder_2.to(devices.text_encoder_2)
-            self.dit.to(devices.dit)
-            self.vae.requires_grad_(False).eval()
-            self.text_encoder.requires_grad_(False).eval()
-            self.text_encoder_2.requires_grad_(False).eval()
-            self.dit.requires_grad_(False).eval()
-
-    def prepare_embeddings(self, batch, stage='fit'):
-        # for predict, not 'image' key, but 'pixel_latent' key
-        # torch.tensor of image, control [B,C,H,W], in range [0,1]
-        if 'image' in batch:
-            batch['image'] = self.normalize_image(batch['image'])
-
-        if 'control' in batch:
-            batch['control'] = self.normalize_image(batch['control'])
-
-        for i in range(100):
-            additional_control_key = f'control_{i}'
-            if additional_control_key in batch:
-                batch[additional_control_key] = self.normalize_image(batch[additional_control_key])
-            else:
-                num_additional_controls = i
-                break
-
-        pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
-                prompt=batch['prompt'],
-                prompt_2=None,
-                max_sequence_length=self.max_sequence_length,
-            )
-        batch['pooled_prompt_embeds'] = pooled_prompt_embeds
-        batch['prompt_embeds'] = prompt_embeds
-        batch['text_ids'] = text_ids
-
-        if 'image' in batch:
-            image = batch['image']
-            batch_size = image.shape[0]
-            image_height, image_width = image.shape[2:]
-            latents, image_latents, latent_ids, image_ids = self.prepare_latents(
-                image,
-                batch_size,
-                16,
-                image_height,
-                image_width,
-                self.weight_dtype,
-                self.accelerator.device,
-            )
-
-            batch['image_latents'] = image_latents
-            batch['image_ids'] = image_ids
-            if stage == 'predict':
-                batch['latents'] = latents
-                batch['latent_ids'] = latent_ids
-
-        if 'control' in batch:
-            control = batch['control']
-            batch_size = control.shape[0]
-            control_height, control_width = control.shape[2:]
-            _, control_latents, latent_ids, control_ids = self.prepare_latents(
-                control,
-                batch_size,
-                16,
-                control_height,
-                control_width,
-                self.weight_dtype,
-                self.accelerator.device,
-            )
-            control_ids[..., 0] = 1
-            batch['control_latents'] = control_latents
-            batch['control_ids'] = control_ids
-
-        for i in range(1, num_additional_controls+1):
-            control_key = f'control_{i}'
-            control = batch[control_key]
-            batch_size = control.shape[0]
-            control_height, control_width = control.shape[2:]
-            _, control_latents, latent_ids, control_ids = self.prepare_latents(
-                control,
-                batch_size,
-                16,
-                control_height,
-                control_width,
-                self.weight_dtype,
-                self.accelerator.device,
-            )
-            control_ids[..., 0] = i + 1
-            batch[f'control_{i}_latents'] = control_latents
-            batch[f'control_{i}_ids'] = control_ids
-        return batch
-
-    def prepare_cached_embeddings(self, batch):
 
     def cache(self, train_dataloader):
         """
@@ -638,19 +401,19 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
             )
 
-        self.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
+        self.load_pretrain_lora_model(self.transformer, self.config, self.adapter_name)
         self.text_encoder.requires_grad_(False).eval()
         self.text_encoder_2.requires_grad_(False).eval()
         self.vae.requires_grad_(False).eval()
         self.set_model_devices(mode="train")
 
-        self.dit.requires_grad_(False)
-        self.dit.train()
+        self.transformer.requires_grad_(False)
+        self.transformer.train()
 
         # Train only LoRA parameters
         trainable_params = 0
         total_params = 0
-        for name, param in self.dit.named_parameters():
+        for name, param in self.transformer.named_parameters():
             total_params += param.numel()
             if "lora" in name:
                 param.requires_grad = True
@@ -724,14 +487,14 @@ class FluxKontextLoraTrainer(BaseTrainer):
         )
         for epoch in range(start_epoch, self.config.train.num_epochs):
             for _, batch in enumerate(train_dataloader):
-                with self.accelerator.accumulate(self.dit):
+                with self.accelerator.accumulate(self.transformer):
                     loss = self.training_step(batch)
 
                     # Backward pass
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(
-                            self.dit.parameters(),
+                            self.transformer.parameters(),
                             self.config.train.max_grad_norm,
                         )
 
@@ -990,7 +753,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         # Prepare guidance
         guidance = (
             torch.ones((noise.shape[0],)).to(self.accelerator.device)
-            if self.dit.config.guidance_embeds
+            if self.transformer.config.guidance_embeds
             else None
         )
         # convert dtype to self.weight_dtype
@@ -1000,7 +763,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         guidance = guidance.to(self.weight_dtype)
         t = t.to(self.weight_dtype)
 
-        model_pred = self.dit(
+        model_pred = self.transformer(
             hidden_states=latent_model_input,
             # timestep=timesteps / 1000,
             timestep=t,
@@ -1080,7 +843,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         image = 2.0 * image - 1.0
         return image
 
-    def get_clip_prompt_embeds(self, prompt: str) -> torch.Tensor:
+    def get_clip_prompt_embeds(self, prompt: str, device: str) -> torch.Tensor:
         """
         Get CLIP prompt embeddings.
         """
@@ -1095,7 +858,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             return_length=False,
             return_tensors="pt",
         )
-        device = next(self.text_encoder.parameters()).device
         text_input_ids = text_inputs.input_ids
         prompt_embeds = self.text_encoder(
             text_input_ids.to(device), output_hidden_states=False
@@ -1108,7 +870,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         return prompt_embeds
 
     def get_t5_prompt_embeds(
-        self, prompt: str, max_sequence_length: int = 512
+        self, prompt: str, device: str, max_sequence_length: int = 512
     ) -> torch.Tensor:
         dtype = self.text_encoder.dtype
         prompt = [prompt] if isinstance(prompt, str) else prompt
@@ -1121,7 +883,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             return_overflowing_tokens=False,
             return_tensors="pt",
         )
-        device = next(self.text_encoder_2.parameters()).device
         text_input_ids = text_inputs.input_ids
         prompt_embeds = self.text_encoder_2(
             text_input_ids.to(device), output_hidden_states=False
@@ -1129,6 +890,36 @@ class FluxKontextLoraTrainer(BaseTrainer):
         dtype = self.text_encoder_2.dtype
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
         return prompt_embeds
+
+    def encode_prompt(
+        self,
+        prompt: Union[str, List[str]],
+        prompt_2: Optional[Union[str, List[str]]] = None,
+        device_text_encoder: Optional[torch.device] = None,
+        device_text_encoder_2: Optional[torch.device] = None,
+        max_sequence_length: int = 512,
+    ) -> List[torch.Tensor]:
+        """
+        Encode prompts using both CLIP and T5 encoders.
+        """
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        prompt_2 = prompt_2 or prompt
+        prompt_2 = [prompt_2] if isinstance(prompt_2, str) else prompt_2
+        # We only use the pooled prompt output from the CLIPTextModel
+        with torch.inference_mode():
+            pooled_prompt_embeds = self.get_clip_prompt_embeds(
+                prompt=prompt,
+                device=device_text_encoder,
+            )
+            prompt_embeds = self.get_t5_prompt_embeds(
+                prompt=prompt_2,
+                max_sequence_length=max_sequence_length,
+                device=device_text_encoder_2,
+            )
+            text_ids = torch.zeros(prompt_embeds.shape[1], 3).to(
+                device=device_text_encoder_2, dtype=self.weight_dtype
+            )
+        return pooled_prompt_embeds, prompt_embeds, text_ids
 
     @staticmethod
     # Copied from diffusers.pipelines.flux.pipeline_flux.FluxPipeline._pack_latents
@@ -1179,6 +970,50 @@ class FluxKontextLoraTrainer(BaseTrainer):
         )
         return latent_image_ids.to(device=device, dtype=dtype)
 
+    def prepare_latents(
+        self,
+        image: Optional[torch.Tensor],
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ):
+
+        # VAE applies 8x compression on images but we must also account for packing which requires
+        # latent height and width to be divisible by 2.
+        height, width = image.shape[2:]
+        height = 2 * (int(height) // (self.vae_scale_factor * 2))
+        width = 2 * (int(width) // (self.vae_scale_factor * 2))
+        shape = (batch_size, num_channels_latents, height, width)
+        image = image.to(device=device, dtype=dtype)
+        with torch.inference_mode():
+            image_latents = self.encode_vae_image(image=image)
+        image_latent_height, image_latent_width = image_latents.shape[2:]
+        image_latents = self._pack_latents(
+            image_latents,
+            batch_size,
+            num_channels_latents,
+            image_latent_height,
+            image_latent_width,
+        )
+        print("image latent shape after pack", image_latents.shape)
+        image_ids = self._prepare_latent_image_ids(
+            batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
+        )
+        print("image_ids", image_ids.shape, image_ids)
+        # image ids are the same as latent ids with the first dimension set to 1 instead of 0
+        image_ids[..., 0] = 1  # for reference image ids
+        latent_ids = self._prepare_latent_image_ids(
+            batch_size, height // 2, width // 2, device, dtype
+        )
+        latents = randn_tensor(shape, device=device, dtype=dtype)
+        latents = self._pack_latents(
+            latents, batch_size, num_channels_latents, height, width
+        )
+        return latents, image_latents, latent_ids, image_ids
+
     def encode_vae_image(self, image: torch.Tensor) -> torch.Tensor:
         image_latents = self.vae.encode(image)
         image_latents = image_latents.latent_dist.mode()
@@ -1209,13 +1044,13 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.vae = self.vae.to(device_vae)
         self.text_encoder = self.text_encoder.to(device_text_encoder)
         self.text_encoder_2 = self.text_encoder_2.to(device_text_encoder_2)
-        self.dit = self.dit.to(device_transformer)
+        self.transformer = self.transformer.to(device_transformer)
         self.vae.eval()
         self.text_encoder.eval()
         self.text_encoder_2.eval()
-        self.dit.eval()
+        self.transformer.eval()
         if self.config.model.lora.pretrained_weight:
-            self.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
+            self.load_pretrain_lora_model(self.transformer, self.config, self.adapter_name)
         self.predict_setted = True
 
     def predict(
@@ -1427,7 +1262,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 # prompt_embeds torch.Size([1, 512, 4096])
                 # text_ids torch.Size([512, 3])
                 # latent_ids torch.Size([183040, 3])
-                noise_pred = self.dit(
+                noise_pred = self.transformer(
                     hidden_states=latent_model_input,
                     timestep=timestep / 1000,
                     guidance=guidance,
@@ -1442,7 +1277,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 noise_pred = noise_pred[:, : latents.size(1)]
                 # noise_pred after choose first 4081 torch.Size([1, 4081, 64])
                 if true_cfg_scale > 1.0 and negative_prompt is not None:
-                    neg_noise_pred = self.dit(
+                    neg_noise_pred = self.transformer(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
                         guidance=guidance,
@@ -1472,6 +1307,78 @@ class FluxKontextLoraTrainer(BaseTrainer):
         image = self.image_processor.postprocess(image, output_type="pil")
         return image
 
+    def set_model_devices(self, mode="train"):
+        """Set model device allocation (same signature as QwenImageEditTrainer)."""
+        if mode == "train":
+            assert hasattr(
+                self, "accelerator"
+            ), "accelerator must be set before setting model devices"
+
+        if self.cache_exist and self.use_cache and mode == "train":
+            # Cache mode: only need transformer
+            self.text_encoder.cpu()
+            self.text_encoder_2.cpu()
+            torch.cuda.empty_cache()
+            self.vae.cpu()
+            torch.cuda.empty_cache()
+            del self.text_encoder
+            del self.text_encoder_2
+            del self.vae
+            gc.collect()
+            self.transformer.to(self.accelerator.device)
+
+        elif not self.use_cache and mode == "train":
+            # Non-cache mode: need all encoders
+            self.vae.to(self.accelerator.device)
+            self.vae.decoder.to("cpu")
+            self.text_encoder.to(self.accelerator.device)
+            self.text_encoder_2.to(self.accelerator.device)
+            self.transformer.to(self.accelerator.device)
+
+        elif mode == "cache":
+            # Cache mode: need encoders, don't need transformer
+            self.vae = self.vae.to(
+                self.config.cache.vae_encoder_device, non_blocking=True
+            )
+            self.vae.decoder.to("cpu")
+            self.text_encoder = self.text_encoder.to(
+                self.config.cache.text_encoder_device, non_blocking=True
+            )
+            self.text_encoder_2 = self.text_encoder_2.to(
+                self.config.cache.text_encoder_2_device,
+                non_blocking=True,
+            )
+
+            torch.cuda.synchronize()
+            self.transformer.cpu()
+            torch.cuda.empty_cache()
+            del self.transformer
+            gc.collect()
+
+        elif mode == "predict":
+            # Predict mode: allocate to different GPUs according to configuration
+            devices = self.config.predict.devices
+            self.vae.to(devices["vae"])
+            self.text_encoder.to(devices["text_encoder"])
+            self.text_encoder_2.to(
+                devices.get("text_encoder_2", devices["text_encoder"])
+            )
+            self.transformer.to(devices["transformer"])
+
+    def save_lora(self, save_path):
+        """Save LoRA weights"""
+        unwrapped_transformer = self.accelerator.unwrap_model(self.transformer)
+        if is_compiled_module(unwrapped_transformer):
+            unwrapped_transformer = unwrapped_transformer._orig_mod
+
+        lora_state_dict = convert_state_dict_to_diffusers(
+            get_peft_model_state_dict(unwrapped_transformer)
+        )
+        # Use FluxKontextPipeline's save method if available, otherwise use generic method
+        FluxKontextPipeline.save_lora_weights(
+            save_path, lora_state_dict, safe_serialization=True
+        )
+        logging.info(f"Saved LoRA weights to {save_path}")
 
     # Validation sampling methods
     def encode_vae_image_for_validation(self, image):

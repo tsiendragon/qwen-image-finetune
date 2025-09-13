@@ -1,6 +1,6 @@
 import os
 import torch
-from typing import Dict, Optional, List
+from typing import List
 from pathlib import Path
 import json
 import glob
@@ -31,8 +31,9 @@ class EmbeddingCacheManager:
         else:
             return extract_file_hash(file_path)
 
-    def get_metadata_path(self, main_hash: str) -> str:
-        return os.path.join(str(self.cache_root), f"{main_hash}_metadata.json")
+    @classmethod
+    def get_metadata_path(cls, cache_root, main_hash: str) -> str:
+        return os.path.join(str(cache_root), f"{main_hash}_metadata.json")
 
     def get_cache_embedding_path(self, embedding_key: str, hash_value: str) -> str:
         return os.path.join(str(self.cache_root), embedding_key, f"{hash_value}.pt")
@@ -58,7 +59,7 @@ class EmbeddingCacheManager:
             set(file_hashes.keys())
         ), "hash_maps values must be a subset of file_hashes keys"
         main_hash = file_hashes["image_hash"]
-        metadata_path = self.get_metadata_path(main_hash)
+        metadata_path = self.get_metadata_path(self.cache_root, main_hash)
         metadata = {}
 
         for key in data.keys():
@@ -74,7 +75,7 @@ class EmbeddingCacheManager:
 
     def load_cache(self, data, replace_empty_embeddings: bool = False, prompt_empty_drop_keys: List[str] = None):
         main_hash = data["file_hashes"]["image_hash"]
-        metadata_path = self.get_metadata_path(main_hash)
+        metadata_path = self.get_metadata_path(self.cache_root, main_hash)
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
         for embedding_key, hash_value in metadata.items():
@@ -92,15 +93,11 @@ class EmbeddingCacheManager:
                 data[original_key] = empty_embedding
         return data
 
-    def exist(self):
+    @classmethod
+    def exist(cls, cache_root: str):
         """check if metadata exists"""
-        meta_folder = self.metadata_dir
+        meta_folder = cls.get_metadata_path(cache_root, "image_hash")
         if os.path.exists(meta_folder):
             metadata_files = glob.glob(os.path.join(meta_folder, "*.json"))
             return len(metadata_files) > 0
         return False
-
-
-if __name__ == "__main__":
-    cache_root = "/data/lilong/experiment/id_card_qwen_image_lora/cache"
-    print(check_cache_exists(cache_root))

@@ -1,5 +1,4 @@
 import os
-import random
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -10,8 +9,8 @@ import numpy as np
 import cv2
 import importlib
 import logging
-import hashlib
-# 删除重复的 typing 导入，已在上方统一导入 Optional, Dict, List, Any
+import random
+
 from src.data.cache_manager import EmbeddingCacheManager
 from src.utils.hugginface import load_editing_dataset, is_huggingface_repo
 from src.utils.tools import hash_string_md5
@@ -110,7 +109,6 @@ class ImageDataset(Dataset):
         ```python
         cfg = {
             'dataset_path': ['/data/ds1', '/data/ds2'],
-            'image_size': (512, 512),
             'use_cache': True,
             'cache_dir': '/data/cache'
         }
@@ -130,35 +128,21 @@ class ImageDataset(Dataset):
 
         self.hf_datasets = {}
 
-        self.image_size = data_config.image_size
         self.cache_dir = data_config.cache_dir
         self.use_cache = data_config.use_cache
         self.selected_control_indexes = data_config.selected_control_indexes
 
-
-        # 初始化缓存管理器
         if self.use_cache and self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
-            self.cache_manager = EmbeddingCacheManager(self.cache_dir, cache_types=self.data_config.get('cache_keys', None))
+            self.cache_manager = EmbeddingCacheManager(self.cache_dir)
             print(f"缓存已启用，缓存目录: {self.cache_dir}")
         else:
             self.cache_manager = None
             print("缓存未启用")
 
         self.cache_exists = self.cache_manager.exist() if self.cache_manager else False
-        if self.cache_exists:
-            cache_subfolders = glob.glob(self.cache_dir+"/*")
-            self.cache_keys = [os.path.basename(cache_subfolder) for cache_subfolder in cache_subfolders]
-        else:
-            self.cache_keys = []
         # loading datsets
         self._load_all_datasets()
-
-        # 图像预处理变换 - 将[img_w, img_h] 转换为transforms.Resize期望的 (height, width) 格式
-        if isinstance(self.image_size, (tuple, list)):
-            self.resize_size = (self.image_size[0], self.image_size[1])  # (width, height)
-        else:
-            self.resize_size = self.image_size
         self.load_processor()
 
     def load_processor(self):
@@ -409,7 +393,7 @@ class ImageDataset(Dataset):
             if self.use_cache:
                 file_hashes = self.get_file_hashes(data)
                 data['file_hashes'] = file_hashes
-            else: # loaded locally
+            else:  # loaded locally
                 data_item = self.all_samples[idx]
                 #  {
                 #         "image": image_path,
@@ -459,10 +443,14 @@ class ImageDataset(Dataset):
         data = self.load_data(idx)
         data = self.preprocessor.preprocess(data)
         if self.use_cache and self.cache_exists:
-            data = self.cache_manager.load_cache(data)
+            if random.random() < self.data_config.caption_dropout_rate:
+                replace_empty_embeddings = True
+            else:
+                replace_empty_embeddings = False
+            prompt_empty_drop_keys = self.data_config.prompt_empty_drop_keys
+            data = self.cache_manager.load_cache(data, replace_empty_embeddings, prompt_empty_drop_keys)
         data['cached'] = True
         return data
-
 
 
 def pad_to_max_shape(tensors, padding_value=0):

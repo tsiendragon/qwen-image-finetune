@@ -1,5 +1,6 @@
-from src.data.config import load_config_from_yaml
+from src.data.config import load_config_from_yaml, TrMode
 import argparse
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -23,7 +24,7 @@ def parse_args():
         config.resume = args.resume
 
     if args.cache:
-        config.mode = 'cache'
+        config.mode = TrMode.cache
     else:
-        config.mode = 'train'
+        config.mode = TrMode.fit
     return config
