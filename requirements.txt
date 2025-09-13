@@ -31,3 +31,4 @@ prodigyopt
 pydantic==2.11.7
 blake3
 pillow
+rich
