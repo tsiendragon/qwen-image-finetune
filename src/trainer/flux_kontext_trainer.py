@@ -219,7 +219,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
     def setup_model_device_train_mode(self, stage="fit", cache=False):
         """Set model device allocation and train mode."""
-        if stage == "train":
+        if stage == "fit":
             assert hasattr(
                 self, "accelerator"
             ), "accelerator must be set before setting model devices"
@@ -249,7 +249,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 else:
                     param.requires_grad = False
 
-        elif stage == "train":
+        elif stage == "fit":
             # Non-cache mode: need all encoders
             self.vae.to(self.accelerator.device)
             self.text_encoder.to(self.accelerator.device)
@@ -312,6 +312,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         if "control" in batch:
             batch["control"] = self.normalize_image(batch["control"])
+            print(batch['control'].min(), batch['control'].max())
+            torch.save(batch['control'], '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_control.pt')
 
         for i in range(100):
             additional_control_key = f"control_{i}"
@@ -336,6 +338,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
         batch["pooled_prompt_embeds"] = pooled_prompt_embeds
         batch["prompt_embeds"] = prompt_embeds
         batch["text_ids"] = text_ids
+        torch.save(pooled_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_pooled_prompt_embeds.pt')
+        torch.save(prompt_embeds,'/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_prompt_embeds.pt')
+        torch.save(text_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_text_ids.pt')
 
         if stage == 'cache':
             pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
@@ -361,9 +366,13 @@ class FluxKontextLoraTrainer(BaseTrainer):
             batch["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
             batch["negative_prompt_embeds"] = negative_prompt_embeds
             batch["negative_text_ids"] = negative_text_ids
+            torch.save(negative_pooled_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_negative_pooled_prompt_embeds.pt')
+            torch.save(negative_prompt_embeds,'/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_negative_prompt_embeds.pt')
+            torch.save(negative_text_ids,'/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_negative_text_ids.pt')
 
         if "image" in batch:
             image = batch["image"]
+            torch.save(image, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/prepare_latent_input_image.pt')
             batch_size = image.shape[0]
             image_height, image_width = image.shape[2:]
             latents, image_latents, latent_ids, image_ids = self.prepare_latents(
@@ -395,6 +404,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
             batch["control_latents"] = [control_latents]
             batch["control_ids"] = [control_ids]
             logging.info(f"control_ids: {control_ids}")
+            torch.save(control_latents, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_control_latents.pt')
+            torch.save(control_ids,'/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_control_ids.pt')
 
         for i in range(1, num_additional_controls + 1):
             control_key = f"control_{i}"
@@ -463,6 +474,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.cache_manager.save_cache_embedding(
             cache_embeddings, map_keys, data["file_hashes"]
         )
+        1/0
 
     def prepare_cached_embeddings(self, batch):
         if self.config.loss.mask_loss and "mask" in batch:
@@ -694,9 +706,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         latent_ids = torch.cat([latent_ids, control_ids], dim=0)
         image_seq_len = latents.shape[1]
+        print('image_seq_len', image_seq_len)
         timesteps, num_inference_steps = self.prepare_predict_timesteps(
             num_inference_steps, image_seq_len
         )
+        print('timesteps', timesteps)
+        print('guidance', embeddings['guidance'])
         guidance = torch.full(
             [1], embeddings['guidance'], device=dit_device, dtype=torch.float32
         )
@@ -727,7 +742,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
 
         with torch.inference_mode():
-            for _, t in enumerate(
+            for i, t in enumerate(
                 tqdm(
                     timesteps, total=num_inference_steps, desc="Flux Kontext Generation"
                 )
@@ -746,6 +761,17 @@ class FluxKontextLoraTrainer(BaseTrainer):
                     return_dict=False,
                 )[0]
                 noise_pred = noise_pred[:, :image_seq_len]
+
+                if i==0:
+                    torch.save(noise_pred, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/noise_pred.pt')
+                    torch.save(timestep, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/timestep.pt')
+                    torch.save(latent_model_input, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/latent_model_input.pt')
+                    torch.save(latent_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/latent_ids.pt')
+                    torch.save(pooled_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/pooled_prompt_embeds.pt')
+                    torch.save(prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/prompt_embeds.pt')
+                    torch.save(text_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/text_ids.pt')
+                    torch.save(control_latents, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/control_latents.pt')
+                    torch.save(control_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/control_ids.pt')
                 if (
                     true_cfg_scale > 1.0
                     and "negative_pooled_prompt_embeds" in embeddings
@@ -761,6 +787,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
                         joint_attention_kwargs={},
                         return_dict=False,
                     )[0]
+                    if i==0:
+                        torch.save(negative_pooled_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/negative_pooled_prompt_embeds.pt')
+                        torch.save(negative_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/negative_prompt_embeds.pt')
+                        torch.save(negative_text_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/negative_text_ids.pt')
                     neg_noise_pred = neg_noise_pred[:, :image_seq_len]
                     noise_pred = neg_noise_pred + true_cfg_scale * (
                         noise_pred - neg_noise_pred
@@ -782,6 +812,40 @@ class FluxKontextLoraTrainer(BaseTrainer):
         image = self.image_processor.postprocess(image, output_type="pt")
         return image
 
+    def preprocess_image_predict(self, image: torch.Tensor) -> torch.Tensor:
+        """Preprocess image for Flux Kontext VAE.
+        image: RGB tensor input [B,C,H,W]
+        Logic is
+        1. Resize it make it devisible by 16
+        2. Input should be RGB format
+        3. Convert to [-1,1] range by devide 255
+        4. Input shape should be [B,3,H,W]
+        """
+        import torch.nn.functional as F
+        import numpy as np
+        # get proper image shape
+        if isinstance(image, PIL.Image.Image):
+            image = np.array(image)
+        if isinstance(image, np.ndarray):
+            image = torch.from_numpy(image)
+
+        if image.shape[2] <= 4:
+            image = image.permute(2, 0, 1)  # [C,H,W]
+        h, w = image.shape[1:]
+        h = h // 16 * 16
+        w = w // 16 * 16
+        image = image.to(self.weight_dtype)
+        if image.shape[-2] != h or image.shape[-1] != w:
+            image = F.interpolate(
+                image, size=(h, w), mode="bilinear", align_corners=False
+            )
+        image = image / 255.0
+        # image = image.astype(self.weight_dtype)
+        image = image.to(self.weight_dtype)
+        # image = 2.0 * image - 1.0
+        print('image shape after preprocess', image.shape)
+        return image
+
     def prepare_predict_batch_data(
         self,
         prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]] = None,
@@ -798,6 +862,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         generator: Optional[torch.Generator] = None,
         weight_dtype: torch.dtype = torch.bfloat16,
         true_cfg_scale: float = 1.0,
+        auto_resize: bool = False,
         **kwargs,
     ) -> dict:
         """
@@ -811,6 +876,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
         self.weight_dtype = weight_dtype
+
         if additional_controls_size:
             assert len(additional_controls_size) == len(
                 additional_controls[0]
@@ -828,9 +894,11 @@ class FluxKontextLoraTrainer(BaseTrainer):
         data = {}
         control = []
         for img in prompt_image:
-            img = self.preprocessor.preprocess(
-                {"control": img}, controls_size=controls_size
-            )["control"]
+            # img = self.preprocessor.preprocess(
+            #     {"control": img}, controls_size=controls_size
+            # )["control"]
+            img = self.preprocess_image_predict(img)
+            torch.save(img, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_image.pt')
             control.append(img)
         control = torch.stack(control, dim=0)
         data["control"] = control
