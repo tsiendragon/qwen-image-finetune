@@ -68,22 +68,46 @@ class FluxKontextLoraTrainer(BaseTrainer):
         logging.info("Loading FluxKontextPipeline and separating components...")
 
         # Separate individual components using flux_kontext_loader
-        self.vae = load_flux_kontext_vae(
-            self.config.model.pretrained_model_name_or_path,
-            weight_dtype=self.weight_dtype,
-        )
-        self.text_encoder = load_flux_kontext_clip(
-            self.config.model.pretrained_model_name_or_path,
-            weight_dtype=self.weight_dtype,
-        )
-        self.text_encoder_2 = load_flux_kontext_t5(
-            self.config.model.pretrained_model_name_or_path,
-            weight_dtype=self.weight_dtype,
-        )
+        pretrains = self.config.model.pretrained_embeddings
+        if pretrains is not None and 'vae' in pretrains:
+            self.vae = load_flux_kontext_vae(
+                pretrains['vae'],
+                weight_dtype=self.weight_dtype,
+            ).to('cpu')
+            logging.info(f'loaded vae from {pretrains["vae"]}')
+        else:
+            self.vae = load_flux_kontext_vae(
+                self.config.model.pretrained_model_name_or_path,
+                weight_dtype=self.weight_dtype,
+            ).to('cpu')
+        if pretrains is not None and 'text_encoder' in pretrains:
+            self.text_encoder = load_flux_kontext_clip(
+                pretrains['text_encoder'],
+                weight_dtype=self.weight_dtype,
+            ).to('cpu')
+            logging.info(f'loaded text_encoder from {pretrains["text_encoder"]}')
+        else:
+            self.text_encoder = load_flux_kontext_clip(
+                self.config.model.pretrained_model_name_or_path,
+                weight_dtype=self.weight_dtype,
+            ).to('cpu')
+
+        if pretrains is not None and 'text_encoder_2' in pretrains:
+            self.text_encoder_2 = load_flux_kontext_t5(
+                pretrains['text_encoder_2'],
+                weight_dtype=self.weight_dtype,
+            ).to('cpu')
+            logging.info(f'loaded text_encoder_2 from {pretrains["text_encoder_2"]}')
+        else:
+            self.text_encoder_2 = load_flux_kontext_t5(
+                self.config.model.pretrained_model_name_or_path,
+                weight_dtype=self.weight_dtype,
+            ).to('cpu')
+
         self.dit = load_flux_kontext_transformer(
             self.config.model.pretrained_model_name_or_path,
             weight_dtype=self.weight_dtype,
-        )
+        ).to('cpu')
 
         # Load tokenizers and scheduler
         self.tokenizer, self.tokenizer_2 = load_flux_kontext_tokenizers(
@@ -109,9 +133,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.latent_channels = self.vae_z_dim
 
         # Set models to training/evaluation mode (same as QwenImageEditTrainer)
-        self.text_encoder.requires_grad_(False)
-        self.text_encoder_2.requires_grad_(False)
-        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False).eval()
+        self.text_encoder_2.requires_grad_(False).eval()
+        self.vae.requires_grad_(False).eval()
 
         if self.dit is not None:
             self.num_channels_latents = self.dit.config.in_channels // 4
@@ -131,21 +155,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         logging.info(
             f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}"
         )
-
-    def save_lora(self, save_path):
-        """Save LoRA weights"""
-        unwrapped_transformer = self.accelerator.unwrap_model(self.dit)
-        if is_compiled_module(unwrapped_transformer):
-            unwrapped_transformer = unwrapped_transformer._orig_mod
-
-        lora_state_dict = convert_state_dict_to_diffusers(
-            get_peft_model_state_dict(unwrapped_transformer)
-        )
-        # Use FluxKontextPipeline's save method if available, otherwise use generic method
-        FluxKontextPipeline.save_lora_weights(
-            save_path, lora_state_dict, safe_serialization=True
-        )
-        logging.info(f"Saved LoRA weights to {save_path}")
 
     def encode_prompt(
         self,
@@ -271,7 +280,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
         elif stage == "cache":
             # Cache mode: need encoders, don't need transformer
             self.vae = self.vae.to(self.config.cache.devices.vae, non_blocking=True)
+            print('self.config.cache.devices.vae', self.config.cache.devices.vae)
+            print('vae device ', next(self.vae.parameters()).device)
+
             self.vae.decoder.to("cpu")
+            print('vae device ', next(self.vae.parameters()).device)
+
             self.text_encoder = self.text_encoder.to(
                 self.config.cache.devices.text_encoder, non_blocking=True
             )
@@ -288,6 +302,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
             self.vae.requires_grad_(False).eval()
             self.text_encoder.requires_grad_(False).eval()
             self.text_encoder_2.requires_grad_(False).eval()
+            logging.info('cache mode device setting')
+            print('vae device ', next(self.vae.parameters()).device)
 
         elif stage == "predict":
             # Predict mode: allocate to different GPUs according to configuration
@@ -312,24 +328,23 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         if "control" in batch:
             batch["control"] = self.normalize_image(batch["control"])
-            print(batch['control'].min(), batch['control'].max())
-            torch.save(batch['control'], '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_control.pt')
 
-        for i in range(100):
-            additional_control_key = f"control_{i}"
+        num_additional_controls = batch["n_controls"] if isinstance(batch["n_controls"], int) else batch["n_controls"][0]
+
+        for i in range(num_additional_controls):
+            additional_control_key = f"control_{i+1}"
             if additional_control_key in batch:
                 batch[additional_control_key] = self.normalize_image(
                     batch[additional_control_key]
                 )
-            else:
-                num_additional_controls = i
-                break
+        logging.info('process controls')
 
         if "prompt_2" in batch:
             prompt_2 = batch["prompt_2"]
         else:
             prompt_2 = batch["prompt"]
 
+        logging.info('encode prompt')
         pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
             prompt=batch["prompt"],
             prompt_2=prompt_2,
@@ -338,9 +353,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         batch["pooled_prompt_embeds"] = pooled_prompt_embeds
         batch["prompt_embeds"] = prompt_embeds
         batch["text_ids"] = text_ids
-        torch.save(pooled_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_pooled_prompt_embeds.pt')
-        torch.save(prompt_embeds,'/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_prompt_embeds.pt')
-        torch.save(text_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_text_ids.pt')
+        logging.info('encode prompt')
 
         if stage == 'cache':
             pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
@@ -350,6 +363,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
             batch["empty_pooled_prompt_embeds"] = pooled_prompt_embeds
             batch["empty_prompt_embeds"] = prompt_embeds
+            logging.info('process empty prompt')
 
         if "negative_prompt" in batch:
             if "negative_prompt_2" in batch:
@@ -366,15 +380,17 @@ class FluxKontextLoraTrainer(BaseTrainer):
             batch["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
             batch["negative_prompt_embeds"] = negative_prompt_embeds
             batch["negative_text_ids"] = negative_text_ids
-            torch.save(negative_pooled_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_negative_pooled_prompt_embeds.pt')
-            torch.save(negative_prompt_embeds,'/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_negative_prompt_embeds.pt')
-            torch.save(negative_text_ids,'/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_negative_text_ids.pt')
-
+            logging.info('process negative prompt')
         if "image" in batch:
-            image = batch["image"]
-            torch.save(image, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/prepare_latent_input_image.pt')
+            logging.info('process image')
+            image = batch["image"]  # single images
+            print('image shaope',image.shape)
             batch_size = image.shape[0]
             image_height, image_width = image.shape[2:]
+            print('batch_size', batch_size, image_height, image_width)
+            device = next(self.vae.parameters()).device
+            print('device', device)
+
             latents, image_latents, latent_ids, image_ids = self.prepare_latents(
                 image,
                 batch_size,
@@ -388,9 +404,11 @@ class FluxKontextLoraTrainer(BaseTrainer):
             logging.info(f"stage: {stage}")
 
         logging.info(f"batch: {batch.keys()}")
+
         if "control" in batch:
             control = batch["control"]
             batch_size = control.shape[0]
+
             control_height, control_width = control.shape[2:]
             _, control_latents, _, control_ids = self.prepare_latents(
                 control,
@@ -404,12 +422,11 @@ class FluxKontextLoraTrainer(BaseTrainer):
             batch["control_latents"] = [control_latents]
             batch["control_ids"] = [control_ids]
             logging.info(f"control_ids: {control_ids}")
-            torch.save(control_latents, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_control_latents.pt')
-            torch.save(control_ids,'/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_control_ids.pt')
 
         for i in range(1, num_additional_controls + 1):
             control_key = f"control_{i}"
             control = batch[control_key]
+
             batch_size = control.shape[0]
             control_height, control_width = control.shape[2:]
             _, control_latents, _, control_ids = self.prepare_latents(
@@ -474,7 +491,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self.cache_manager.save_cache_embedding(
             cache_embeddings, map_keys, data["file_hashes"]
         )
-        1/0
 
     def prepare_cached_embeddings(self, batch):
         if self.config.loss.mask_loss and "mask" in batch:
@@ -706,12 +722,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         latent_ids = torch.cat([latent_ids, control_ids], dim=0)
         image_seq_len = latents.shape[1]
-        print('image_seq_len', image_seq_len)
         timesteps, num_inference_steps = self.prepare_predict_timesteps(
             num_inference_steps, image_seq_len
         )
-        print('timesteps', timesteps)
-        print('guidance', embeddings['guidance'])
         guidance = torch.full(
             [1], embeddings['guidance'], device=dit_device, dtype=torch.float32
         )
@@ -761,17 +774,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
                     return_dict=False,
                 )[0]
                 noise_pred = noise_pred[:, :image_seq_len]
-
-                if i==0:
-                    torch.save(noise_pred, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/noise_pred.pt')
-                    torch.save(timestep, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/timestep.pt')
-                    torch.save(latent_model_input, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/latent_model_input.pt')
-                    torch.save(latent_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/latent_ids.pt')
-                    torch.save(pooled_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/pooled_prompt_embeds.pt')
-                    torch.save(prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/prompt_embeds.pt')
-                    torch.save(text_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/text_ids.pt')
-                    torch.save(control_latents, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/control_latents.pt')
-                    torch.save(control_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/control_ids.pt')
                 if (
                     true_cfg_scale > 1.0
                     and "negative_pooled_prompt_embeds" in embeddings
@@ -787,10 +789,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
                         joint_attention_kwargs={},
                         return_dict=False,
                     )[0]
-                    if i==0:
-                        torch.save(negative_pooled_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/negative_pooled_prompt_embeds.pt')
-                        torch.save(negative_prompt_embeds, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/negative_prompt_embeds.pt')
-                        torch.save(negative_text_ids, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/negative_text_ids.pt')
                     neg_noise_pred = neg_noise_pred[:, :image_seq_len]
                     noise_pred = neg_noise_pred + true_cfg_scale * (
                         noise_pred - neg_noise_pred
@@ -843,7 +841,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         # image = image.astype(self.weight_dtype)
         image = image.to(self.weight_dtype)
         # image = 2.0 * image - 1.0
-        print('image shape after preprocess', image.shape)
         return image
 
     def prepare_predict_batch_data(
@@ -898,7 +895,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             #     {"control": img}, controls_size=controls_size
             # )["control"]
             img = self.preprocess_image_predict(img)
-            torch.save(img, '/mnt/nas/public2/lilong/repos/qwen-image-finetune/.cache/processed_image.pt')
             control.append(img)
         control = torch.stack(control, dim=0)
         data["control"] = control

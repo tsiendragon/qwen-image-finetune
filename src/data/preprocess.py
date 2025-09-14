@@ -86,21 +86,20 @@ class ImageProcessor:
             mask = torch.from_numpy(mask).to(torch.float32)
             data['mask'] = mask
 
-
         # 处理控制图像（如果存在）
         if 'control' in data:
             control = self.any2numpy(data['control'])
-            processed_control = self._process_image(control, self.controls_size[0])
+            processed_control = self._process_image(control, controls_size[0])
             data['control'] = self._to_tensor(processed_control)
 
         if 'controls' in data:  # extrol
-            data['controls'] = [self.any2numpy(x) for x in data['controls']]
+            controls = [self.any2numpy(x) for x in data['controls']]
             if len(self.controls_size) == 1:
-                data['controls'] = [self._process_image(control, controls_size[0]) for control in data['controls']]
+                controls = [self._process_image(control, controls_size[0]) for control in controls]
             else:
-                assert len(controls_size) == len(data['controls'])+1, "the number of controls_size should be same of controls" # NOQA
-                data['controls'] = [self._process_image(control[i], self.controls_size[i+1]) for i in range(len(data['controls']))]  # NOQA
-            data['controls'] = [self._to_tensor(control) for control in data['controls']]
+                assert len(controls_size) == len(controls)+1, "the number of controls_size should be same of controls" # NOQA
+                controls = [self._process_image(controls[i], controls_size[i+1]) for i in range(len(controls))]  # NOQA
+            data['controls'] = [self._to_tensor(control) for control in controls]
         return data
 
     def _to_tensor(self, image):

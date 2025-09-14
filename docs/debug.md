@@ -120,3 +120,38 @@ But we got.
 We found a error as indicate in 6. Lets train it again, to see if this resolves the problem.
 
 - Found that the face is not upright while the face mask is all upright. Fixed it. Change resolution to what used in Qwen-Image-Edit Training
+
+8. After refactor of the code with BaseTrainer. The lora finetuning output is noise
+![alt text](images/image-13.png)
+![alt text](images/image-12.png)
+The loss is increasing after several steps.
+There must be some problem in training steps. We need to check why this happened. Predict step is good. Also indicate decode step is correct.
+
+The problem maybe occured in cache or fit step.
+In cache step, we need to find out whether the cache embedding is correct compared with pipeline processed embeddings.
+In the training step, need to make sure every step is correct.
+
+- First Debug the cache step, check if the cached control latents, and prompt embedding is same as that in diffuser pipeline
+  - run cache:
+    in cache function, choose one example, save the processed image, save to png.
+    Load this png in diffuser pipeline. Save different embeddings
+    Compare with the cached embedings with that save in diffusers
+-
+
+It turns out to be the fp4 training problem. When switch to fp16 training, it seems correct
+![alt text](images/image-14.png)
+400 steps Lora finetune get
+![alt text](images/image-15.png)
+
+fp4 training, got this problem may caused by the larger learning rate. Let me chage to
+`0.00002` instead.
+![alt text](images/image-16.png)
+The loss becomes stable.
+
+
+
+We also find that the `T5` encode in fp4 `eramth/flux-kontext-4bit-fp4` has big differences then that of the fp16 version `black-forest-labs/FLUX.1-Kontext-dev`. We may only load the `dit` module in fp4, and load other module with `fp16`
+
+
+9. Mix use of fp4 and fp16 models. Load the lora trained in fp16 dit,  and inference used in fp4 dit, fp16 image encoder, fp16 text encoder. Found that got Checkerboard pattern
+![alt text](images/image-17.png)

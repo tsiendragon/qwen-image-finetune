@@ -395,9 +395,10 @@ class ImageDataset(Dataset):
             if control is not None:
                 data['control'] = control[0].convert('RGB')
                 if len(control) > 1:
-                    data['controls'] = [control[i].convert('RGB') for i in range(1, len(control))]
+                    data['controls'] = data['controls'][1:]
+                    data['controls'] = [img.convert('RGB') for img in data['controls']]
                     if self.selected_control_indexes is not None:
-                        data['controls'] = [data['controls'][i] for i in self.selected_control_indexes]
+                        data['controls'] = [data['controls'][i-1] for i in self.selected_control_indexes]
 
             prompt = data_item['prompt']
             data['prompt'] = prompt
@@ -427,7 +428,7 @@ class ImageDataset(Dataset):
                 if len(data_item['control']) > 1:
                     data['controls'] = data_item['control'][1:]
                     if self.selected_control_indexes is not None:
-                        data['controls'] = [data['controls'][i] for i in self.selected_control_indexes]
+                        data['controls'] = [data['controls'][i-1] for i in self.selected_control_indexes]
             if self.data_key_exist(data_item, 'mask_file'):
                 data['mask'] = cv2.imread(data_item['mask_file'], 0)
             if self.data_key_exist(data_item, 'caption'):
@@ -465,6 +466,12 @@ class ImageDataset(Dataset):
             prompt_empty_drop_keys = self.data_config.prompt_empty_drop_keys
             data = self.cache_manager.load_cache(data, replace_empty_embeddings, prompt_empty_drop_keys)
             data['cached'] = True
+        if 'controls' in data:
+            n_controls = len(data['controls'])
+            for i in range(n_controls):
+                data[f'control_{i+1}'] = data['controls'][i]
+            del data['controls']
+            data['n_controls'] = n_controls
         return data
 
 
@@ -536,7 +543,8 @@ def loader(
         init_args: dict,
         batch_size: int = 1,
         num_workers: int = 0,
-        shuffle: bool = True) -> DataLoader:
+        shuffle: bool = True,
+        drop_last=True) -> DataLoader:
     """
     动态加载数据集类并创建 DataLoader。
     Args:
@@ -580,7 +588,8 @@ def loader(
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=False,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        drop_last=drop_last,
     )
     setattr(dataloader, 'cache_manager', cache_manager)
     return dataloader

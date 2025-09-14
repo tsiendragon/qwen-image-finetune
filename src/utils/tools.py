@@ -50,6 +50,21 @@ def content_hash_blake3(path, chunk_size=1 << 20):
     return h.hexdigest()  # 64位 hex
 
 
+def calculate_md5(file_path):
+    # Open the file in binary mode
+    with open(file_path, 'rb') as file:
+        # Create an MD5 hash object
+        md5_hash = hashlib.md5()
+
+        # Read the file in chunks to handle large files efficiently
+        chunk_size = 65536  # 64 KB
+        while chunk := file.read(chunk_size):
+            md5_hash.update(chunk)
+
+        # Return the hexadecimal representation of the MD5 hash
+        return md5_hash.hexdigest()
+
+
 def phash_hex_from_image(img: Image.Image) -> str:
     im = ImageOps.exif_transpose(img)   # 纠正EXIF方向
     return str(imagehash.phash(im))     # 16 hex = 64 bit
@@ -63,7 +78,7 @@ def extract_file_hash(image_path: Union[str, PIL.Image.Image]) -> str:
     if isinstance(image_path, PIL.Image.Image):
         return phash_hex_from_image(image_path)
     elif os.path.exists(image_path):
-        return content_hash_blake3(image_path)
+        return calculate_md5(image_path)
     else:
         raise ValueError(f"Invalid image path: {image_path}")
 

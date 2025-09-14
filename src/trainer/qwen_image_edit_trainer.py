@@ -23,6 +23,7 @@ from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
 from peft.utils import get_peft_model_state_dict
 from peft import LoraConfig
+from src.utils.images import resize_bhw
 
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
     QwenImageEditPipeline,
@@ -35,6 +36,7 @@ from src.utils.logger import get_logger
 from src.data.cache_manager import check_cache_exists
 import logging
 from src.loss.edit_mask_loss import map_mask_to_latent
+from src.trainer.base_trainer import BaseTrainer, Trainer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,26 +81,25 @@ def classify(lora_weight):
     return "UNKNOWN"
 
 
-def resize_bhw(x, h, w, mode="bilinear"):
-    x = x.unsqueeze(1)  # [B, 1, H, W]
-    x = F.interpolate(
-        x,
-        size=(h, w),
-        mode=mode,
-        align_corners=False if mode in {"bilinear", "bicubic"} else None,
-        antialias=(
-            True
-            if mode in {"bilinear", "bicubic"} and (h < x.shape[-2] or w < x.shape[-1])
-            else False
-        ),
-    )
-    return x.squeeze(1)
-
-
-class QwenImageEditTrainer:
+class QwenImageEditTrainer(BaseTrainer):
     """Trainer class based on QwenImageEditPipeline"""
 
     def __init__(self, config):
+        """
+        the image process passed to vae
+        import numpy as np
+        def customized_process(img: np.ndarray) -> torch.Tensor:
+            img = torch.from_numpy(img)
+            img = img.permute(2, 0, 1)
+            img = img.unsqueeze(0)
+            img = img.unsqueeze(2)
+            img = img / 255
+            img = img*2 -1
+            return img
+        image to the prompt encoder should be [B,C,1,H,W] in range [-1,1]
+        image to the text encoder
+        [B,C,H,W] tensor in range [0,255], uint8, or PIL.Image RGB mode
+        """
         self.config = config
         self.accelerator = None
         self.optimizer = None
@@ -108,7 +109,7 @@ class QwenImageEditTrainer:
         # Component attributes
         self.vae = None  # AutoencoderKLQwenImage
         self.text_encoder = None  # Qwen2_5_VLForConditionalGeneration (text_encoder)
-        self.transformer = None  # QwenImageTransformer2DModel
+        self.dit = None  # QwenImageTransformer2DModel
         self.tokenizer = None  # Qwen2Tokenizer
         self.scheduler = None  # FlowMatchEulerDiscreteScheduler
 
@@ -132,19 +133,9 @@ class QwenImageEditTrainer:
         self.vae_z_dim = None
         self.adapter_name = config.model.lora.adapter_name
 
-    def set_criterion(self):
-        import torch.nn as nn
-
-        if self.config.loss.mask_loss:
-            from src.loss.edit_mask_loss import MaskEditLoss
-
-            self.criterion = MaskEditLoss(
-                forground_weight=self.config.loss.forground_weight,
-                background_weight=self.config.loss.background_weight,
-            )
-        else:
-            self.criterion = nn.MSELoss()
-        self.criterion.to(self.accelerator.device)
+    # Static methods: directly reference QwenImageEditPipeline methods
+    _pack_latents = staticmethod(QwenImageEditPipeline._pack_latents)
+    _unpack_latents = staticmethod(QwenImageEditPipeline._unpack_latents)
 
     def load_model(self, text_encoder_device=None):
         """Load and separate components from QwenImageEditPipeline"""
@@ -172,10 +163,10 @@ class QwenImageEditTrainer:
             "Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype  # use original one
         )
         logging.info(f"text_encoder device: {self.text_encoder.device}")
-        # self.transformer = pipe.transformer this is same as the following, verified
+        # self.dit = pipe.transformer this is same as the following, verified
         from src.models.load_model import load_transformer
 
-        self.transformer = load_transformer(
+        self.dit = load_transformer(
             self.config.model.pretrained_model_name_or_path,  # could use quantized version
             weight_dtype=self.weight_dtype,
         )
@@ -211,369 +202,310 @@ class QwenImageEditTrainer:
         self.image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor * 2
         )
-        self.num_channels_latents = self.transformer.config.in_channels // 4
+        self.num_channels_latents = self.dit.config.in_channels // 4
 
         # Set models to training/evaluation mode
-        self.text_encoder.requires_grad_(False)
-        self.vae.requires_grad_(False)
-        self.transformer.requires_grad_(False)
+        self.text_encoder.requires_grad_(False).eval()
+        self.vae.requires_grad_(False).eval()
+        self.dit.requires_grad_(False).eval()
         torch.cuda.empty_cache()
 
         logging.info(
             f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}"
         )
 
-    def setup_accelerator(self):
-        """Initialize accelerator and logging configuration"""
-        # Setup versioned logging directory
-        self.setup_versioned_logging_dir()
+    def prepare_latents(
+        self,
+        image,
+        batch_size,
+        num_channels_latents,
+        height,
+        width,
+        dtype,
+        generator=None,
+        latents=None,
+    ):
+        # VAE applies 8x compression on images but we must also account for packing which requires
+        # latent height and width to be divisible by 2.
+        height = 2 * (int(height) // (self.vae_scale_factor * 2))
+        width = 2 * (int(width) // (self.vae_scale_factor * 2))
+        device = self.vae.device
 
-        # Set logging_dir to the versioned output directory directly
-        # Use project_dir as logging_dir to avoid extra subdirectory creation
-        accelerator_project_config = ProjectConfiguration(
-            project_dir=self.config.logging.output_dir,
-            logging_dir=self.config.logging.output_dir,
-        )
+        shape = (batch_size, 1, num_channels_latents, height, width)
 
-        self.accelerator = Accelerator(
-            gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
-            mixed_precision=self.config.train.mixed_precision,
-            log_with=self.config.logging.report_to,
-            project_config=accelerator_project_config,
-        )
-
-        # Initialize tracker with empty project name to avoid subdirectory
-        if self.config.logging.report_to == "tensorboard":
-            # Create a simple config dict with only basic types for TensorBoard
-            try:
-                simple_config = {
-                    "learning_rate": float(
-                        self.config.optimizer.init_args.get("lr", 0.0001)
-                    ),
-                    "batch_size": int(self.config.data.batch_size),
-                    "max_train_steps": int(self.config.train.max_train_steps),
-                    "num_epochs": int(self.config.train.num_epochs),
-                    "gradient_accumulation_steps": int(
-                        self.config.train.gradient_accumulation_steps
-                    ),
-                    "mixed_precision": str(self.config.train.mixed_precision),
-                    "lora_r": int(self.config.model.lora.r),
-                    "lora_alpha": int(self.config.model.lora.lora_alpha),
-                    "model_name": str(self.config.model.pretrained_model_name_or_path),
-                    "checkpointing_steps": int(self.config.train.checkpointing_steps),
-                }
-                self.accelerator.init_trackers("", config=simple_config)
-            except Exception as e:
-                logging.warning(f"Failed to initialize trackers with config: {e}")
-                # Initialize without config if there's an error
-                self.accelerator.init_trackers("")
-        logging.info(
-            f"Number of devices used in DDP training: {self.accelerator.num_processes}"
-        )
-
-        # Set weight data type
-        if self.accelerator.mixed_precision == "fp16":
-            self.weight_dtype = torch.float16
-        elif self.accelerator.mixed_precision == "bf16":
-            self.weight_dtype = torch.bfloat16
-
-        # Create output directory
-        if (
-            self.accelerator.is_main_process
-            and self.config.logging.output_dir is not None
-        ):
-            os.makedirs(self.config.logging.output_dir, exist_ok=True)
-
-        logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
-
-    def quantize_model(self, model, device):
-        from src.models.quantize import quantize_model_to_fp8
-
-        model = quantize_model_to_fp8(
-            model,
-            engine="bnb",
-            verbose=True,
-            device=device,
-        )
-        model = model.to(device)
-        return model
-
-    def add_lora_adapter(self):
-        """Add LoRA adapter to transformer"""
-        lora_config = LoraConfig(
-            r=self.config.model.lora.r,
-            lora_alpha=self.config.model.lora.lora_alpha,
-            init_lora_weights=self.config.model.lora.init_lora_weights,
-            target_modules=self.config.model.lora.target_modules,
-        )
-        self.transformer.add_adapter(lora_config, adapter_name=self.adapter_name)
-        self.transformer.set_adapter(self.adapter_name)
-
-    def set_lora(self):
-        """Set LoRA configuration"""
-        if self.quantize:
-            self.transformer = self.quantize_model(
-                self.transformer, self.accelerator.device
-            )
-        else:
-            self.transformer.to(self.accelerator.device)
-
-        lora_config = LoraConfig(
-            r=self.config.model.lora.r,
-            lora_alpha=self.config.model.lora.lora_alpha,
-            init_lora_weights=self.config.model.lora.init_lora_weights,
-            target_modules=self.config.model.lora.target_modules,
-        )
-
-        if (
-            hasattr(self.config.model.lora, "pretrained_weight")
-            and self.config.model.lora.pretrained_weight
-        ):
-            lora_type = classify(self.config.model.lora.pretrained_weight)
-            # DIFFUSERS can be loaded directly, otherwise, need to add lora first
-            if lora_type != "PEFT":
-                self.transformer.load_lora_adapter(
-                    self.config.model.lora.pretrained_weight,
-                    adapter_name=self.adapter_name,
+        image_latents = None
+        if image is not None:
+            image = image.to(device=device, dtype=dtype)
+            if image.shape[1] != self.latent_channels:
+                image_latents = self._encode_vae_image(image=image, generator=generator)
+            else:
+                image_latents = image
+            if (
+                batch_size > image_latents.shape[0]
+                and batch_size % image_latents.shape[0] == 0
+            ):
+                # expand init_latents for batch_size
+                additional_image_per_prompt = batch_size // image_latents.shape[0]
+                image_latents = torch.cat(
+                    [image_latents] * additional_image_per_prompt, dim=0
                 )
-                logging.info(
-                    f"set_lora: {lora_type}  {self.config.model.lora.pretrained_weight} {self.adapter_name}"
+            elif (
+                batch_size > image_latents.shape[0]
+                and batch_size % image_latents.shape[0] != 0
+            ):
+                raise ValueError(
+                    f"Cannot duplicate `image` of batch size {image_latents.shape[0]} to {batch_size} text prompts."
                 )
             else:
-                # add lora first
-                # Configure model
-                import safetensors.torch
+                image_latents = torch.cat([image_latents], dim=0)
 
-                self.transformer.add_adapter(
-                    lora_config, adapter_name=self.adapter_name
-                )
-                self.transformer.set_adapter(self.adapter_name)
-                missing, unexpected = self.transformer.load_state_dict(
-                    safetensors.torch.load_file(
-                        self.config.model.lora.pretrained_weight
-                    ),
-                    strict=False,
-                )
-                if len(unexpected) > 0:
-                    raise ValueError(f"Unexpected keys: {unexpected}")
-                logging.info(
-                    f"set_lora: {lora_type} {self.config.model.lora.pretrained_weight} {self.adapter_name}"
-                )
-                logging.info(f"missing keys: {len(missing)}, {missing[0]}")
-                # self.load_lora(self.config.model.lora.pretrained_weight)
-            logging.info(
-                f"set_lora: Loaded lora from {self.config.model.lora.pretrained_weight}"
+            image_latent_height, image_latent_width = image_latents.shape[3:]
+            image_latents = self._pack_latents(
+                image_latents,
+                batch_size,
+                num_channels_latents,
+                image_latent_height,
+                image_latent_width,
+            )
+
+        if isinstance(generator, list) and len(generator) != batch_size:
+            raise ValueError(
+                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
+                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
+            )
+        if latents is None:
+            latents = randn_tensor(
+                shape, generator=generator, device=device, dtype=dtype
+            )
+            latents = self._pack_latents(
+                latents, batch_size, num_channels_latents, height, width
             )
         else:
-            self.transformer.add_adapter(lora_config, adapter_name=self.adapter_name)
-            self.transformer.set_adapter(self.adapter_name)
+            latents = latents.to(device=device, dtype=dtype)
 
-        self.transformer.to(self.accelerator.device)
+        return latents, image_latents
 
-        self.transformer.requires_grad_(False)
-        self.transformer.train()
-
-        # 根据配置决定是否启用梯度检查点
-        if self.config.train.gradient_checkpointing:
-            self.transformer.enable_gradient_checkpointing()
-            logging.info("梯度检查点已启用，将节省显存但可能增加计算时间")
-
-        # Train only LoRA parameters
-        trainable_params = 0
-        for name, param in self.transformer.named_parameters():
-            if "lora" in name:
-                param.requires_grad = True
-                trainable_params += param.numel()
-            else:
-                param.requires_grad = False
-
-        logging.info(f"Trainable parameters: {trainable_params / 1e6:.2f}M")
-
-    def load_lora(self, pretrained_weight, adapter_name="default"):
-        """Load pretrained LoRA weights"""
-        lora_type = classify(self.config.model.lora.pretrained_weight)
-        # DIFFUSERS can be loaded directly, otherwise, need to add lora first
-        if lora_type != "PEFT":
-            self.transformer.load_lora_adapter(
-                pretrained_weight, adapter_name=adapter_name
-            )
-            logging.info(f"Loaded LoRA weights from {pretrained_weight}")
-        else:
-            import safetensors.torch
-
-            self.add_lora_adapter()
-            missing, unexpected = self.transformer.load_state_dict(
-                safetensors.torch.load_file(pretrained_weight),
-                strict=False,
-            )
-            if len(unexpected) > 0:
-                raise ValueError(f"Unexpected keys: {unexpected}")
-            logging.info(
-                f"set_lora: {lora_type} {self.config.model.lora.pretrained_weight} {self.adapter_name}"
-            )
-            logging.info(f"missing keys: {len(missing)}, {missing[0]}")
-
-    def save_lora(self, save_path):
-        """Save LoRA weights"""
-        unwrapped_transformer = self.accelerator.unwrap_model(self.transformer)
-        if is_compiled_module(unwrapped_transformer):
-            unwrapped_transformer = unwrapped_transformer._orig_mod
-
-        lora_state_dict = convert_state_dict_to_diffusers(
-            get_peft_model_state_dict(
-                unwrapped_transformer, adapter_name=self.adapter_name
-            )
-        )
-
-        QwenImageEditPipeline.save_lora_weights(
-            save_path, lora_state_dict, safe_serialization=True
-        )
-        logging.info(f"Saved LoRA weights to {save_path}")
-
-    def setup_versioned_logging_dir(self):
-        """设置版本化的日志目录"""
-        base_output_dir = self.config.logging.output_dir
-        project_name = self.config.logging.tracker_project_name
-
-        # 创建项目目录结构: output_dir/project_name/v0
-        project_dir = os.path.join(base_output_dir, project_name)
-
-        # 如果项目目录不存在，直接使用 v0
-        if not os.path.exists(project_dir):
-            versioned_dir = os.path.join(project_dir, "v0")
-            self.config.logging.output_dir = versioned_dir
-            logging.info(f"创建新的训练版本目录: {versioned_dir}")
-            return
-
-        # 查找现有版本
-        existing_versions = []
-        for item in os.listdir(project_dir):
-            item_path = os.path.join(project_dir, item)
-            if os.path.isdir(item_path) and item.startswith("v") and item[1:].isdigit():
-                version_num = int(item[1:])
-                existing_versions.append((version_num, item_path))
-
-        # 清理无效版本（训练步数 < 5）
-        valid_versions = []
-        for version_num, version_path in existing_versions:
-            if self._is_valid_training_version(version_path):
-                valid_versions.append(version_num)
-            else:
-                logging.info(f"移除无效训练版本: {version_path}")
-                try:
-                    shutil.rmtree(version_path)
-                except Exception as e:
-                    logging.info(f"移除无效训练版本失败: {version_path}, {e}")
-
-        # 确定新版本号
-        if valid_versions:
-            next_version = max(valid_versions) + 1
-        else:
-            next_version = 0
-
-        # 创建新版本目录
-        versioned_dir = os.path.join(project_dir, f"v{next_version}")
-        self.config.logging.output_dir = versioned_dir
-        logging.info(f"使用训练版本目录: {versioned_dir}")
-
-    def _is_valid_training_version(self, version_path):
-        """检查版本是否包含有效的训练数据（步数 >= 5）"""
-        # 检查 checkpoint 目录
-        checkpoints = []
-        if os.path.exists(version_path):
-            for item in os.listdir(version_path):
-                if item.startswith("checkpoint-") and os.path.isdir(
-                    os.path.join(version_path, item)
-                ):
-                    try:
-                        # 从 checkpoint-{epoch}-{global_step} 中提取 global_step
-                        parts = item.split("-")
-                        if len(parts) >= 3:
-                            global_step = int(parts[2])
-                            checkpoints.append(global_step)
-                    except (ValueError, IndexError):
-                        continue
-
-        # 检查 tensorboard 日志（现在直接在版本目录下）
-        has_logs = False
-        if os.path.exists(version_path):
-            # 查找 tensorboard 事件文件，可能在项目名子目录中
-            for root, dirs, files in os.walk(version_path):
-                log_files = [f for f in files if f.startswith("events.out.tfevents")]
-                if log_files:
-                    has_logs = True
-                    break
-
-        # 如果有检查点且最大步数 >= 5，或者只有日志文件但没有检查点，认为有效
-        if checkpoints:
-            return max(checkpoints) >= 5
-        elif has_logs:
-            # 如果只有日志但没有检查点，可能是训练刚开始就中断了，认为无效
-            return False
-        else:
-            # 既没有检查点也没有日志，认为无效
-            return False
-
-    def merge_lora(self):
-        """Merge LoRA weights into base model"""
-        self.transformer.merge_adapter()
-        logging.info("Merged LoRA weights into base model")
-
-    def set_model_devices(self, mode="train"):
-        """Set model device allocation based on different modes"""
-        if mode == "train":
+    def setup_model_device_train_mode(self, stage="fit", cache=False):
+        """Set model device allocation and train mode."""
+        assert stage in ['fit', 'cache', 'predict'], \
+            f"stage must be one of ['fit', 'cache', 'predict'], but got {stage}"
+        if stage == "fit":
             assert hasattr(
                 self, "accelerator"
             ), "accelerator must be set before setting model devices"
 
-        if self.cache_exist and self.use_cache and mode == "train":
+        if self.cache_exist and self.use_cache and stage == "fit":
             # Cache mode: only need transformer
             self.text_encoder.cpu()
             torch.cuda.empty_cache()
             self.vae.cpu()
             torch.cuda.empty_cache()
             del self.text_encoder
-            del self.vae
-            gc.collect()
-            self.transformer.to(self.accelerator.device)
 
-        elif not self.use_cache and mode == "train":
-            # Non-cache mode: need encoders
+            if not self.config.logging.sampling.enable:
+                del self.vae
+            else:
+                self.vae.requires_grad_(False).eval()
+
+            gc.collect()
+            self.dit.to(self.accelerator.device)
+            self.dit.requires_grad_(False)
+            self.dit.train()
+            for name, param in self.dit.named_parameters():
+                if "lora" in name:
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+
+        elif stage == "fit":
+            # Non-cache mode: need all encoders
             self.vae.to(self.accelerator.device)
-            self.vae.decoder.cpu()
-            torch.cuda.empty_cache()
-            gc.collect()
-            self.vae.encoder.to(self.accelerator.device)
             self.text_encoder.to(self.accelerator.device)
-            self.transformer.to(self.accelerator.device)
+            self.dit.to(self.accelerator.device)
+            self.vae.decoder.to("cpu")
 
-        elif mode == "cache":
+            self.vae.requires_grad_(False).eval()
+            self.text_encoder.requires_grad_(False).eval()
+            self.dit.requires_grad_(False)
+            self.dit.train()
+            for name, param in self.dit.named_parameters():
+                if "lora" in name:
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+
+        elif stage == "cache":
             # Cache mode: need encoders, don't need transformer
-            self.vae = self.vae.to(
-                self.config.cache.vae_encoder_device, non_blocking=True
-            )
+            self.vae = self.vae.to(self.config.cache.devices.vae, non_blocking=True)
+            print('self.config.cache.devices.vae', self.config.cache.devices.vae)
+            print('vae device ', next(self.vae.parameters()).device)
+
+            self.vae.decoder.to("cpu")
+            print('vae device ', next(self.vae.parameters()).device)
+
             self.text_encoder = self.text_encoder.to(
-                self.config.cache.text_encoder_device, non_blocking=True
+                self.config.cache.devices.text_encoder, non_blocking=True
             )
 
             torch.cuda.synchronize()
-            self.transformer.cpu()
+            self.dit.cpu()
             torch.cuda.empty_cache()
-            del self.transformer
+            del self.dit
             gc.collect()
-            self.vae.decoder.cpu()
-            torch.cuda.empty_cache()
-            gc.collect()
+            self.vae.requires_grad_(False).eval()
+            self.text_encoder.requires_grad_(False).eval()
+            logging.info('cache mode device setting')
+            print('vae device ', next(self.vae.parameters()).device)
 
-        elif mode == "predict":
+        elif stage == "predict":
             # Predict mode: allocate to different GPUs according to configuration
             devices = self.config.predict.devices
-            self.vae.to(devices["vae"])
-            self.text_encoder.to(devices["text_encoder"])
-            self.transformer.to(devices["transformer"])
+            self.vae.to(devices.vae)
+            self.text_encoder.to(devices.text_encoder)
+            self.dit.to(devices.dit)
+            self.vae.requires_grad_(False).eval()
+            self.text_encoder.requires_grad_(False).eval()
+            self.dit.requires_grad_(False).eval()
+
+
+    def prepare_embeddings(self, batch, stage="fit"):
+        # for predict, not 'image' key, but 'pixel_latent' key
+        # torch.tensor of image, control [B,C,H,W], in range [0,1]
+        # for predict: add extra latent_ids, latents, guidance
+        # for cache: add empty_pooled_prompt_embeds, empty_prompt_embeds
+        logging.info('prepare_embeddings')
+        if "image" in batch:
+            batch["image"] = self.normalize_image(batch["image"])
+
+        if "control" in batch:
+            batch["control"] = self.normalize_image(batch["control"])
+
+        num_additional_controls = batch["n_controls"] if isinstance(batch["n_controls"], int) else batch["n_controls"][0]
+
+        for i in range(num_additional_controls):
+            additional_control_key = f"control_{i+1}"
+            if additional_control_key in batch:
+                batch[additional_control_key] = self.normalize_image(
+                    batch[additional_control_key]
+                )
+        logging.info('process controls')
+
+        if "prompt_2" in batch:
+            prompt_2 = batch["prompt_2"]
+        else:
+            prompt_2 = batch["prompt"]
+
+        logging.info('encode prompt')
+        pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
+            prompt=batch["prompt"],
+            prompt_2=prompt_2,
+            max_sequence_length=self.max_sequence_length,
+        )
+        batch["pooled_prompt_embeds"] = pooled_prompt_embeds
+        batch["prompt_embeds"] = prompt_embeds
+        batch["text_ids"] = text_ids
+        logging.info('encode prompt')
+
+        if stage == 'cache':
+            pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
+                prompt=[""],
+                prompt_2=None,
+                max_sequence_length=self.max_sequence_length,
+            )
+            batch["empty_pooled_prompt_embeds"] = pooled_prompt_embeds
+            batch["empty_prompt_embeds"] = prompt_embeds
+            logging.info('process empty prompt')
+
+        if "negative_prompt" in batch:
+            if "negative_prompt_2" in batch:
+                prompt_2 = batch["negative_prompt_2"]
+            else:
+                prompt_2 = batch["negative_prompt"]
+            negative_pooled_prompt_embeds, negative_prompt_embeds, negative_text_ids = (
+                self.encode_prompt(
+                    prompt=batch["negative_prompt"],
+                    prompt_2=prompt_2,
+                    max_sequence_length=self.max_sequence_length,
+                )
+            )
+            batch["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
+            batch["negative_prompt_embeds"] = negative_prompt_embeds
+            batch["negative_text_ids"] = negative_text_ids
+            logging.info('process negative prompt')
+        if "image" in batch:
+            logging.info('process image')
+            image = batch["image"]  # single images
+            print('image shaope',image.shape)
+            batch_size = image.shape[0]
+            image_height, image_width = image.shape[2:]
+            print('batch_size', batch_size, image_height, image_width)
+            device = next(self.vae.parameters()).device
+            print('device', device)
+
+            latents, image_latents, latent_ids, image_ids = self.prepare_latents(
+                image,
+                batch_size,
+                16,
+                image_height,
+                image_width,
+                self.weight_dtype,
+            )
+
+            batch["image_latents"] = image_latents
+            logging.info(f"stage: {stage}")
+
+        logging.info(f"batch: {batch.keys()}")
+
+        if "control" in batch:
+            control = batch["control"]
+            batch_size = control.shape[0]
+
+            control_height, control_width = control.shape[2:]
+            _, control_latents, _, control_ids = self.prepare_latents(
+                control,
+                batch_size,
+                16,
+                control_height,
+                control_width,
+                self.weight_dtype,
+            )
+            control_ids[..., 0] = 1
+            batch["control_latents"] = [control_latents]
+            batch["control_ids"] = [control_ids]
+            logging.info(f"control_ids: {control_ids}")
+
+        for i in range(1, num_additional_controls + 1):
+            control_key = f"control_{i}"
+            control = batch[control_key]
+
+            batch_size = control.shape[0]
+            control_height, control_width = control.shape[2:]
+            _, control_latents, _, control_ids = self.prepare_latents(
+                control,
+                batch_size,
+                16,
+                control_height,
+                control_width,
+                self.weight_dtype,
+            )
+            control_ids[..., 0] = i + 1
+            batch["control_latents"].append(control_latents)
+            batch["control_ids"].append(control_ids)
+
+        if "control_latents" in batch:
+            batch["control_latents"] = torch.cat(batch["control_latents"], dim=1)
+            batch["control_ids"] = torch.cat(batch["control_ids"], dim=0)
+
+        if self.config.loss.mask_loss and "mask" in batch:
+            mask = batch["mask"]
+            batch["mask"] = resize_bhw(mask, image_height, image_width)
+            batch["mask"] = map_mask_to_latent(batch["mask"])
+        return batch
 
     def decode_vae_latent(self, latents):
-        """Decode VAE latent vectors to RGB images"""
+        """Suppose for single image.
+        Decode VAE latent vectors to RGB images in numpy array. Format [H,W,C].
+        """
         latents = latents.to(self.vae.device, dtype=self.weight_dtype)
 
         # Reverse normalization
@@ -599,9 +531,7 @@ class QwenImageEditTrainer:
         image = self._postprocess_image(image)
         return image
 
-    # Static methods: directly reference QwenImageEditPipeline methods
-    _pack_latents = staticmethod(QwenImageEditPipeline._pack_latents)
-    _unpack_latents = staticmethod(QwenImageEditPipeline._unpack_latents)
+
 
     def _preprocess_image_for_cache(
         self, image: torch.Tensor, adaptive_resolution=True
@@ -638,17 +568,6 @@ class QwenImageEditTrainer:
         image = (image * 255).astype(np.uint8)
         return image
 
-    def training_step(self, batch):
-        """Execute a single training step"""
-        # Check if cached data is available
-        if (
-            "prompt_embed" in batch
-            and "pixel_latent" in batch
-            and "control_latent" in batch
-        ):
-            return self._training_step_cached(batch)
-        else:
-            return self._training_step_compute(batch)
 
     def _training_step_cached(self, batch):
         """Training step using cached embeddings"""
@@ -833,7 +752,7 @@ class QwenImageEditTrainer:
         # img_shapes [[(1, 54, 76), (1, 54, 76)], [(1, 54, 76), (1, 54, 76)]]
         # txt_seq_lens [814, 1071]
 
-        model_pred = self.transformer(
+        model_pred = self.dit(
             hidden_states=packed_input,
             timestep=timesteps / 1000,
             guidance=None,
@@ -886,7 +805,7 @@ class QwenImageEditTrainer:
 
     def configure_optimizers(self):
         """Configure optimizer and learning rate scheduler"""
-        lora_layers = filter(lambda p: p.requires_grad, self.transformer.parameters())
+        lora_layers = filter(lambda p: p.requires_grad, self.dit.parameters())
 
         # Use optimizer parameters from configuration
         optimizer_config = self.config.optimizer.init_args
@@ -909,11 +828,11 @@ class QwenImageEditTrainer:
 
     def accelerator_prepare(self, train_dataloader):
         """Prepare accelerator"""
-        lora_layers_model = AttnProcsLayers(get_lora_layers(self.transformer))
+        lora_layers_model = AttnProcsLayers(get_lora_layers(self.dit))
 
         # 根据配置决定是否启用梯度检查点
         if self.config.train.gradient_checkpointing:
-            self.transformer.enable_gradient_checkpointing()
+            self.dit.enable_gradient_checkpointing()
         if self.config.train.resume_from_checkpoint is not None:
             # self.accelerator.load_state(self.config.train.resume_from_checkpoint)
             self.optimizer.load_state_dict(
@@ -1206,14 +1125,14 @@ class QwenImageEditTrainer:
 
         for epoch in range(start_epoch, self.config.train.num_epochs):
             for _, batch in enumerate(train_dataloader):
-                with self.accelerator.accumulate(self.transformer):
+                with self.accelerator.accumulate(self.dit):
                     loss = self.training_step(batch)
 
                     # Backward pass
                     self.accelerator.backward(loss)
                     if self.accelerator.sync_gradients:
                         self.accelerator.clip_grad_norm_(
-                            self.transformer.parameters(),
+                            self.dit.parameters(),
                             self.config.train.max_grad_norm,
                         )
 
@@ -1270,76 +1189,6 @@ class QwenImageEditTrainer:
         self.accelerator.wait_for_everyone()
         self.accelerator.end_training()
 
-    def prepare_latents(
-        self,
-        image,
-        batch_size,
-        num_channels_latents,
-        height,
-        width,
-        dtype,
-        device,
-        generator=None,
-        latents=None,
-    ):
-        # VAE applies 8x compression on images but we must also account for packing which requires
-        # latent height and width to be divisible by 2.
-        height = 2 * (int(height) // (self.vae_scale_factor * 2))
-        width = 2 * (int(width) // (self.vae_scale_factor * 2))
-
-        shape = (batch_size, 1, num_channels_latents, height, width)
-
-        image_latents = None
-        if image is not None:
-            image = image.to(device=device, dtype=dtype)
-            if image.shape[1] != self.latent_channels:
-                image_latents = self._encode_vae_image(image=image, generator=generator)
-            else:
-                image_latents = image
-            if (
-                batch_size > image_latents.shape[0]
-                and batch_size % image_latents.shape[0] == 0
-            ):
-                # expand init_latents for batch_size
-                additional_image_per_prompt = batch_size // image_latents.shape[0]
-                image_latents = torch.cat(
-                    [image_latents] * additional_image_per_prompt, dim=0
-                )
-            elif (
-                batch_size > image_latents.shape[0]
-                and batch_size % image_latents.shape[0] != 0
-            ):
-                raise ValueError(
-                    f"Cannot duplicate `image` of batch size {image_latents.shape[0]} to {batch_size} text prompts."
-                )
-            else:
-                image_latents = torch.cat([image_latents], dim=0)
-
-            image_latent_height, image_latent_width = image_latents.shape[3:]
-            image_latents = self._pack_latents(
-                image_latents,
-                batch_size,
-                num_channels_latents,
-                image_latent_height,
-                image_latent_width,
-            )
-
-        if isinstance(generator, list) and len(generator) != batch_size:
-            raise ValueError(
-                f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
-                f" size of {batch_size}. Make sure the batch size matches the length of the generators."
-            )
-        if latents is None:
-            latents = randn_tensor(
-                shape, generator=generator, device=device, dtype=dtype
-            )
-            latents = self._pack_latents(
-                latents, batch_size, num_channels_latents, height, width
-            )
-        else:
-            latents = latents.to(device=device, dtype=dtype)
-
-        return latents, image_latents
 
     def _encode_vae_image(self, image: torch.Tensor, generator: torch.Generator = None):
         # generator is None by default
@@ -1375,8 +1224,8 @@ class QwenImageEditTrainer:
         """Setup prediction mode"""
         self.load_model()
         if self.quantize:
-            self.transformer = self.quantize_model(
-                self.transformer, self.config.predict.devices["transformer"]
+            self.dit = self.quantize_model(
+                self.dit, self.config.predict.devices["transformer"]
             )
 
         # Load LoRA weights (if available)
@@ -1389,7 +1238,7 @@ class QwenImageEditTrainer:
             )
 
         # Set evaluation mode
-        self.transformer.eval()
+        self.dit.eval()
         self.vae.eval()
         self.text_encoder.eval()
 
@@ -1398,8 +1247,8 @@ class QwenImageEditTrainer:
 
         # Quantize (if enabled)
         if self.quantize:
-            self.transformer = self.quantize_model(
-                self.transformer, self.config.predict.devices["transformer"]
+            self.dit = self.quantize_model(
+                self.dit, self.config.predict.devices["transformer"]
             )
 
     def predict(
@@ -1522,7 +1371,7 @@ class QwenImageEditTrainer:
         )
 
         # 5. Prepare latent variables
-        num_channels_latents = self.transformer.config.in_channels // 4
+        num_channels_latents = self.dit.config.in_channels // 4
         if image_latents is not None:
             image_latents = image_latents.unsqueeze(0)
             height_latent = 2 * (int(height) // (self.vae_scale_factor * 2))
@@ -1605,7 +1454,7 @@ class QwenImageEditTrainer:
 
         # 处理guidance
         guidance_scale = 1.0
-        if self.transformer.config.guidance_embeds:
+        if self.dit.config.guidance_embeds:
             guidance = torch.full(
                 [1], guidance_scale, device=device_transformer, dtype=torch.float32
             )
@@ -1676,8 +1525,8 @@ class QwenImageEditTrainer:
                     logging.info(f"img_shapes: {img_shapes}")
                     logging.info(f"txt_seq_lens: {txt_seq_lens}")
                     logging.info(f"attention_kwargs: {self.attention_kwargs}")
-                with self.transformer.cache_context("cond"):
-                    noise_pred = self.transformer(
+                with self.dit.cache_context("cond"):
+                    noise_pred = self.dit(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
                         guidance=guidance,
@@ -1695,8 +1544,8 @@ class QwenImageEditTrainer:
                     noise_pred_cpu = noise_pred.cpu()
                     torch.cuda.empty_cache()
 
-                    with self.transformer.cache_context("uncond"):
-                        neg_noise_pred = self.transformer(
+                    with self.dit.cache_context("uncond"):
+                        neg_noise_pred = self.dit(
                             hidden_states=latent_model_input,
                             timestep=timestep / 1000,
                             guidance=guidance,
@@ -1757,7 +1606,6 @@ class QwenImageEditTrainer:
         self,
         prompt: Union[str, List[str]],
         image: Optional[torch.Tensor] = None,
-        device: Optional[torch.device] = None,
     ):
         r"""
         get the embedding of prompt and image via qwen_vl. Support batch inference. For batch inference,
@@ -1777,6 +1625,7 @@ class QwenImageEditTrainer:
                 Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting. If not
                 provided, text embeddings will be generated from `prompt` input argument.
         """
+        device = self.text_encoder.device
         num_images_per_prompt = 1  # 固定为1，支持单图像生成
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
@@ -1969,7 +1818,7 @@ class QwenImageEditTrainer:
                 ] * batch_size
                 txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
 
-                noise_pred = self.transformer(
+                noise_pred = self.dit(
                     hidden_states=packed_input,
                     timestep=t.expand(latents.shape[0]) / 1000,
                     guidance=None,

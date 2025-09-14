@@ -5,7 +5,6 @@ Defines the core interface that all trainers must implement.
 
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
-from src.data.cache_manager import EmbeddingCacheManager
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
@@ -17,7 +16,9 @@ import json
 import numpy as np
 from src.utils.sampling import calculate_shift, retrieve_timesteps
 from tqdm import tqdm
-
+from diffusers.utils import convert_state_dict_to_diffusers
+from diffusers.utils.torch_utils import is_compiled_module
+from peft.utils import get_peft_model_state_dict
 
 import logging
 import PIL
@@ -27,7 +28,8 @@ from src.utils.lora_utils import FpsLogger
 from src.utils.tools import get_git_info
 from src.utils.tools import instantiate_class
 from src.scheduler.custom_flowmatch_scheduler import FlowMatchEulerDiscreteScheduler
-
+from src.data.cache_manager import EmbeddingCacheManager
+from diffusers import FluxKontextPipeline
 logger = logging.getLogger(__name__)
 
 
@@ -56,9 +58,16 @@ class BaseTrainer(ABC):
         self.cache_exist = self.cache_manager.exist(self.cache_dir)
         self.quantize = self.config.model.quantize
         self.adapter_name = self.config.model.lora.adapter_name
+        self.predict_setted = False
 
         self.log_model_info()
         self.load_preprocessor()
+        self.pipeline_class = self.get_pipeline_class()
+
+    @abstractmethod
+    def get_pipeline_class(self):
+        """return the pipeline class to use the classmethod"""
+        return FluxKontextPipeline
 
     def load_preprocessor(self):
         class_path = self.config.data.init_args.processor.class_path
@@ -194,24 +203,16 @@ class BaseTrainer(ABC):
         self.dit.merge_adapter()
         logging.info("Merged LoRA weights into base model")
 
-    def cache_step_add_batch_dim(self, data: dict):
-        """Add batch dimension to the data"""
-        for key, value in data.items():
-            if isinstance(value, torch.Tensor):
-                data[key] = value.unsqueeze(0)
-        return data
-
     def cache(self, train_dataloader):
         """Pre-compute and cache embeddings/latents for training efficiency."""
         logging.info("Starting embedding caching process...")
         self.load_model()
         self.setup_model_device_train_mode(stage="cache", cache=True)
         # Cache for each item (same loop structure as QwenImageEditTrainer)
-        dataset = train_dataloader.dataset
-        for data in tqdm(dataset, total=len(dataset), desc="cache_embeddings"):
-            data = self.cache_step_add_batch_dim(data)
-            data = self.prepare_embeddings(data, stage="cache")
-            self.cache_step(data)
+
+        for batch in tqdm(train_dataloader, total=len(train_dataloader), desc="cache_embeddings"):
+            batch = self.prepare_embeddings(batch, stage="cache")
+            self.cache_step(batch)
         self.destroy_models()
         logging.info("Cache completed")
 
@@ -300,7 +301,7 @@ class BaseTrainer(ABC):
                 self.lr_scheduler.step()
                 self.optimizer.zero_grad()
             if self.accelerator.sync_gradients:
-                avg_loss = self.accelerator.gather(loss.repeat(self.batch_size)).mean()
+                avg_loss = self.accelerator.gather(loss.detach()).mean()
                 self.train_loss = (
                     avg_loss.item() / self.config.train.gradient_accumulation_steps
                 )
@@ -342,7 +343,7 @@ class BaseTrainer(ABC):
             self.start_epoch = 0
         self.progress_bar = tqdm(
             range(self.global_step, self.config.train.max_train_steps),
-            desc="train",
+            desc="fit",
             disable=(not self.accelerator.is_local_main_process),
         )
         self.num_epochs = int(
@@ -376,6 +377,11 @@ class BaseTrainer(ABC):
             logging.info(
                 f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
             )
+        if self.config.model.quantize:
+            self.dit = self.quantize_model(
+                self.dit,
+                self.config.predict.devices.dit,
+            )
         self.__class__.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
 
         self.setup_model_device_train_mode(stage="fit", cache=self.use_cache)
@@ -391,7 +397,6 @@ class BaseTrainer(ABC):
         self.setup_progressbar()
         for epoch in range(self.start_epoch, self.num_epochs):
             self.train_epoch(epoch, train_dataloader)
-        self.fps_logger.stop()
         logging.info(f"FPS: {self.fps_logger.get_fps()}")
         self.accelerator.wait_for_everyone()
         self.accelerator.end_training()
@@ -411,20 +416,28 @@ class BaseTrainer(ABC):
     def setup_predict(
         self,
     ):
+        if self.predict_setted:
+            return
         if not hasattr(self, "dit") or self.vae is None:
             logging.info("Loading model...")
             self.load_model()
-        self.load_pretrain_lora_model(
-            self.dit, self.config, self.config.lora_adapter_name, stage="predict"
-        )
+
         if self.config.model.quantize:
             self.dit = self.quantize_model(
                 self.dit,
                 self.config.predict.devices.dit,
             )
+
+        if self.config.model.lora.pretrained_weight is not None:
+            logging.info('load lora from pretrained weight')
+            self.load_pretrain_lora_model(
+                self.dit, self.config, self.config.lora_adapter_name, stage="predict"
+            )
+
         self.setup_model_device_train_mode(stage="predict")
         logging.info("setup_model_device_train_mode done")
         print_model_summary_table(self.dit)
+        self.predict_setted = True
         logging.info(f"setup_predict done")
 
     @abstractmethod
@@ -538,6 +551,7 @@ class BaseTrainer(ABC):
             save_path = os.path.join(
                 self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
             )
+            os.makedirs(save_path, exist_ok=True)
             self.accelerator.save_state(save_path)
             state_info = {"global_step": global_step, "epoch": epoch}
             git_info = get_git_info()
@@ -553,6 +567,7 @@ class BaseTrainer(ABC):
         train_yaml_file = os.path.join(
             self.config.logging.output_dir, "train_config.yaml"
         )
+        os.makedirs(self.config.logging.output_dir, exist_ok=True)
         with open(train_yaml_file, "w") as f:
             yaml.dump(d_json, f, default_flow_style=False, sort_keys=False)
 
@@ -600,10 +615,8 @@ class BaseTrainer(ABC):
         self.lr_scheduler = get_scheduler(
             self.config.lr_scheduler.scheduler_type,
             optimizer=self.optimizer,
-            num_warmup_steps=self.config.lr_scheduler.warmup_steps
-            * self.accelerator.num_processes,
-            num_training_steps=self.config.train.max_train_steps
-            * self.accelerator.num_processes,
+            num_warmup_steps=self.config.lr_scheduler.warmup_steps,
+            num_training_steps=self.config.train.max_train_steps,
         )
 
     @classmethod
@@ -703,10 +716,21 @@ class BaseTrainer(ABC):
         """Load and initialize model components."""
         pass
 
-    @abstractmethod
     def save_lora(self, save_path):
         """Save LoRA weights"""
-        pass
+        unwrapped_transformer = self.accelerator.unwrap_model(self.dit)
+        if is_compiled_module(unwrapped_transformer):
+            unwrapped_transformer = unwrapped_transformer._orig_mod
+
+        lora_state_dict = convert_state_dict_to_diffusers(
+            get_peft_model_state_dict(unwrapped_transformer)
+        )
+        # Use FluxKontextPipeline's save method if available, otherwise use generic method
+        self.pipeline_class.save_lora_weights(
+            save_path, lora_state_dict, safe_serialization=True
+        )
+        logging.info(f"Saved LoRA weights to {save_path}")
+
 
     @abstractmethod
     def encode_prompt(self, *args, **kwargs):

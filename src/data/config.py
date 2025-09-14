@@ -192,6 +192,7 @@ class LoraConfig(BaseModel):
 class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     pretrained_model_name_or_path: str = "Qwen/Qwen-Image-Edit"
+    pretrained_embeddings: Optional[dict] = None  # if want to load different embeeding model vs main model (dit)
     lora: LoraConfig = Field(default_factory=LoraConfig)
     quantize: bool = False
 

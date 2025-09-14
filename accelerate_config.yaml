@@ -1,6 +1,6 @@
 compute_environment: LOCAL_MACHINE
 debug: false
-distributed_type: MULTI_GPU # MULTI_GPU #NO #MULTI_GPU  #for multi-gpu training
+distributed_type: NO # MULTI_GPU #NO #MULTI_GPU  #for multi-gpu training
 downcast_bf16: 'no'
 enable_cpu_affinity: false
 machine_rank: 0

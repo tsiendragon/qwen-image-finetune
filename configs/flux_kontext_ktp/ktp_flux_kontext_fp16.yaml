@@ -1,13 +1,13 @@
 model:
   pretrained_model_name_or_path: black-forest-labs/FLUX.1-Kontext-dev
-  quantize: True
+  quantize: false
   lora:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
     lora_alpha: 16  # LoRA alpha, usually equal to r
-    init_lora_weights: gaussian
-    target_modules: [to_k, to_q, to_v, to_out.0]
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
     pretrained_weight: null
-    adapter_name: lora_edit
+    adapter_name: "lora_edit"
 
 
 data:
@@ -16,17 +16,17 @@ data:
     dataset_path:
       - /raid/lilong/data/kyc_gen/ktp_v1.5/dataset1/
       - /raid/lilong/data/kyc_gen/ktp_v1.5/dataset1_crop/
-    caption_dropout_rate: 0.1
-    prompt_image_dropout_rate: 0.1
+    caption_dropout_rate: 0.0
+    prompt_image_dropout_rate: 0.0
     use_edit_mask: true  # if true, dataset output edit mask
-    selected_control_indexes: [0,1,2]
+    selected_control_indexes: [3]  # choose third in additional control. 0-th is the main control
     processor:
       class_path: src.data.preprocess.ImageProcessor
       init_args:
         process_type: resize
         resize_mode: bilinear
-        target_size: [576,832]
-        controls_size: [[576,832]]
+        target_size: [576,832]  # height width
+        controls_size: [[576,832], [576,768]]
 
   batch_size: 8  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
@@ -79,9 +79,9 @@ resume: null
 
 cache:
   devices:
-    vae_encoder: cuda:1
-    text_encoder: cuda:0
-    text_encoder_2: cuda:0
+    vae: cuda:0
+    text_encoder: cuda:1
+    text_encoder_2: cuda:1
   cache_dir: ${logging.output_dir}/cache
   use_cache: true
   prompt_empty_drop_keys:

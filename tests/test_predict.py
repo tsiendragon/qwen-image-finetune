@@ -90,13 +90,18 @@ def run_prediction(trainer,
     print('prompt', prompt)
     print('number of inference steps', num_inference_steps)
     print('cfg_scale', cfg_scale)
+    height, width = image.size
+    height = int(height//16)*16
+    width = int(width//16)*16
     result = trainer.predict(
         prompt_image=image,
         prompt=prompt,
         negative_prompt="",
         num_inference_steps=num_inference_steps,
         true_cfg_scale=cfg_scale,
-        weight_dtype=torch.bfloat16
+        weight_dtype=torch.bfloat16,
+        height=height,
+        width=width
     )
 
     end_time = time.time()
@@ -214,7 +219,6 @@ def main():
             lora_config_predict = create_config_for_predict(base_config, args.lora_weight)
 
             base_trainer = Trainer(base_config_predict)
-            base_trainer.setup_predict()
 
             base_result = run_prediction(
                 base_trainer, image, prompt,
@@ -242,7 +246,7 @@ def main():
             print('with lora weight', args.lora_weight)
 
             lora_trainer = Trainer(lora_config_predict)
-            lora_trainer.setup_predict()
+
 
             lora_result = run_prediction(
                 lora_trainer, image, prompt,

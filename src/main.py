@@ -6,6 +6,7 @@ from src.utils.logger import get_logger
 from src.utils.seed import seed_everything
 from src.data.config import TrMode
 from src.data.config import Config
+import logging
 
 logger = get_logger(__name__, log_level="INFO")
 
@@ -44,15 +45,27 @@ def main():
         config.data.init_args.caption_dropout_rate = 0
 
     # 加载数据
+    batch_size = config.data.batch_size
+    shuffle = config.data.shuffle
+    droplast = True
+    if config.mode == TrMode.cache:
+        batch_size = 1
+        shuffle = False
+        droplast = False
+        logging.info('In cache mode, adjust batch_size, shuffle, droplast')
+        logging.info('\tbatch_size', batch_size)
+        logging.info('\tshuffle', shuffle)
+        logging.info('\tdroplast', droplast)
     train_dataloader = loader(
         config.data.class_path,
         config.data.init_args,
-        batch_size=config.data.batch_size,
+        batch_size=batch_size,
         num_workers=config.data.num_workers,
-        shuffle=config.data.shuffle,
+        shuffle=shuffle,
+        drop_last=droplast,
     )
 
-    if config.mode == 'cache':
+    if config.mode == TrMode.cache:
         try:
             from accelerate.hooks import remove_hook_from_module
             remove_hook_from_module(trainer.text_encoder)

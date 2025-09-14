@@ -10,6 +10,7 @@ def calculate_shift(
     base_shift: float = 0.5,
     max_shift: float = 1.15,
 ):
+    print('calculate shift', image_seq_len, base_seq_len, max_seq_len, base_shift, max_shift)
     m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
     b = base_shift - m * base_seq_len
     mu = image_seq_len * m + b

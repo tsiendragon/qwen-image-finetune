@@ -11,13 +11,13 @@ model:
 
 
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: src.data.dataset.ImageDataset
   init_args:
     dataset_path:
       - split: train
         repo_id: TsienDragon/face_segmentation_20
-    caption_dropout_rate: 0.1
-    prompt_image_dropout_rate: 0.1
+    caption_dropout_rate: 0.0
+    prompt_image_dropout_rate: 0.0
     use_edit_mask: true  # if true, dataset output edit mask
     selected_control_indexes: [1]
     processor:
@@ -33,9 +33,9 @@ data:
   shuffle: true
 
 logging:
-  output_dir: "/tmp//image_edit_lora/"  # change the path to your own output path
+  output_dir: /tmp/image_edit_lora/fp16/  # change the path to your own output path
   report_to: "tensorboard"
-  tracker_project_name: "face_seg_flux_kontext_fp16"
+  tracker_project_name: faceSegFluxKontextFp16
   sampling:
     enable: false
     validation_steps: 100
