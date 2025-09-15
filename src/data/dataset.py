@@ -15,9 +15,19 @@ from src.data.cache_manager import EmbeddingCacheManager
 from src.utils.hugginface import load_editing_dataset, is_huggingface_repo
 from src.utils.tools import hash_string_md5
 from src.data.config import DatasetInitArgs
+import re
+from pathlib import Path
+
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
-IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
+_pat_end = re.compile(r'control_(\d+)\.(?:png|jpe?g|webp)$', re.IGNORECASE)ß
+
+def is_control_image(path: str):
+    """返回 (ok, d)。ok=True 表示以 control_{d}.png/jpg/jpeg/webp 结尾；d 为整数。"""
+    name = Path(path).name
+    m = _pat_end.search(name)
+    return m is not None
 
 
 def _first_existing(base_dir: str, stem: str, exts=IMG_EXTS) -> Optional[str]:
@@ -37,11 +47,11 @@ def get_number_of_controls(control_dir: str, stem: str) -> int:
 
 
 def _collect_extra_controls(control_dir: str, stem: str, num_controls: int) -> List[str]:
-    """匹配 stem_1.*, stem_2.*, …（只收集数值后缀），排除 *_mask."""
+    """匹配 stem_control_1.*, stem_control_2.*, …（使用 _control_N 格式），排除 *_mask."""
     out = []
     for i in range(1, num_controls + 1):
         for ext in IMG_EXTS:
-            control_path = os.path.join(control_dir, f"{stem}_{i}{ext}")
+            control_path = os.path.join(control_dir, f"{stem}_control_{i}{ext}")
             if os.path.exists(control_path):
                 out.append(control_path)
                 continue
@@ -236,8 +246,8 @@ class ImageDataset(Dataset):
             images_dirs, control_dirs
         """
 
-        image_possible_names = ['training_images', 'images', 'target_images']
-        control_possible_names = ['control_images', 'control', 'condition_images']
+        image_possible_names = ['training_images', 'images', 'target_images', 'target', 'targets']
+        control_possible_names = ['control_images', 'control', 'condition_images', 'controls']
 
         # 查找图像目录
         images_dir = None
@@ -261,11 +271,12 @@ class ImageDataset(Dataset):
     def _scan_image_files(self, images_dir, control_dir):
         """
         扫描所有数据集中的成对样本。
+        假定 target 图片一定存在
         样本需满足：
             - images_dir/xyz.(jpg|jpeg|png|bmp)
             - control_dir/xyz.(jpg|jpeg|png|bmp)
-            - control_dir/xyz_1.(jpg|jpeg|png|bmp) [additional control images]
-            - control_dir/xyz_2.(jpg|jpeg|png|bmp) [additional control images]
+            - control_dir/xyz_control_1.(jpg|jpeg|png|bmp) [additional control images]
+            - control_dir/xyz_control_2.(jpg|jpeg|png|bmp) [additional control images]
         prompt file could be in either images_dir or control_dir
             - images_dir/xyz.txt 作为 prompt
             - control_dir/xyz.txt 作为 prompt
@@ -275,16 +286,24 @@ class ImageDataset(Dataset):
 
         Returns:
             List[dict]: 'image' 'control: list[str]' 'caption' 'dataset_index' 'mask_file'
+
         """
         # first looking for prompt text
-        prompt_files = glob.glob(os.path.join(images_dir, '*.txt'))
-        prompt_files += glob.glob(os.path.join(control_dir, '*.txt'))
+
+        # first search target images
+        target_images = glob.glob(os.path.join(images_dir, '*.*'))
+        target_images = [img for img in target_images if img.endswith(IMG_EXTS)]
+        # exclude mask images
+        target_images = [img for img in target_images if not img.endswith('_mask.png')]
+        target_images = [img for img in target_images if not is_control_image(img)]
+        # exclude control images
+
         samples = []
 
         start_idx = len(self.all_samples)
 
         # 用 stem 归并（同 stem 出现两边时优先 images_dir 文本）
-        stems = [os.path.splitext(os.path.basename(p))[0] for p in prompt_files]
+        stems = [os.path.splitext(os.path.basename(p))[0] for p in target_images]
 
         # filter these stems that dont have correspoding images
         stems = [s for s in stems if _first_existing(images_dir, s) is not None]

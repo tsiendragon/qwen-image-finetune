@@ -10,7 +10,7 @@
 
 - `control_images/`：控制图像（至少 1 张）。支持多控制图像，命名规则：
   - 主图：`<base>.*`（任意扩展名）
-  - 追加序号：`<base>_1.*`, `<base>_2.*`, ...（仅纯数字后缀会被识别）
+  - 追加序号：`<base>_control_1.*`, `<base>_control_2.*`, ...（使用 _control_N 格式）
   - 可选掩码：`<base>_mask.*`（若存在将被用作 `control_mask`）
 - `training_images/`：目标图与文本提示对：
   - 必需：`<base>.txt`（prompt）
@@ -25,7 +25,7 @@ face_seg/
   train/
     control_images/
       sampleA.jpg
-      sampleA_1.jpg
+      sampleA_control_1.jpg
       sampleA_mask.png
     training_images/
       sampleA.txt
@@ -137,8 +137,8 @@ train_ds = load_editing_dataset("<org_or_user>/<dataset>", split="train")
 - 未找到切分：确保根目录下存在 `train/` 或 `test/` 子目录。
 - 无任何有效样本：
   - 检查 `training_images/` 是否存在 `<base>.txt`（prompt 必需）。
-  - 检查 `control_images/` 是否存在 `<base>.*` 或 `<base>_1.*` 等控制图像。
-  - 确认命名后缀仅包含纯数字（如 `_1`, `_2`）。
+  - 检查 `control_images/` 是否存在 `<base>.*` 或 `<base>_control_1.*` 等控制图像。
+  - 确认额外控制图像使用正确的命名格式（如 `_control_1`, `_control_2`）。
 - 掩码未生效：确认命名为 `<base>_mask.<ext>` 且位于 `control_images/` 下。
 
 ---

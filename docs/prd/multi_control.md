@@ -15,7 +15,7 @@
 ### 文件命名约定
 数据集中的多控制图像应遵循以下命名约定：
 - 主控制图像：`xyz.jpg/png/jpeg`
-- 额外控制图像：`xyz_1.jpg/png/jpeg`、`xyz_2.jpg/png/jpeg`等（数字后缀）
+- 额外控制图像：`xyz_control_1.jpg/png/jpeg`、`xyz_control_2.jpg/png/jpeg`等（使用 _control_N 格式）
 - 系统会自动收集并排序这些额外控制图像
 
 ## 配置选项
@@ -77,7 +77,7 @@
 
 ```python
 # 现有的收集控制图像的函数已经支持多控制图像
-# 在_collect_extra_controls函数中，已经实现了对xyz_1.png、xyz_2.png等的收集
+# 在_collect_extra_controls函数中，已经实现了对xyz_control_1.png、xyz_control_2.png等的收集
 # 只需确保在__getitem__中正确处理这些额外的控制图像
 ```
 

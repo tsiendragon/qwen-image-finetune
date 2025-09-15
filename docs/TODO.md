@@ -12,6 +12,7 @@
 - [ ] tensorboard log dir add version when resume training
 - [x] Flux Kontext Lora (v1.5.0)
 - [x] HuggingFace Dataset 支持 (v1.5.2)
+- [x] 修正额外控制图像命名规则文档 (v1.5.3)
 - [ ] training step dtype convertion simplification
 - [ ] Validation Sampling During Training (v1.6.0)
 - [ ] training step dtype convertion simplification
