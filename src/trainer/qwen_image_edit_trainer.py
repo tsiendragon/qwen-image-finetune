@@ -367,13 +367,11 @@ class QwenImageEditTrainer(BaseTrainer):
             self.text_encoder.requires_grad_(False).eval()
             self.dit.requires_grad_(False).eval()
 
-
     def prepare_embeddings(self, batch, stage="fit"):
         # for predict, not 'image' key, but 'pixel_latent' key
         # torch.tensor of image, control [B,C,H,W], in range [0,1]
         # for predict: add extra latent_ids, latents, guidance
         # for cache: add empty_pooled_prompt_embeds, empty_prompt_embeds
-        logging.info('prepare_embeddings')
         if "image" in batch:
             batch["image"] = self.normalize_image(batch["image"])
 
@@ -388,14 +386,11 @@ class QwenImageEditTrainer(BaseTrainer):
                 batch[additional_control_key] = self.normalize_image(
                     batch[additional_control_key]
                 )
-        logging.info('process controls')
-
         if "prompt_2" in batch:
             prompt_2 = batch["prompt_2"]
         else:
             prompt_2 = batch["prompt"]
 
-        logging.info('encode prompt')
         pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
             prompt=batch["prompt"],
             prompt_2=prompt_2,
@@ -404,7 +399,6 @@ class QwenImageEditTrainer(BaseTrainer):
         batch["pooled_prompt_embeds"] = pooled_prompt_embeds
         batch["prompt_embeds"] = prompt_embeds
         batch["text_ids"] = text_ids
-        logging.info('encode prompt')
 
         if stage == 'cache':
             pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
@@ -414,7 +408,6 @@ class QwenImageEditTrainer(BaseTrainer):
             )
             batch["empty_pooled_prompt_embeds"] = pooled_prompt_embeds
             batch["empty_prompt_embeds"] = prompt_embeds
-            logging.info('process empty prompt')
 
         if "negative_prompt" in batch:
             if "negative_prompt_2" in batch:
@@ -431,9 +424,7 @@ class QwenImageEditTrainer(BaseTrainer):
             batch["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
             batch["negative_prompt_embeds"] = negative_prompt_embeds
             batch["negative_text_ids"] = negative_text_ids
-            logging.info('process negative prompt')
         if "image" in batch:
-            logging.info('process image')
             image = batch["image"]  # single images
             print('image shaope',image.shape)
             batch_size = image.shape[0]
@@ -452,9 +443,6 @@ class QwenImageEditTrainer(BaseTrainer):
             )
 
             batch["image_latents"] = image_latents
-            logging.info(f"stage: {stage}")
-
-        logging.info(f"batch: {batch.keys()}")
 
         if "control" in batch:
             control = batch["control"]
@@ -472,7 +460,6 @@ class QwenImageEditTrainer(BaseTrainer):
             control_ids[..., 0] = 1
             batch["control_latents"] = [control_latents]
             batch["control_ids"] = [control_ids]
-            logging.info(f"control_ids: {control_ids}")
 
         for i in range(1, num_additional_controls + 1):
             control_key = f"control_{i}"
@@ -531,8 +518,6 @@ class QwenImageEditTrainer(BaseTrainer):
         image = self._postprocess_image(image)
         return image
 
-
-
     def _preprocess_image_for_cache(
         self, image: torch.Tensor, adaptive_resolution=True
     ):
@@ -567,7 +552,6 @@ class QwenImageEditTrainer(BaseTrainer):
         image = image.permute(1, 2, 0).numpy()  # [H,W,C]
         image = (image * 255).astype(np.uint8)
         return image
-
 
     def _training_step_cached(self, batch):
         """Training step using cached embeddings"""
@@ -1021,8 +1005,6 @@ class QwenImageEditTrainer(BaseTrainer):
     def cache(self, train_dataloader):
         """Pre-compute and cache embeddings"""
         from tqdm import tqdm
-
-
 
         self.cache_manager = train_dataloader.cache_manager
         vae_encoder_device = self.config.cache.vae_encoder_device

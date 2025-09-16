@@ -33,7 +33,7 @@ class EmbeddingCacheManager:
 
     @classmethod
     def get_metadata_path(cls, cache_root, main_hash: str) -> str:
-        return os.path.join(str(cache_root), f"{main_hash}_metadata.json")
+        return os.path.join(str(cache_root), 'metadata', f"{main_hash}.json")
 
     def get_cache_embedding_path(self, embedding_key: str, hash_value: str) -> str:
         return os.path.join(str(self.cache_root), embedding_key, f"{hash_value}.pt")
@@ -43,6 +43,7 @@ class EmbeddingCacheManager:
         data: dict[k, embedding]
             keys like: image_latent, prompt_embedding, pooled_prompt_embedding, etc.
         hash_maps: dict[k, hash_type]. Hash types support
+            - main_hash: the hash is the sum of image_hash+image_hash+prompt_hash
             - image_hash
             - control_hash
             - prompt_hash
@@ -58,7 +59,8 @@ class EmbeddingCacheManager:
         assert set(hash_maps.values()).issubset(
             set(file_hashes.keys())
         ), "hash_maps values must be a subset of file_hashes keys"
-        main_hash = file_hashes["image_hash"]
+        file_hashes = {k: v[0] if isinstance(v, list) else v for k, v in file_hashes.items()}
+        main_hash = file_hashes["main_hash"]
         metadata_path = self.get_metadata_path(self.cache_root, main_hash)
         os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
         metadata = {}
@@ -76,7 +78,7 @@ class EmbeddingCacheManager:
             json.dump(metadata, f)
 
     def load_cache(self, data, replace_empty_embeddings: bool = False, prompt_empty_drop_keys: List[str] = None):
-        main_hash = data["file_hashes"]["image_hash"]
+        main_hash = data["file_hashes"]["main_hash"]
         metadata_path = self.get_metadata_path(self.cache_root, main_hash)
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
@@ -98,5 +100,5 @@ class EmbeddingCacheManager:
     @classmethod
     def exist(cls, cache_root: str):
         """check if metadata exists"""
-        metadatas = glob.glob(os.path.join(cache_root, "*_metadata.json"))
+        metadatas = glob.glob(os.path.join(cache_root, "metadata", "*.json"))
         return len(metadatas) > 0

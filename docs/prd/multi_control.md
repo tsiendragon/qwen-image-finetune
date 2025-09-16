@@ -122,13 +122,14 @@ def cache_step(self, data: dict, vae_encoder_device: str, text_encoder_device: s
 - 添加多控制图像的配置选项
 
 ```yaml
-data:
-  multi_control:
-    enabled: true
-    selected_indices: [0, 1, 2]  # 选择使用哪些控制图像
-    target_sizes:  # 每个控制图像的目标尺寸
-      - [512, 512]
-      - [256, 256]
+...
+    processor:
+      class_path: src.data.preprocess.ImageProcessor
+      init_args:
+        process_type: center_crop
+        resize_mode: bilinear
+        target_size: [832, 576]
+        controls_size: [[832, 576]]
 ```
 
 #### 5. 模型输入处理修改

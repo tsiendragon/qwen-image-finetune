@@ -21,7 +21,8 @@ from pathlib import Path
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
-_pat_end = re.compile(r'control_(\d+)\.(?:png|jpe?g|webp)$', re.IGNORECASE)ß
+_pat_end = re.compile(r'control_(\d+)\.(?:png|jpe?g|webp)$', re.IGNORECASE)
+
 
 def is_control_image(path: str):
     """返回 (ok, d)。ok=True 表示以 control_{d}.png/jpg/jpeg/webp 结尾；d 为整数。"""
@@ -40,7 +41,7 @@ def _first_existing(base_dir: str, stem: str, exts=IMG_EXTS) -> Optional[str]:
 
 def get_number_of_controls(control_dir: str, stem: str) -> int:
     for ext in IMG_EXTS:
-        control_paths = glob.glob(os.path.join(control_dir, f"{stem}_[0-9]*{ext}"))
+        control_paths = glob.glob(os.path.join(control_dir, f"{stem}_control_[0-99]*{ext}"))
         if len(control_paths) > 0:
             return len(control_paths)
     return 0
@@ -314,8 +315,8 @@ class ImageDataset(Dataset):
         n = 0
         from tqdm import tqdm
 
-
         num_controls = get_number_of_controls(control_dir, stems[0])
+        print('num_controls', num_controls)
         logging.info('found %d controls', num_controls)
         logging.info(f'found with stem {control_dir}/{stems[0]}')
         for stem in tqdm(stems, desc='matching prompts'):
@@ -372,12 +373,16 @@ class ImageDataset(Dataset):
 
     def get_file_hashes(self, data):
         file_hashes = {}
+        main_hash = ""
         if 'image' in data:
             file_hashes['image_hash'] = self.cache_manager.get_hash(data['image'])
+            main_hash += file_hashes['image_hash']
         if 'control' in data:
             file_hashes['control_hash'] = self.cache_manager.get_hash(data['control'])
+            main_hash += file_hashes['control_hash']
         if 'prompt' in data:
             file_hashes['prompt_hash'] = hash_string_md5(data['prompt'])
+            main_hash += file_hashes['prompt_hash']
         if 'prompt' in data:
             file_hashes['empty_prompt_hash'] = hash_string_md5("empty")
         if 'control' in data and 'prompt' in data:
@@ -390,7 +395,7 @@ class ImageDataset(Dataset):
                 file_hashes[f"control_{i+1}_hash"] = self.cache_manager.get_hash(data['controls'][i])
                 controls_sum_hash += file_hashes[f"control_{i+1}_hash"]
             file_hashes['controls_sum_hash'] = controls_sum_hash
-
+        file_hashes['main_hash'] = main_hash
         return file_hashes
 
     def data_key_exist(self, data, key):
@@ -615,8 +620,15 @@ def loader(
 
 
 if __name__ == "__main__":
+    import logging
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level='INFO',
+    )
     from src.data.config import load_config_from_yaml
     config_file = 'configs/face_seg_flux_kontext_fp16_huggingface_dataset.yaml'
+    config_file = 'tests/test_configs/test_example_fluxkontext_fp16_character_composition.yaml'
     config = load_config_from_yaml(config_file)
     data_config = config.data
     dataloader = loader(
@@ -627,15 +639,19 @@ if __name__ == "__main__":
         data_config.shuffle
     )
     for batch in dataloader:
+        print('batch keys', batch.keys())
+
         for k, v in batch.items():
+            print(k)
             if isinstance(v, torch.Tensor):
                 print(k, v.shape)
             else:
                 print(k, v)
-
         break
     print(batch['cached'])
     print(batch['file_hashes'])
     print(dataloader.cache_manager)
-    print('batch type', type(batch['image'][0]), batch['image'])
+    # print('batch type', type(batch['image'][0]), batch['image'])
     print(batch['prompt'])
+    print(batch['control_1'].shape)
+

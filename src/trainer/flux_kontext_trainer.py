@@ -60,6 +60,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
         self._current_timestep = None
         self._interrupt = False
 
+    def get_pipeline_class(self):
+        return FluxKontextPipeline
+
     def load_model(self):
         """
         Load and separate components from FluxKontextPipeline.
@@ -232,7 +235,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             assert hasattr(
                 self, "accelerator"
             ), "accelerator must be set before setting model devices"
-
         if self.cache_exist and self.use_cache and stage == "fit":
             # Cache mode: only need transformer
             self.text_encoder.cpu()
@@ -257,6 +259,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
                     param.requires_grad = True
                 else:
                     param.requires_grad = False
+            print("dit device", self.dit.device)
+            import time
+            time.sleep(10)
 
         elif stage == "fit":
             # Non-cache mode: need all encoders
@@ -322,7 +327,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         # torch.tensor of image, control [B,C,H,W], in range [0,1]
         # for predict: add extra latent_ids, latents, guidance
         # for cache: add empty_pooled_prompt_embeds, empty_prompt_embeds
-        logging.info('prepare_embeddings')
         if "image" in batch:
             batch["image"] = self.normalize_image(batch["image"])
 
@@ -333,18 +337,17 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         for i in range(num_additional_controls):
             additional_control_key = f"control_{i+1}"
+            print('additional_control_key', type(batch[additional_control_key]), additional_control_key)
             if additional_control_key in batch:
                 batch[additional_control_key] = self.normalize_image(
                     batch[additional_control_key]
                 )
-        logging.info('process controls')
 
         if "prompt_2" in batch:
             prompt_2 = batch["prompt_2"]
         else:
             prompt_2 = batch["prompt"]
 
-        logging.info('encode prompt')
         pooled_prompt_embeds, prompt_embeds, text_ids = self.encode_prompt(
             prompt=batch["prompt"],
             prompt_2=prompt_2,
@@ -353,7 +356,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         batch["pooled_prompt_embeds"] = pooled_prompt_embeds
         batch["prompt_embeds"] = prompt_embeds
         batch["text_ids"] = text_ids
-        logging.info('encode prompt')
 
         if stage == 'cache':
             pooled_prompt_embeds, prompt_embeds, _ = self.encode_prompt(
@@ -363,7 +365,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
             batch["empty_pooled_prompt_embeds"] = pooled_prompt_embeds
             batch["empty_prompt_embeds"] = prompt_embeds
-            logging.info('process empty prompt')
 
         if "negative_prompt" in batch:
             if "negative_prompt_2" in batch:
@@ -380,11 +381,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
             batch["negative_pooled_prompt_embeds"] = negative_pooled_prompt_embeds
             batch["negative_prompt_embeds"] = negative_prompt_embeds
             batch["negative_text_ids"] = negative_text_ids
-            logging.info('process negative prompt')
         if "image" in batch:
-            logging.info('process image')
             image = batch["image"]  # single images
-            print('image shaope',image.shape)
+            print('image shaope', image.shape)
             batch_size = image.shape[0]
             image_height, image_width = image.shape[2:]
             print('batch_size', batch_size, image_height, image_width)
@@ -401,9 +400,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
 
             batch["image_latents"] = image_latents
-            logging.info(f"stage: {stage}")
 
-        logging.info(f"batch: {batch.keys()}")
 
         if "control" in batch:
             control = batch["control"]
@@ -421,7 +418,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             control_ids[..., 0] = 1
             batch["control_latents"] = [control_latents]
             batch["control_ids"] = [control_ids]
-            logging.info(f"control_ids: {control_ids}")
 
         for i in range(1, num_additional_controls + 1):
             control_key = f"control_{i}"
@@ -511,6 +507,13 @@ class FluxKontextLoraTrainer(BaseTrainer):
         prompt_embeds = embeddings["prompt_embeds"]
         device = self.accelerator.device
         image_height, image_width = embeddings['image'].shape[2:]
+        # move to self.dit device
+        image_latents = image_latents.to(device)
+        text_ids = text_ids.to(device)
+        control_latents = control_latents.to(device)
+        control_ids = control_ids.to(device)
+        pooled_prompt_embeds = pooled_prompt_embeds.to(device)
+        prompt_embeds = prompt_embeds.to(device)
 
         with torch.no_grad():
             batch_size = image_latents.shape[0]
@@ -876,7 +879,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         if additional_controls_size:
             assert len(additional_controls_size) == len(
-                additional_controls[0]
+                additional_controls
             ), "the number of additional_controls_size should be same of additional_controls"  # NOQA
             assert (
                 len(additional_controls_size[0]) == 2
@@ -904,19 +907,24 @@ class FluxKontextLoraTrainer(BaseTrainer):
         data["prompt"] = prompt
 
         if additional_controls:
-            new_controls = {f"control_{i}": [] for i in range(len(additional_controls))}
+            new_controls = {f"control_{i+1}": [] for i in range(len(additional_controls))}
             # [control_1_batch1, control1_batch2, ..], [control2_batch1, control2_batch2, ..]
+            n_controls = len(additional_controls[0])
             for contorls in additional_controls:
                 controls = self.preprocessor.preprocess(
-                    {"control": contorls}, controls_size=controls_size
+                    {"controls": contorls}, controls_size=controls_size
                 )["controls"]
                 for i, control in enumerate(controls):
-                    new_controls[f"control_{i}"].append(control)
-            for i in range(len(additional_controls)):
-                new_controls[f"control_{i}"] = torch.stack(
-                    new_controls[f"control_{i}"], dim=0
+                    new_controls[f"control_{i+1}"].append(control)
+            for k, v in new_controls.items():
+                print(k, type(v), type(v[0]), type(v[0][0]))
+            for i in range(n_controls):
+                control_stack = torch.stack(
+                    new_controls[f"control_{i+1}"], dim=0
                 )
-                data[f"control_{i}"] = new_controls[f"control_{i}"]
+                print('new controls', control_stack.shape, f"control_{i+1}")
+                data[f"control_{i+1}"] = control_stack
+            data['n_controls'] = n_controls
 
         if prompt_2 is not None:
             if isinstance(prompt_2, str):
@@ -947,4 +955,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         data["width"] = width
         data["true_cfg_scale"] = true_cfg_scale
         data['guidance'] = guidance_scale
+        print('data keys', data.keys())
+        for k, v in data.items():
+            print(k, type(v))
         return data

@@ -1,17 +1,42 @@
-# Qwen-Image-Edit Fine-tuning Framework
+# Image-Edit Fine-tuning Framework
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)  [![CUDA](https://img.shields.io/badge/CUDA-12.0%2B-green.svg)](https://developer.nvidia.com/cuda-downloads)  [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)  [![Framework](https://img.shields.io/badge/framework-PyTorch-orange.svg)](https://pytorch.org/)
 
 ## Overview
 
-This repository provides a comprehensive framework for fine-tuning advanced vision-language models for specialized image editing and understanding tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures, offering flexible precision levels (FP16/FP8/FP4) to accommodate different hardware capabilities. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
+This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
+## New
+- **Multi Control**: 2025 Sep 16
+<div align="center">
+  <table>
+    <tr>
+      <td align="center">
+        <img src="docs/images/image-18.png" alt="Control Image 1" width="430"/>
+        <br><em>control 0</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-19.png" alt="Control Image 2" width="200"/>
+        <br><em>control 1</em>
+      </td>
+      <td align="center">
+        <img src="docs/images/image-21.png" alt="Generated Result" width="430"/>
+        <br><em>generated results</em>
+      </td>
+    </tr>
+  </table>
+</div>
+
+Support Multi Controls. The process logic is concat the latent of all control latents. And use different `latent_id` to identify them.
+
+Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`](https://huggingface.co/TsienDragon/character-compositing)
 
 ## Key Features
 
 - **Dual Model Support**: Complete support for both Qwen-Image-Edit and FLUX Kontext model architectures
 - **Multi-Precision Training**: FP16, FP8, and FP4 quantization levels for different hardware requirements
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
-- **Edit Mask Loss Support**: Advanced mask-weighted loss function for focused training on edit regions
+- [**Edit Mask Loss** feature documentation in `docs/prd/image_edit_mask_loss.md`](docs/prd/image_edit_mask_loss.md) Advanced mask-weighted loss function for focused training on edit regions
+- [**Speed Optimization** including quantilizationand flash attention in `docs/speed_optimization.md`](docs/speed_optimization.md)
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
 - **Validation Sampling**: Real-time training progress monitoring with TensorBoard visualization
 - **Resume Training**: Seamless training resumption from checkpoints with full state recovery
@@ -19,6 +44,7 @@ This repository provides a comprehensive framework for fine-tuning advanced visi
 - **Quantization Support**: FP4/FP8/FP16 quantization for reduced memory usage and performance optimization
 - **Flexible Architecture**: Modular design supporting various vision-language tasks
 - **Production Ready**: Comprehensive testing suite and deployment configurations
+- **Multi Control**: Support Multiple Controls for Image-Edit model that can support images compositing tasks.
 
 ## Table of Contents
 
@@ -49,14 +75,14 @@ sample = dd["train"][0]
 
 Dataset structure reference and upload/download instructions are in [`docs/huggingface-dataset.md`](docs/huggingface-dataset.md). We will remove the dataset copies under this repository and rely on Hugging Face going forward.
 
-## Installation
+## Quick Start
 
 ### Prerequisites
 - Python 3.12+
 - CUDA 12.0+ (for GPU training)
 - 16GB+ RAM, 8GB+ VRAM recommended
 
-### Installation
+### Requirement Installation
 ```bash
 # Clone repository
 git clone https://github.com/yourusername/qwen-image-finetune.git
@@ -181,38 +207,11 @@ Launch TensorBoard to view the validation results:
 ```bash
 tensorboard --logdir=/path/to/output/logs
 ```
-#### 🎯 Qwen-Image-Edit LoRA Fine-tuning Results
+## Finetune Examples
+### Single Control
+#### Qwen-Image-Edit LoRA Fine-tuning Results
 
 This project demonstrates fine-tuning the Qwen-VL model for face segmentation tasks. Below shows the comparison between pre and post fine-tuning results:
-
-##### Image used in Training
-
-<div align="center">
-  <table>
-    <tr>
-      <th>Input Image</th>
-      <th>Base Model Results</th>
-      <th>LoRA Fine-tuned Results</th>
-    </tr>
-    <tr>
-      <td align="center">
-        <img src="docs/images/input_image.jpg" alt="Original Input Image" width="300"/>
-        <br><em>Original input image</em>
-      </td>
-      <td align="center">
-        <img src="docs/images/result_base_model.jpg" alt="Base Model Results" width="300"/>
-        <br><em>Base Qwen-Image-Edit model</em>
-      </td>
-      <td align="center">
-        <img src="docs/images/result_lora_model.jpg" alt="LoRA Fine-tuned Model Results" width="300"/>
-        <br><em>LoRA fine-tuned model</em>
-      </td>
-    </tr>
-  </table>
-  <p><strong>Comparison:</strong> The LoRA fine-tuned model shows significantly improved accuracy and details in face segmentation compared to the base model.</p>
-</div>
-
-##### Image not used in Training
 
 <div align="center">
   <table>
@@ -314,7 +313,8 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
   </table>
 </div>
 
-### Lora Training Performance
+
+## Speed
 
 |cache|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed| Num of Process| config example|
 |---|---|---|---|---|---|---|---| --- |---|
@@ -334,7 +334,9 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
 
 - prodigy-optimizer: [parameter free optimizer](https://github.com/konstmish/prodigy) No need to tune `lr` any more
 - 4090: train on 4090 need to set `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1`. Other setting are same
-### Inference
+
+## Inference
+### Single Control
 ```python
 # Inference with trained LoRA model
 from src.qwen_image_edit_trainer import QwenImageEditTrainer
@@ -369,37 +371,10 @@ result[0]
 result[0].save("output_segmentation.png")
 print("Generated face segmentation saved as output_segmentation.png")
 ```
-## Edit Mask Loss
-
-[Edit Mask Loss feature documentation in `docs/prd/image_edit_mask_loss.md`](docs/prd/image_edit_mask_loss.md)
-
-## Speed Optimization
-
-[Speed Optimization including quantilizationand flash attention in `docs/speed_optimization.md`](docs/speed_optimization.md)
+### Multi Control
 
 ## Debug
 [Record of bugs encountered in `docs/debug.md`](docs/debug.md)
-
-## 🎯 Key Features Covered
-
-### Training Optimization
-- **Edit Mask Loss**: Advanced mask-weighted loss computation for focused training on edit regions
-- **Embedding Cache System**: 2-3x training acceleration
-- **LoRA Fine-tuning**: Memory-efficient parameter updates
-- **Multi-GPU Support**: Distributed training capabilities
-- **Gradient Checkpointing**: Memory optimization techniques
-
-### Model Capabilities
-- **Multimodal Processing**: Combined text and image understanding
-- **Flexible Architecture**: Support for various image editing tasks
-- **Quality Control**: Advanced inference parameters and optimization
-- **Production Ready**: Deployment guides and API examples
-
-### Developer Tools
-- **Comprehensive Testing**: Full test suite and validation tools
-- **Monitoring**: Real-time storage and performance monitoring
-- **Configuration**: Flexible YAML-based configuration system
-- **Documentation**: Complete API reference and examples
 
 ## 🤝 Contributing to Documentation
 
@@ -416,7 +391,7 @@ We welcome contributions to improve this documentation:
 - Add troubleshooting sections
 - Keep content up to date
 
-## 📞 Getting Help
+## Getting Help
 
 ### Documentation Issues
 - **Missing Information**: Check if it's covered in another section
@@ -433,7 +408,7 @@ We welcome contributions to improve this documentation:
 - **Performance**: Review [Cache System](docs/cache-system.md) optimization
 - **General Questions**: Open a GitHub issue with detailed description
 
-## 📚 External Resources
+## External Resources
 
 ### Related Projects
 - [Qwen Official Repository](https://github.com/QwenLM/Qwen)
@@ -445,7 +420,6 @@ We welcome contributions to improve this documentation:
 - [Issues](../../issues) - Bug reports and feature requests
 - [Pull Requests](../../pulls) - Code contributions
 
----
 
 **📝 Note**: This documentation is continuously updated. Last updated: 2025/08/28
 

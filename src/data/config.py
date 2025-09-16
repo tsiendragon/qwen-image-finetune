@@ -87,6 +87,13 @@ class DeviceConfig(BaseModel):
     def _ser_dev(self, v: Optional[DeviceLike]):
         return None if v is None else str(v)
 
+    # if vae is None and vae_encoder is not None, set vae to vae_encoder
+    @field_validator("vae")
+    @classmethod
+    def _set_vae(cls, v: Optional[DeviceLike]) -> Optional[DeviceLike]:
+        if v is None and cls.vae_encoder is not None:
+            return cls.vae_encoder
+        return v
 
 # ----------------------------
 # Image Processor
