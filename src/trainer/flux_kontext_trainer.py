@@ -5,14 +5,10 @@ Following QwenImageEditTrainer patterns with dual text encoder support.
 import torch
 import PIL
 import gc
-import inspect
 from typing import Optional, Union, List, Tuple
 from tqdm.auto import tqdm
 import logging
-from diffusers.utils import convert_state_dict_to_diffusers
-from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.utils.torch_utils import randn_tensor
-from peft.utils import get_peft_model_state_dict
 
 from diffusers import FluxKontextPipeline
 from src.models.flux_kontext_loader import (
@@ -333,7 +329,11 @@ class FluxKontextLoraTrainer(BaseTrainer):
         if "control" in batch:
             batch["control"] = self.normalize_image(batch["control"])
 
-        num_additional_controls = batch["n_controls"] if isinstance(batch["n_controls"], int) else batch["n_controls"][0]
+        num_additional_controls = (
+            batch["n_controls"]
+            if isinstance(batch["n_controls"], int)
+            else batch["n_controls"][0]
+        )
 
         for i in range(num_additional_controls):
             additional_control_key = f"control_{i+1}"
@@ -400,7 +400,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
 
             batch["image_latents"] = image_latents
-
 
         if "control" in batch:
             control = batch["control"]
@@ -863,7 +862,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         generator: Optional[torch.Generator] = None,
         weight_dtype: torch.dtype = torch.bfloat16,
         true_cfg_scale: float = 1.0,
-        use_native_size: bool=False,
+        use_native_size: bool = False,
         **kwargs,
     ) -> dict:
         """

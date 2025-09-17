@@ -1,44 +1,28 @@
 import copy
-import os
-import shutil
 import torch
-import random
 import torch.nn.functional as F  # NOQA
 import PIL
 import gc
-import json
 import numpy as np
 from typing import Optional, Union, List, Tuple
-from PIL import Image
 import logging
 from tqdm.auto import tqdm
-from accelerate import Accelerator
-from accelerate.utils import ProjectConfiguration
-from peft.utils import get_peft_model_state_dict
-from peft import LoraConfig
-from diffusers.loaders import AttnProcsLayers
-from diffusers.optimization import get_scheduler
-from diffusers.utils import convert_state_dict_to_diffusers
-from diffusers.utils.torch_utils import is_compiled_module
-from src.utils.images import make_image_devisible, make_image_shape_devisible
 from diffusers.training_utils import (
     compute_density_for_timestep_sampling,
     compute_loss_weighting_for_sd3,
 )
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
     QwenImageEditPipeline,
-    calculate_shift,
     calculate_dimensions,
     retrieve_latents,
     randn_tensor,
 )
 
-from src.utils.images import resize_bhw
-from src.utils.images import resize_bhw
 from src.data.cache_manager import check_cache_exists
 from src.loss.edit_mask_loss import map_mask_to_latent
 from src.trainer.base_trainer import BaseTrainer
 from src.utils.tools import infer_image_tensor
+from src.utils.images import make_image_devisible, make_image_shape_devisible, resize_bhw
 
 
 class QwenImageEditTrainer(BaseTrainer):
@@ -82,9 +66,7 @@ class QwenImageEditTrainer(BaseTrainer):
         self.quantize = config.model.quantize
         self.weight_dtype = torch.bfloat16
         self.batch_size = config.data.batch_size
-        self.prompt_image_dropout_rate = config.data.init_args.get(
-            "prompt_image_dropout_rate", 0.1
-        )
+        self.prompt_image_dropout_rate = config.data.init_args.get("prompt_image_dropout_rate", 0.1)
 
         # Parameters obtained from VAE configuration
         self.vae_scale_factor = None
@@ -115,13 +97,9 @@ class QwenImageEditTrainer(BaseTrainer):
 
         from src.models.load_model import load_vae, load_qwenvl
 
-        self.vae = load_vae(
-            "Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype  # use original one
-        )
+        self.vae = load_vae("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)  # use original one
         # same to model constructed from vae self.vae = pipe.vae
-        self.text_encoder = load_qwenvl(
-            "Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype  # use original one
-        )
+        self.text_encoder = load_qwenvl("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)  # use original one
         logging.info(f"text_encoder device: {self.text_encoder.device}")
         # self.dit = pipe.transformer this is same as the following, verified
         from src.models.load_model import load_transformer
@@ -159,9 +137,7 @@ class QwenImageEditTrainer(BaseTrainer):
         self.prompt_template_encode = pipe.prompt_template_encode
         self.prompt_template_encode_start_idx = pipe.prompt_template_encode_start_idx
 
-        self.image_processor = VaeImageProcessor(
-            vae_scale_factor=self.vae_scale_factor * 2
-        )
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
         self.num_channels_latents = self.dit.config.in_channels // 4
 
         # Set models to training/evaluation mode
@@ -170,9 +146,7 @@ class QwenImageEditTrainer(BaseTrainer):
         self.dit.requires_grad_(False).eval()
         torch.cuda.empty_cache()
 
-        logging.info(
-            f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}"
-        )
+        logging.info(f"Components loaded successfully. VAE scale factor: {self.vae_scale_factor}")
 
     def preprocess_image_for_vae_encoder(self, image):
         """
@@ -207,7 +181,7 @@ class QwenImageEditTrainer(BaseTrainer):
             image = 2 * image - 1
         elif tensor_info["range"] == "0-1":
             image = 2 * image - 1
-        elif tensor_info['range'] == '-1-1':
+        elif tensor_info["range"] == "-1-1":
             pass
         else:
             raise ValueError(f"Invalid image range: {tensor_info['range']}")
@@ -235,9 +209,9 @@ class QwenImageEditTrainer(BaseTrainer):
         if tensor_info["range"] == "0-255":
             pass
         elif tensor_info["range"] == "0-1":
-            image = image*255
-        elif tensor_info['range'] == '-1-1':
-            image = (image+1)/2*255
+            image = image * 255
+        elif tensor_info["range"] == "-1-1":
+            image = (image + 1) / 2 * 255
         else:
             raise ValueError(f"Invalid image range: {tensor_info['range']}")
         return image
@@ -268,19 +242,11 @@ class QwenImageEditTrainer(BaseTrainer):
                 image_latents = self._encode_vae_image(image=image, generator=generator)
             else:
                 image_latents = image
-            if (
-                batch_size > image_latents.shape[0]
-                and batch_size % image_latents.shape[0] == 0
-            ):
+            if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
                 # expand init_latents for batch_size
                 additional_image_per_prompt = batch_size // image_latents.shape[0]
-                image_latents = torch.cat(
-                    [image_latents] * additional_image_per_prompt, dim=0
-                )
-            elif (
-                batch_size > image_latents.shape[0]
-                and batch_size % image_latents.shape[0] != 0
-            ):
+                image_latents = torch.cat([image_latents] * additional_image_per_prompt, dim=0)
+            elif batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] != 0:
                 raise ValueError(
                     f"Cannot duplicate `image` of batch size {image_latents.shape[0]} to {batch_size} text prompts."
                 )
@@ -302,12 +268,8 @@ class QwenImageEditTrainer(BaseTrainer):
                 f" size of {batch_size}. Make sure the batch size matches the length of the generators."
             )
         if latents is None:
-            latents = randn_tensor(
-                shape, generator=generator, device=device, dtype=dtype
-            )
-            latents = self._pack_latents(
-                latents, batch_size, num_channels_latents, height, width
-            )
+            latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
         else:
             latents = latents.to(device=device, dtype=dtype)
 
@@ -315,12 +277,13 @@ class QwenImageEditTrainer(BaseTrainer):
 
     def setup_model_device_train_mode(self, stage="fit", cache=False):
         """Set model device allocation and train mode."""
-        assert stage in ['fit', 'cache', 'predict'], \
-            f"stage must be one of ['fit', 'cache', 'predict'], but got {stage}"
+        assert stage in [
+            "fit",
+            "cache",
+            "predict",
+        ], f"stage must be one of ['fit', 'cache', 'predict'], but got {stage}"
         if stage == "fit":
-            assert hasattr(
-                self, "accelerator"
-            ), "accelerator must be set before setting model devices"
+            assert hasattr(self, "accelerator"), "accelerator must be set before setting model devices"
 
         if self.cache_exist and self.use_cache and stage == "fit":
             # Cache mode: only need transformer
@@ -365,15 +328,13 @@ class QwenImageEditTrainer(BaseTrainer):
         elif stage == "cache":
             # Cache mode: need encoders, don't need transformer
             self.vae = self.vae.to(self.config.cache.devices.vae, non_blocking=True)
-            print('self.config.cache.devices.vae', self.config.cache.devices.vae)
-            print('vae device ', next(self.vae.parameters()).device)
+            print("self.config.cache.devices.vae", self.config.cache.devices.vae)
+            print("vae device ", next(self.vae.parameters()).device)
 
             self.vae.decoder.to("cpu")
-            print('vae device ', next(self.vae.parameters()).device)
+            print("vae device ", next(self.vae.parameters()).device)
 
-            self.text_encoder = self.text_encoder.to(
-                self.config.cache.devices.text_encoder, non_blocking=True
-            )
+            self.text_encoder = self.text_encoder.to(self.config.cache.devices.text_encoder, non_blocking=True)
 
             torch.cuda.synchronize()
             self.dit.cpu()
@@ -382,8 +343,8 @@ class QwenImageEditTrainer(BaseTrainer):
             gc.collect()
             self.vae.requires_grad_(False).eval()
             self.text_encoder.requires_grad_(False).eval()
-            logging.info('cache mode device setting')
-            print('vae device ', next(self.vae.parameters()).device)
+            logging.info("cache mode device setting")
+            print("vae device ", next(self.vae.parameters()).device)
 
         elif stage == "predict":
             # Predict mode: allocate to different GPUs according to configuration
@@ -422,15 +383,17 @@ class QwenImageEditTrainer(BaseTrainer):
         if "image" in batch:
 
             batch["image"] = self.preprocess_image_for_vae_encoder(batch["image"])  # B,3,1,H,W
-            batch['width'] = batch["image"].shape[4]
-            batch['height'] = batch["image"].shape[3]
+            batch["width"] = batch["image"].shape[4]
+            batch["height"] = batch["image"].shape[3]
 
         if "control" in batch:
             prompt_control = self.preprocess_image_for_text_encoder(batch["control"])  # [B,C,H,W], uint8, range [0,255]
-            batch['prompt_control'] = prompt_control
-            batch["control"] = self.preprocess_image_for_vae_encoder(batch["control"])  # [B,C,1,H,W], float, range [-1,1]
-            batch['width_control'] = batch["control"].shape[4]
-            batch['height_control'] = batch["control"].shape[3]
+            batch["prompt_control"] = prompt_control
+            batch["control"] = self.preprocess_image_for_vae_encoder(
+                batch["control"]
+            )  # [B,C,1,H,W], float, range [-1,1]
+            batch["width_control"] = batch["control"].shape[4]
+            batch["height_control"] = batch["control"].shape[3]
 
         if isinstance(batch["n_controls"], int):
             num_additional_controls = batch["n_controls"]
@@ -440,23 +403,21 @@ class QwenImageEditTrainer(BaseTrainer):
         for i in range(num_additional_controls):
             additional_control_key = f"control_{i+1}"
             if additional_control_key in batch:
-                batch[additional_control_key] = self.preprocess_image_for_vae_encoder(
-                    batch[additional_control_key]
-                )
-                batch[f'width_control_{i+1}'] = batch[additional_control_key].shape[4]
-                batch[f'height_control_{i+1}'] = batch[additional_control_key].shape[3]
+                batch[additional_control_key] = self.preprocess_image_for_vae_encoder(batch[additional_control_key])
+                batch[f"width_control_{i+1}"] = batch[additional_control_key].shape[4]
+                batch[f"height_control_{i+1}"] = batch[additional_control_key].shape[3]
 
         prompt_embeds, prompt_embeds_mask = self.encode_prompt(
             prompt=batch["prompt"],
-            image=batch['prompt_control'],
+            image=batch["prompt_control"],
         )
         batch["prompt_embeds_mask"] = prompt_embeds_mask
         batch["prompt_embeds"] = prompt_embeds
 
-        if stage == 'cache':
+        if stage == "cache":
             empty_prompt_embeds, empty_prompt_embeds_mask = self.encode_prompt(
                 prompt=[""],
-                image=batch['prompt_control'],
+                image=batch["prompt_control"],
             )
             batch["empty_prompt_embeds_mask"] = empty_prompt_embeds_mask
             batch["empty_prompt_embeds"] = empty_prompt_embeds
@@ -466,7 +427,7 @@ class QwenImageEditTrainer(BaseTrainer):
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
                 self.encode_prompt(
                     prompt=batch["negative_prompt"],
-                    image=batch['prompt_control'],
+                    image=batch["prompt_control"],
                 )
             )
             batch["negative_prompt_embeds_mask"] = negative_prompt_embeds_mask
@@ -476,7 +437,7 @@ class QwenImageEditTrainer(BaseTrainer):
         if "image" in batch:
             image = batch["image"]
             batch_size = image.shape[0]
-            height_image, width_image = batch['height'], batch['width']
+            height_image, width_image = batch["height"], batch["width"]
             _, image_latents = self.prepare_latents(
                 image,
                 batch_size,
@@ -490,7 +451,7 @@ class QwenImageEditTrainer(BaseTrainer):
         if "control" in batch:
             control = batch["control"]
             batch_size = control.shape[0]
-            height_control, width_control = batch['height_control'], batch['width_control']
+            height_control, width_control = batch["height_control"], batch["width_control"]
             _, control_latents, _, control_ids = self.prepare_latents(
                 control,
                 batch_size,
@@ -522,7 +483,7 @@ class QwenImageEditTrainer(BaseTrainer):
 
         if self.config.loss.mask_loss and "mask" in batch:
             mask = batch["mask"]
-            height_image, width_image = batch['height'], batch['width']
+            height_image, width_image = batch["height"], batch["width"]
             batch["mask"] = resize_bhw(mask, height_image, width_image)
             batch["mask"] = map_mask_to_latent(batch["mask"])
         return batch
@@ -540,9 +501,9 @@ class QwenImageEditTrainer(BaseTrainer):
         image_latents = data["image_latents"].detach().cpu()[0]
         control_latents = data["control_latents"].detach().cpu()[0]
         prompt_embeds = data["prompt_embeds"].detach().cpu()[0]
-        prompt_embeds_mask = data['prompt_embeds_mask'].detach().cpu()[0]
+        prompt_embeds_mask = data["prompt_embeds_mask"].detach().cpu()[0]
         empty_prompt_embeds = data["empty_prompt_embeds"].detach().cpu()[0]
-        empty_prompt_embeds_mask = data['empty_prompt_embeds_mask'].detach().cpu()[0]
+        empty_prompt_embeds_mask = data["empty_prompt_embeds_mask"].detach().cpu()[0]
         img_shapes = torch.tensor(self._get_image_shapes(data)[0]).astype(torch.int32)
         cache_embeddings = {
             "image_latents": image_latents,
@@ -562,12 +523,10 @@ class QwenImageEditTrainer(BaseTrainer):
             "empty_prompt_embeds": "prompt_hash",
             "img_shapes": "main_hash",
         }
-        self.cache_manager.save_cache_embedding(
-            cache_embeddings, map_keys, data["file_hashes"]
-        )
+        self.cache_manager.save_cache_embedding(cache_embeddings, map_keys, data["file_hashes"])
 
     def prepare_cached_embeddings(self, batch):
-        """batch data from dataloader """
+        """batch data from dataloader"""
         if self.config.loss.mask_loss and "mask" in batch:
             image_height, image_width = batch["image"].shape[2:]
             mask = batch["mask"]
@@ -579,17 +538,13 @@ class QwenImageEditTrainer(BaseTrainer):
         batch["img_shapes"] = img_shapes
         return batch
 
-    def image_adjust_best_resolution(
-        self, image: torch.Tensor
-    ):
+    def image_adjust_best_resolution(self, image: torch.Tensor):
         """Preprocess images for caching, suppose image is B,C,H,W"""
         assert image.ndim == 4, "image should be B,C,H,W"
         assert image.shape[1] in [1, 3, 4], "image should be B,C,H,W"
         height, width = image.shape[2:]
-        calculated_width, calculated_height, _ = calculate_dimensions(
-                1024 * 1024, width / height
-        )
-        new_image = F.interpolate(image, size=(calculated_height, calculated_width), mode='bilinear')
+        calculated_width, calculated_height, _ = calculate_dimensions(1024 * 1024, width / height)
+        new_image = F.interpolate(image, size=(calculated_height, calculated_width), mode="bilinear")
         return new_image
 
     def _postprocess_image(self, image_tensor: torch.Tensor) -> np.ndarray:
@@ -620,23 +575,27 @@ class QwenImageEditTrainer(BaseTrainer):
         img_shapes = []
         height_image = embeddings["height"]
         width_image = embeddings["width"]
-        img_shapes.append(
-            (1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2)
-        )
-        if 'height_control' in embeddings and 'width_control' in embeddings:
+        img_shapes.append((1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2))
+        if "height_control" in embeddings and "width_control" in embeddings:
             height_control = embeddings["height_control"]
             width_control = embeddings["width_control"]
             img_shapes.append(
                 (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2)
             )
-            num_additional_controls = embeddings["n_controls"] if isinstance(embeddings["n_controls"], int) else embeddings["n_controls"][0]
+            num_additional_controls = (
+                embeddings["n_controls"] if isinstance(embeddings["n_controls"], int) else embeddings["n_controls"][0]
+            )
             for i in range(num_additional_controls):
                 additional_control_key = f"control_{i+1}"
                 if additional_control_key in embeddings:
                     height_control_i = embeddings[f"height_control_{i+1}"]
                     width_control_i = embeddings[f"width_control_{i+1}"]
                     img_shapes.append(
-                        (1, height_control_i // self.vae_scale_factor // 2, width_control_i // self.vae_scale_factor // 2)
+                        (
+                            1,
+                            height_control_i // self.vae_scale_factor // 2,
+                            width_control_i // self.vae_scale_factor // 2,
+                        )
                     )
         return [img_shapes] * batch_size
 
@@ -646,20 +605,18 @@ class QwenImageEditTrainer(BaseTrainer):
         control_latents = embeddings["control_latents"].to(self.weight_dtype).to(device)
         prompt_embeds = embeddings["prompt_embeds"].to(self.weight_dtype).to(device)
         prompt_embeds_mask = embeddings["prompt_embeds_mask"].to(dtype=torch.int64).to(device)
-        if 'img_shapes' in embeddings:
+        if "img_shapes" in embeddings:
             img_shapes = embeddings["img_shapes"]
         else:
             img_shapes = self._get_image_shapes(embeddings, image_latents.shape[0])
         batch_size = image_latents.shape[0]
-        if 'mask' in embeddings:
+        if "mask" in embeddings:
             edit_mask = embeddings["edit_mask"]
         else:
             edit_mask = None
 
         with torch.no_grad():
-            noise = torch.randn_like(
-                image_latents, device=device, dtype=self.weight_dtype
-            )
+            noise = torch.randn_like(image_latents, device=device, dtype=self.weight_dtype)
 
             # Sample timesteps
             u = compute_density_for_timestep_sampling(
@@ -672,9 +629,7 @@ class QwenImageEditTrainer(BaseTrainer):
             indices = (u * self.scheduler.config.num_train_timesteps).long()
             timesteps = self.scheduler.timesteps[indices].to(device=device)
 
-            sigmas = self._get_sigmas(
-                timesteps, n_dim=image_latents.ndim, dtype=image_latents.dtype
-            )
+            sigmas = self._get_sigmas(timesteps, n_dim=image_latents.ndim, dtype=image_latents.dtype)
             noisy_model_input = (1.0 - sigmas) * image_latents + sigmas * noise
             packed_input = torch.cat([noisy_model_input, control_latents], dim=1)
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
@@ -690,9 +645,7 @@ class QwenImageEditTrainer(BaseTrainer):
             return_dict=False,
         )[0]
         model_pred = model_pred[:, : image_latents.size(1)]
-        weighting = compute_loss_weighting_for_sd3(
-            weighting_scheme="none", sigmas=sigmas
-        )
+        weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
         target = noise - image_latents
         # pred shape [2, 4104, 64], target shape [2, 4104, 64]
         loss = self.forward_loss(model_pred, target, weighting, edit_mask)
@@ -701,9 +654,7 @@ class QwenImageEditTrainer(BaseTrainer):
     def _get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
         """Calculate sigma values for noise scheduler"""
         noise_scheduler_copy = copy.deepcopy(self.scheduler)
-        sigmas = noise_scheduler_copy.sigmas.to(
-            device=self.accelerator.device, dtype=dtype
-        )
+        sigmas = noise_scheduler_copy.sigmas.to(device=self.accelerator.device, dtype=dtype)
         schedule_timesteps = noise_scheduler_copy.timesteps.to(self.accelerator.device)
         timesteps = timesteps.to(self.accelerator.device)
         step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
@@ -717,7 +668,7 @@ class QwenImageEditTrainer(BaseTrainer):
         if isinstance(generator, list):
             image_latents = [
                 retrieve_latents(
-                    self.vae.encode(image[i : i + 1]),
+                    self.vae.encode(image[i: i + 1]),
                     generator=generator[i],
                     sample_mode="argmax",
                 )
@@ -725,9 +676,7 @@ class QwenImageEditTrainer(BaseTrainer):
             ]
             image_latents = torch.cat(image_latents, dim=0)
         else:
-            image_latents = retrieve_latents(
-                self.vae.encode(image), generator=generator, sample_mode="argmax"
-            )
+            image_latents = retrieve_latents(self.vae.encode(image), generator=generator, sample_mode="argmax")
         latents_mean = (
             torch.tensor(self.vae.config.latents_mean)
             .view(1, self.latent_channels, 1, 1, 1)
@@ -770,18 +719,12 @@ class QwenImageEditTrainer(BaseTrainer):
         prompt = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt)
         with torch.inference_mode():
-            prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(
-                prompt, image, device
-            )
+            prompt_embeds, prompt_embeds_mask = self._get_qwen_prompt_embeds(prompt, image, device)
         _, seq_len, _ = prompt_embeds.shape
         prompt_embeds = prompt_embeds.repeat(1, num_images_per_prompt, 1)
-        prompt_embeds = prompt_embeds.view(
-            batch_size * num_images_per_prompt, seq_len, -1
-        )
+        prompt_embeds = prompt_embeds.view(batch_size * num_images_per_prompt, seq_len, -1)
         prompt_embeds_mask = prompt_embeds_mask.repeat(1, num_images_per_prompt, 1)
-        prompt_embeds_mask = prompt_embeds_mask.view(
-            batch_size * num_images_per_prompt, seq_len
-        )
+        prompt_embeds_mask = prompt_embeds_mask.view(batch_size * num_images_per_prompt, seq_len)
         return prompt_embeds, prompt_embeds_mask
 
     def _extract_masked_hidden(self, hidden_states: torch.Tensor, mask: torch.Tensor):
@@ -812,9 +755,7 @@ class QwenImageEditTrainer(BaseTrainer):
             return_tensors="pt",
         ).to(device)
 
-        with torch.cuda.device(
-            model_inputs.input_ids.device
-        ):  # 作用域内的 'cuda' 都指向同一张卡
+        with torch.cuda.device(model_inputs.input_ids.device):  # 作用域内的 'cuda' 都指向同一张卡
             outputs = self.text_encoder(
                 input_ids=model_inputs.input_ids,
                 attention_mask=model_inputs.attention_mask,
@@ -824,48 +765,39 @@ class QwenImageEditTrainer(BaseTrainer):
             )
 
         hidden_states = outputs.hidden_states[-1]
-        split_hidden_states = self._extract_masked_hidden(
-            hidden_states, model_inputs.attention_mask
-        )
+        split_hidden_states = self._extract_masked_hidden(hidden_states, model_inputs.attention_mask)
         split_hidden_states = [e[drop_idx:] for e in split_hidden_states]
-        attn_mask_list = [
-            torch.ones(e.size(0), dtype=torch.long, device=e.device)
-            for e in split_hidden_states
-        ]
+        attn_mask_list = [torch.ones(e.size(0), dtype=torch.long, device=e.device) for e in split_hidden_states]
         max_seq_len = max([e.size(0) for e in split_hidden_states])
         prompt_embeds = torch.stack(
-            [
-                torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))])
-                for u in split_hidden_states
-            ]
+            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0), u.size(1))]) for u in split_hidden_states]
         )
         encoder_attention_mask = torch.stack(
-            [
-                torch.cat([u, u.new_zeros(max_seq_len - u.size(0))])
-                for u in attn_mask_list
-            ]
+            [torch.cat([u, u.new_zeros(max_seq_len - u.size(0))]) for u in attn_mask_list]
         )
 
         prompt_embeds = prompt_embeds.to(dtype=dtype, device=device)
 
         return prompt_embeds, encoder_attention_mask
 
-    def prepare_predict_batch_data(self,
-                                   prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]],
-                                   prompt: Union[str, List[str]],
-                                   additional_controls: List[PIL.Image.Image] = [],
-                                   controls_size: Optional[List[int]] = None,  # first one is for main control
-                                   height: Optional[int] = None,
-                                   width: Optional[int] = None,
-                                   negative_prompt: Union[None, str, List[str]] = None,
-                                   guidance_scale: float = None,
-                                   num_inference_steps: int = 20,
-                                   true_cfg_scale: float = 4.0,
-                                   image_latents: torch.Tensor = None,
-                                   prompt_embeds: torch.Tensor = None,
-                                   prompt_embeds_mask: torch.Tensor = None,
-                                   use_native_size: bool = False,
-                                   weight_dtype=torch.bfloat16, ) -> dict:
+    def prepare_predict_batch_data(
+        self,
+        prompt_image: Union[PIL.Image.Image, List[PIL.Image.Image]],
+        prompt: Union[str, List[str]],
+        additional_controls: List[PIL.Image.Image] = [],
+        controls_size: Optional[List[int]] = None,  # first one is for main control
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        negative_prompt: Union[None, str, List[str]] = None,
+        guidance_scale: float = None,
+        num_inference_steps: int = 20,
+        true_cfg_scale: float = 4.0,
+        image_latents: torch.Tensor = None,
+        prompt_embeds: torch.Tensor = None,
+        prompt_embeds_mask: torch.Tensor = None,
+        use_native_size: bool = False,
+        weight_dtype=torch.bfloat16,
+    ) -> dict:
         """Prepare predict batch data.
         prepare the data to batch dict that can be used to prepare embeddings similar in the training step.
         We want to reuse the same data preparation code in the training step.
@@ -899,14 +831,14 @@ class QwenImageEditTrainer(BaseTrainer):
         for img in prompt_image:
             # for each image, need to make one copy for text_encoder, another for image_encoder
             # convert to [C,H,W] in range [0,1]
-            img = self.preprocessor.preprocess({'control': img}, controls_size=controls_size)['control']
+            img = self.preprocessor.preprocess({"control": img}, controls_size=controls_size)["control"]
             control.append(img)
         control = torch.stack(control, dim=0)
 
         data["control"] = control
         data["prompt"] = prompt
-        data['height'] = height
-        data['width'] = width
+        data["height"] = height
+        data["width"] = width
 
         if additional_controls:
             n_controls = len(additional_controls[0])
@@ -914,18 +846,16 @@ class QwenImageEditTrainer(BaseTrainer):
             # [control_1_batch1, control1_batch2, ..], [control2_batch1, control2_batch2, ..]
 
             for contorls in additional_controls:
-                controls = self.preprocessor.preprocess(
-                    {"controls": contorls}, controls_size=controls_size)["controls"]
+                controls = self.preprocessor.preprocess({"controls": contorls}, controls_size=controls_size)["controls"]
                 for i, control in enumerate(controls):
                     new_controls[f"control_{i+1}"].append(control)
             for k, v in new_controls.items():
                 print(k, type(v), type(v[0]), type(v[0][0]))
             for i in range(n_controls):
-                control_stack = torch.stack(
-                    new_controls[f"control_{i+1}"], dim=0)
-                print('new controls', control_stack.shape, f"control_{i+1}")
+                control_stack = torch.stack(new_controls[f"control_{i+1}"], dim=0)
+                print("new controls", control_stack.shape, f"control_{i+1}")
                 data[f"control_{i+1}"] = control_stack
-            data['n_controls'] = n_controls
+            data["n_controls"] = n_controls
 
         if negative_prompt is not None:
             if isinstance(negative_prompt, str):
@@ -936,8 +866,8 @@ class QwenImageEditTrainer(BaseTrainer):
             data["negative_prompt"] = negative_prompt
         data["num_inference_steps"] = num_inference_steps
         data["true_cfg_scale"] = true_cfg_scale
-        data['guidance'] = guidance_scale
-        print('data keys', data.keys())
+        data["guidance"] = guidance_scale
+        print("data keys", data.keys())
         for k, v in data.items():
             print(k, type(v))
         return data
@@ -956,7 +886,7 @@ class QwenImageEditTrainer(BaseTrainer):
         height_image = embeddings["height"]
         width_image = embeddings["width"]
 
-        negative_prompt = embeddings['negative_prompt'] if 'negative_prompt' in embeddings else None
+        negative_prompt = embeddings["negative_prompt"] if "negative_prompt" in embeddings else None
 
         has_neg_prompt = negative_prompt is not None
         do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
@@ -968,16 +898,12 @@ class QwenImageEditTrainer(BaseTrainer):
             logging.info(f"negative_prompt: {negative_prompt}")
 
             # 临时将 positive prompt embeddings 移到 CPU 以节省显存
-            negative_prompt_embeds = embeddings['negative_prompt_embeds']
-            negative_prompt_embeds_mask =  embeddings['negative_prompt_embeds_mask']
-            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device, dtype=torch.int64 )
+            negative_prompt_embeds = embeddings["negative_prompt_embeds"]
+            negative_prompt_embeds_mask = embeddings["negative_prompt_embeds_mask"]
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device, dtype=torch.int64)
 
-        logging.info(
-            f"mask shape: {prompt_embeds_mask.shape}, dtype: {prompt_embeds_mask.dtype}"
-        )
-        logging.info(
-            f"prompt_embeds shape: {prompt_embeds.shape}, dtype: {prompt_embeds.dtype}"
-        )
+        logging.info(f"mask shape: {prompt_embeds_mask.shape}, dtype: {prompt_embeds_mask.dtype}")
+        logging.info(f"prompt_embeds shape: {prompt_embeds.shape}, dtype: {prompt_embeds.dtype}")
 
         # 5. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
@@ -994,9 +920,7 @@ class QwenImageEditTrainer(BaseTrainer):
             device=device,
             dtype=self.weight_dtype,
         )
-        latents = self._pack_latents(
-            latents, batch_size, num_channels_latents, height_latent, width_latent
-        )
+        latents = self._pack_latents(latents, batch_size, num_channels_latents, height_latent, width_latent)
         image_seq_len = latents.shape[1]
 
         logging.info(f"image latent got grad: {control_latents.requires_grad}")
@@ -1010,18 +934,14 @@ class QwenImageEditTrainer(BaseTrainer):
         logging.info(f"width: {width_image}")
         logging.info(f"image_seq_len: {image_seq_len}")
 
-        timesteps, num_inference_steps = self.prepare_predict_timesteps(
-            num_inference_steps, image_seq_len
-        )
+        timesteps, num_inference_steps = self.prepare_predict_timesteps(num_inference_steps, image_seq_len)
 
         self._num_timesteps = len(timesteps)
 
         # 处理guidance
-        guidance_scale = embeddings['guidance']
+        guidance_scale = embeddings["guidance"]
         if self.transformer.config.guidance_embeds:
-            guidance = torch.full(
-                [1], guidance_scale, device=device, dtype=torch.float32
-            )
+            guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
             guidance = guidance.expand(latents.shape[0])
         else:
             guidance = None
@@ -1044,17 +964,11 @@ class QwenImageEditTrainer(BaseTrainer):
 
         # set to proper device
         prompt_embeds = prompt_embeds.to(device, dtype=self.weight_dtype)
-        prompt_embeds_mask = prompt_embeds_mask.to(
-            device, dtype=torch.int64
-        )
+        prompt_embeds_mask = prompt_embeds_mask.to(device, dtype=torch.int64)
 
         if do_true_cfg:
-            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(
-                device, dtype=torch.int64
-            )
-            negative_prompt_embeds = negative_prompt_embeds.to(
-                device, dtype=self.weight_dtype
-            )
+            negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device, dtype=torch.int64)
+            negative_prompt_embeds = negative_prompt_embeds.to(device, dtype=self.weight_dtype)
 
         logging.info(f"timesteps: {timesteps}")
         logging.info(f"num_inference_steps: {num_inference_steps}")
@@ -1086,7 +1000,7 @@ class QwenImageEditTrainer(BaseTrainer):
                     logging.info(f"txt_seq_lens: {txt_seq_lens}")
                     logging.info(f"attention_kwargs: {self.attention_kwargs}")
 
-                with torch.inference_mode():                      # 外层关掉梯度 & 减元数据
+                with torch.inference_mode():  # 外层关掉梯度 & 减元数据
                     with self.dit.cache_context("cond"):
                         noise_pred = self.dit(
                             hidden_states=latent_model_input,
@@ -1105,7 +1019,7 @@ class QwenImageEditTrainer(BaseTrainer):
                     # 临时释放正面推理结果的显存，避免两次推理同时占用显存
                     noise_pred_cpu = noise_pred.cpu()
                     torch.cuda.empty_cache()
-                    with torch.inference_mode():                      # 外层关掉梯度 & 减元数据
+                    with torch.inference_mode():  # 外层关掉梯度 & 减元数据
                         with self.dit.cache_context("uncond"):
                             neg_noise_pred = self.dit(
                                 hidden_states=latent_model_input,
@@ -1122,9 +1036,7 @@ class QwenImageEditTrainer(BaseTrainer):
 
                     # 将正面推理结果移回 GPU 进行合并
                     noise_pred = noise_pred_cpu.to(device)
-                    comb_pred = neg_noise_pred + true_cfg_scale * (
-                        noise_pred - neg_noise_pred
-                    )
+                    comb_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 
                     cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
                     noise_norm = torch.norm(comb_pred, dim=-1, keepdim=True)
@@ -1136,9 +1048,7 @@ class QwenImageEditTrainer(BaseTrainer):
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
-                latents = self.scheduler.step(
-                    noise_pred, t, latents, return_dict=False
-                )[0]
+                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
@@ -1155,9 +1065,9 @@ class QwenImageEditTrainer(BaseTrainer):
             .view(1, self.vae.config.z_dim, 1, 1, 1)
             .to(latents.device, latents.dtype)
         )
-        latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(
-            1, self.vae.config.z_dim, 1, 1, 1
-        ).to(latents.device, latents.dtype)
+        latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, self.vae.config.z_dim, 1, 1, 1).to(
+            latents.device, latents.dtype
+        )
         latents = latents / latents_std + latents_mean
         final_image = self.vae.decode(latents, return_dict=False)[0][:, :, 0]
 
