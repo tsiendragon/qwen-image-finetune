@@ -6,7 +6,7 @@ Defines the core interface that all trainers must implement.
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -692,7 +692,8 @@ class BaseTrainer(ABC):
 
     def prepare_predict_timesteps(
         self, num_inference_steps: int, image_seq_len: int
-    ) -> torch.Tensor:
+    ) -> Tuple(torch.Tensor, int):
+        """prepare timesteps for prediction"""
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         mu = calculate_shift(
             image_seq_len,
@@ -730,7 +731,6 @@ class BaseTrainer(ABC):
             save_path, lora_state_dict, safe_serialization=True
         )
         logging.info(f"Saved LoRA weights to {save_path}")
-
 
     @abstractmethod
     def encode_prompt(self, *args, **kwargs):

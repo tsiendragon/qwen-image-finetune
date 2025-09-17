@@ -8,6 +8,7 @@ import gc
 import inspect
 from typing import Optional, Union, List, Tuple
 from tqdm.auto import tqdm
+import logging
 from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.utils.torch_utils import randn_tensor
@@ -23,9 +24,8 @@ from src.models.flux_kontext_loader import (
     load_flux_kontext_scheduler,
 )
 from src.loss.edit_mask_loss import map_mask_to_latent
-from src.utils.images import resize_bhw
 from src.trainer.base_trainer import BaseTrainer
-import logging
+from src.utils.images import make_image_devisible, make_image_shape_devisible, resize_bhw
 
 
 class FluxKontextLoraTrainer(BaseTrainer):
@@ -859,46 +859,58 @@ class FluxKontextLoraTrainer(BaseTrainer):
         height: Optional[int] = None,
         width: Optional[int] = None,
         guidance_scale: float = 3.5,
-        additional_controls_size: Optional[List[int]] = None,
+        controls_size: Optional[List[int]] = None,
         generator: Optional[torch.Generator] = None,
         weight_dtype: torch.dtype = torch.bfloat16,
         true_cfg_scale: float = 1.0,
-        auto_resize: bool = False,
+        use_native_size: bool=False,
         **kwargs,
     ) -> dict:
         """
         Prepare batch data for prediction.
         args:
             additional_controls: [[control_1, control2], [control_1, control_2]]
-            additional_controls_size: [(h1,w1), (h2,w2)]
+            controls_size: [(h_0,w_0),(h1,w1), (h2,w2)]
             height: height for the generated image
             width: width for the generated image
+            use_native_size: if True, the prompt image and additional
+                controls will use their own size. That is they will not be resized.
         """
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
         self.weight_dtype = weight_dtype
 
-        if additional_controls_size:
-            assert len(additional_controls_size) == len(
-                additional_controls
-            ), "the number of additional_controls_size should be same of additional_controls"  # NOQA
-            assert (
-                len(additional_controls_size[0]) == 2
-            ), "the size of additional_controls_size should be (h,w)"  # NOQA
-            controls_size = [[height, width]] + additional_controls_size
+        if isinstance(prompt_image, PIL.Image.Image):
+            prompt_image = [prompt_image]
+        prompt_image = [make_image_devisible(image, self.vae_scale_factor) for image in prompt_image]
+
+        if height is None or width is None:
+            height, width = prompt_image[0].size
         else:
-            controls_size = [[height, width]]
+            height, width = make_image_shape_devisible(width, height, self.vae_scale_factor)
+
+        if additional_controls:
+            assert len(additional_controls) + 1 == len(
+                controls_size[0]
+            ), "the number of additional_controls_size should be same of additional_controls"  # NOQA
+        if controls_size:
+            for item in controls_size:
+                assert len(item) == 2, "the size of controls_size should be (h,w)"  # NOQA
 
         if not isinstance(prompt_image, list):
             prompt_image = [prompt_image]
 
+        if use_native_size:
+            controls_size = [prompt_image[0].size]
+            if additional_controls:
+                controls_size.extend([control.size for control in additional_controls[0]])
         data = {}
         control = []
         for img in prompt_image:
-            # img = self.preprocessor.preprocess(
-            #     {"control": img}, controls_size=controls_size
-            # )["control"]
-            img = self.preprocess_image_predict(img)
+            img = self.preprocessor.preprocess(
+                {"control": img}, controls_size=controls_size
+            )["control"]
+            # img = self.preprocess_image_predict(img)
             control.append(img)
         control = torch.stack(control, dim=0)
         data["control"] = control
@@ -908,9 +920,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
         data["prompt"] = prompt
 
         if additional_controls:
-            new_controls = {f"control_{i+1}": [] for i in range(len(additional_controls))}
-            # [control_1_batch1, control1_batch2, ..], [control2_batch1, control2_batch2, ..]
             n_controls = len(additional_controls[0])
+            new_controls = {f"control_{i+1}": [] for i in range(n_controls)}
+            # [control_1_batch1, control1_batch2, ..], [control2_batch1, control2_batch2, ..]
             for contorls in additional_controls:
                 controls = self.preprocessor.preprocess(
                     {"controls": contorls}, controls_size=controls_size
