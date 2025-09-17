@@ -12,7 +12,7 @@ import logging
 import random
 
 from src.data.cache_manager import EmbeddingCacheManager
-from src.utils.hugginface import load_editing_dataset, is_huggingface_repo
+from src.utils.huggingface import load_editing_dataset, is_huggingface_repo
 from src.utils.tools import hash_string_md5
 from src.data.config import DatasetInitArgs
 import re

@@ -878,15 +878,17 @@ class FluxKontextLoraTrainer(BaseTrainer):
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
         self.weight_dtype = weight_dtype
+        logging.info("Start predict")
+        logging.info("image size format [H,W]")
 
         if isinstance(prompt_image, PIL.Image.Image):
             prompt_image = [prompt_image]
         prompt_image = [make_image_devisible(image, self.vae_scale_factor) for image in prompt_image]
 
         if height is None or width is None:
-            height, width = prompt_image[0].size
+            width, height = prompt_image[0].size
         else:
-            height, width = make_image_shape_devisible(width, height, self.vae_scale_factor)
+            width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
 
         if additional_controls:
             assert len(additional_controls) + 1 == len(
@@ -900,9 +902,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
             prompt_image = [prompt_image]
 
         if use_native_size:
-            controls_size = [prompt_image[0].size]
+            controls_size = [prompt_image[0].size[1], prompt_image[0].size[0]]
             if additional_controls:
-                controls_size.extend([control.size for control in additional_controls[0]])
+                controls_size.extend([[control.size[1], control.size[0]] for control in additional_controls[0]])
+        logging.info("#"*50)
+        logging.info(f"image shapes for controls: {controls_size}")
+        logging.info(f"image shape for target: [{height}, {width}]")
         data = {}
         control = []
         for img in prompt_image:
@@ -937,6 +942,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 print('new controls', control_stack.shape, f"control_{i+1}")
                 data[f"control_{i+1}"] = control_stack
             data['n_controls'] = n_controls
+        else:
+            data['n_controls'] = 0
 
         if prompt_2 is not None:
             if isinstance(prompt_2, str):

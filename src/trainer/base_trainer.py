@@ -22,6 +22,7 @@ from peft.utils import get_peft_model_state_dict
 
 import logging
 import PIL
+import signal
 from src.data.config import Config
 from src.utils.model_summary import print_model_summary_table
 from src.utils.lora_utils import FpsLogger
@@ -60,6 +61,10 @@ class BaseTrainer(ABC):
         self.adapter_name = self.config.model.lora.adapter_name
         self.predict_setted = False
 
+        # 为save_last_checkpoint功能添加属性
+        self.training_interrupted = False
+        self.setup_signal_handlers()
+
         self.log_model_info()
         self.load_preprocessor()
         self.pipeline_class = self.get_pipeline_class()
@@ -77,6 +82,14 @@ class BaseTrainer(ABC):
     def __repr__(self) -> str:
         msg = f"{self.__class__.__name__}(config={self.config})"
         return msg
+
+    def setup_signal_handlers(self):
+        """设置信号处理器来捕获Ctrl+C中断"""
+        def signal_handler(signum, frame):
+            logging.info("收到中断信号，准备保存最后一个检查点...")
+            self.training_interrupted = True
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
 
     def log_model_info(self):
         """Log model information."""
@@ -289,6 +302,11 @@ class BaseTrainer(ABC):
 
     def train_epoch(self, epoch, train_dataloader):
         for _, batch in enumerate(train_dataloader):
+            # 检查是否收到中断信号
+            if self.training_interrupted:
+                logger.info("检测到训练中断信号，停止训练...")
+                return
+
             with self.accelerator.accumulate(self.dit):
                 loss = self.training_step(batch)
                 self.fps_logger.update(
@@ -346,6 +364,9 @@ class BaseTrainer(ABC):
             desc="fit",
             disable=(not self.accelerator.is_local_main_process),
         )
+
+        # if max_train_steps exist, use is None, use num_epochs
+
         self.num_epochs = int(
             self.config.train.max_train_steps
             / self.batch_size
@@ -395,9 +416,17 @@ class BaseTrainer(ABC):
         self.fps_logger.start()
         self.save_train_config()
         self.setup_progressbar()
+        current_epoch = self.start_epoch
         for epoch in range(self.start_epoch, self.num_epochs):
+            current_epoch = epoch
             self.train_epoch(epoch, train_dataloader)
-        logging.info(f"FPS: {self.fps_logger.get_fps()}")
+            if self.training_interrupted:
+                break
+
+        # 保存最后一个检查点
+        self.save_checkpoint(current_epoch, self.global_step, is_last=True)
+
+        logging.info(f"FPS: {self.fps_logger.last_fps()}")
         self.accelerator.wait_for_everyone()
         self.accelerator.end_training()
 
@@ -438,7 +467,7 @@ class BaseTrainer(ABC):
         logging.info("setup_model_device_train_mode done")
         print_model_summary_table(self.dit)
         self.predict_setted = True
-        logging.info(f"setup_predict done")
+        logging.info("setup_predict done")
 
     @abstractmethod
     def prepare_predict_batch_data(self, *args, **kwargs) -> dict:
@@ -540,7 +569,7 @@ class BaseTrainer(ABC):
 
         logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
-    def save_checkpoint(self, epoch, global_step):
+    def save_checkpoint(self, epoch, global_step, is_last=False):
         """Save checkpoint"""
         self.fps_logger.pause()
         if self.global_step % self.config.train.checkpointing_steps != 0:
@@ -551,9 +580,13 @@ class BaseTrainer(ABC):
             save_path = os.path.join(
                 self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
             )
+            if is_last:
+                save_path = os.path.join(
+                    self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last"
+                )
             os.makedirs(save_path, exist_ok=True)
             self.accelerator.save_state(save_path)
-            state_info = {"global_step": global_step, "epoch": epoch}
+            state_info = {"global_step": global_step, "epoch": epoch, "is_last": is_last}
             git_info = get_git_info()
             state_info.update(git_info)
             with open(os.path.join(save_path, "state.json"), "w") as f:
@@ -651,9 +684,19 @@ class BaseTrainer(ABC):
         cls, transformer: torch.nn.Module, config, adapter_name: str, stage='fit',
     ):
         from src.utils.lora_utils import classify_lora_weight
+        from src.utils.huggingface import download_lora
 
         pretrained_weight = getattr(config.model.lora, "pretrained_weight", None)
         if pretrained_weight:
+            if not os.path.exists(pretrained_weight):
+                # try as the huggingface repos
+                repo_id = "/".join(pretrained_weight.split("/")[:2])
+                filename = pretrained_weight.split("/")[-1]
+                try:
+                    pretrained_weight = download_lora(repo_id, filename)
+                except Exception as e:
+                    logging.warning(f"Failed to download lora from {pretrained_weight}: {e}")
+                    pass
             lora_type = classify_lora_weight(pretrained_weight)
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
@@ -692,7 +735,7 @@ class BaseTrainer(ABC):
 
     def prepare_predict_timesteps(
         self, num_inference_steps: int, image_seq_len: int
-    ) -> Tuple(torch.Tensor, int):
+    ) -> Tuple[torch.Tensor, int]:
         """prepare timesteps for prediction"""
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         mu = calculate_shift(
@@ -773,7 +816,6 @@ class BaseTrainer(ABC):
         to decode the latents to images.
         """
         pass
-
 
     @abstractmethod
     def cache_step(self, data: dict):

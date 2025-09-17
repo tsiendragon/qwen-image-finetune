@@ -190,8 +190,11 @@ def _infer_range(t: torch.Tensor) -> Range:
         return "-1-1"
     if within(vmin, -1e-6, 0.1) and within(vmax, 0.9, 1.05):
         return "0-1"
+    if within(vmin, -1e-6, 0.5) and within(vmax, 0.5, 1+1e-6):
+        return "0-1"
     if within(vmin, -1e-6, 5.0) and within(vmax, 1.5, 260.0):
         return "0-255"
+    print('vmin, vmax', vmin, vmax, t.shape)
     return "unknown"
 
 
