@@ -4,10 +4,13 @@ from PIL import Image, ImageOps
 import imagehash
 import PIL
 import os
-from typing import Union
+from typing import Union, Dict, Literal, Optional
 import hashlib
 import importlib
 import subprocess
+
+Layout = Literal["HW", "CHW", "HWC", "BCHW", "BHWC"]
+Range = Literal["0-1", "-1-1", "0-255", "unknown"]
 
 
 def sample_indices_per_rank(accelerator, dataset_size: int, num_samples: int,
@@ -124,6 +127,118 @@ def instantiate_class(class_path, init_args):
     instance = getattr(module, module_name)(init_args)
     return instance
 
+
+def _looks_like_hw(x: int) -> bool:
+    # typical image spatial size
+    return 8 <= x <= 32768
+
+
+def _infer_layout(t: torch.Tensor) -> Optional[Layout]:
+    s = tuple(t.shape)
+    nd = t.ndim
+    chans = {1, 3, 4}
+
+    if nd == 2:
+        return "HW"
+
+    if nd == 3:
+        c_first = s[0] in chans and _looks_like_hw(s[1]) and _looks_like_hw(s[2])
+        c_last  = s[2] in chans and _looks_like_hw(s[0]) and _looks_like_hw(s[1])
+        if c_first and not c_last:
+            return "CHW"
+        if c_last and not c_first:
+            return "HWC"
+        # tie-break: prefer CHW (more common in PyTorch)
+        if c_first and c_last:
+            return "CHW"
+        return None
+
+    if nd == 4:
+        c_first = s[1] in chans and _looks_like_hw(s[2]) and _looks_like_hw(s[3])
+        c_last = s[3] in chans and _looks_like_hw(s[1]) and _looks_like_hw(s[2])
+        if c_first and not c_last:
+            return "BCHW"
+        if c_last and not c_first:
+            return "BHWC"
+        # tie-break: prefer BCHW
+        if c_first and c_last:
+            return "BCHW"
+        return None
+
+    return None
+
+
+def _infer_range(t: torch.Tensor) -> Range:
+    # quick rules based on dtype and min/max
+    if t.dtype in (torch.uint8,):
+        return "0-255"
+
+    # sample to avoid huge reductions
+    with torch.no_grad():
+        v = t
+        if v.numel() > 2_000_000:
+            idx = torch.randperm(v.numel(), device=v.device)[:2_000_000]
+            v = v.reshape(-1)[idx]
+        vmin = torch.min(v.float()).item()
+        vmax = torch.max(v.float()).item()
+
+    def within(x, low, high):  # inclusive slack
+        return low <= x <= high
+
+    # tolerate small numeric noise
+    if within(vmin, -1.05, -0.4) and within(vmax, 0.4, 1.05):
+        return "-1-1"
+    if within(vmin, -1e-6, 0.1) and within(vmax, 0.9, 1.05):
+        return "0-1"
+    if within(vmin, -1e-6, 5.0) and within(vmax, 1.5, 260.0):
+        return "0-255"
+    return "unknown"
+
+
+def infer_image_tensor(t: torch.Tensor) -> Dict[str, object]:
+    """
+    Infer image tensor layout and numeric range.
+
+    Returns:
+      {
+        'layout': 'BCHW'|'BHWC'|'CHW'|'HWC'|'HW'|None,
+        'batch': int|None,
+        'channels': int|None,
+        'height': int|None,
+        'width': int|None,
+        'dtype': torch.dtype,
+        'range': '0-1'|'-1-1'|'0-255'|'unknown'
+      }
+    """
+    if not torch.is_tensor(t):
+        raise TypeError("Expected a torch.Tensor")
+
+    layout = _infer_layout(t)
+    h = w = c = b = None
+    s = tuple(t.shape)
+
+    if layout == "HW":
+        h, w = s
+    elif layout == "CHW":
+        c, h, w = s
+    elif layout == "HWC":
+        h, w, c = s
+    elif layout == "BCHW":
+        b, c, h, w = s
+    elif layout == "BHWC":
+        b, h, w, c = s
+
+    rng = _infer_range(t)
+
+    return {
+        "layout": layout,
+        "batch": b,
+        "channels": c,
+        "height": h,
+        "width": w,
+        "dtype": t.dtype,
+        "range": rng,
+    }
 
 if __name__ == "__main__":
     print(get_git_info())

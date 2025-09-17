@@ -809,7 +809,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
         latents = (
             latents / self.vae.config.scaling_factor
         ) + self.vae.config.shift_factor
-        image = self.vae.decode(latents, return_dict=False)[0]
+        with torch.inference_mode():
+            image = self.vae.decode(latents, return_dict=False)[0]
         image = self.image_processor.postprocess(image, output_type="pt")
         return image
 

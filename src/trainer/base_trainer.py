@@ -248,7 +248,7 @@ class BaseTrainer(ABC):
             )
 
     def training_step(self, batch: dict) -> torch.Tensor:
-        """Training step"""
+        """Training step, batch from dataloader"""
         if all(batch["cached"]):
             return self._training_step_cached(batch)
         return self._training_step_compute(batch)
