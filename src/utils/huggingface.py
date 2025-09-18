@@ -1,13 +1,13 @@
 # pip install -U datasets huggingface_hub hf-transfer
 # export HUGGINGFACE_HUB_TOKEN=hf_xxx   # or HF_TOKEN
-
 from pathlib import Path
+import hashlib
 from typing import Dict, List, Optional
 import os
 import re
-
 from datasets import Dataset, DatasetDict, Features, Image, Value, Sequence
-from huggingface_hub import create_repo, hf_hub_download
+from huggingface_hub import create_repo, hf_hub_download, HfApi, create_repo
+from src.trainer.base_trainer import LORA_FILE_BASE_NAME
 
 _IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 
@@ -238,6 +238,97 @@ def download_lora(
     return hf_hub_download(repo_id=repo_id, filename=filename)
 
 
+def _sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _remote_sha_index(api: HfApi, repo_id: str) -> Dict[str, str]:
+    """返回 {path_in_repo: sha256_hex}（自动处理 LFS或非LFS）"""
+    idx = {}
+    info = api.repo_info(repo_id=repo_id, repo_type="model")
+    for s in getattr(info, "siblings", []) or []:
+        if getattr(s, "lfs", None) and "oid" in s.lfs and str(s.lfs["oid"]).startswith("sha256:"):
+            idx[s.rfilename] = s.lfs["oid"].split(":", 1)[1]
+        elif getattr(s, "sha", None):  # 非LFS少见
+            idx[s.rfilename] = s.sha
+    return idx
+
+def upload_lora_safetensors(
+    src_path: str,                 # 本地 .safetensors 文件路径，或包含它的目录
+    repo_id: str,                  # "user_or_org/repo-name"
+    *,
+    token: Optional[str] = None,   # 不传则读 HF_TOKEN 或 HUGGINGFACE_HUB_TOKEN
+    private: bool = True,
+    remote_name: Optional[str] = None,  # 远端文件名；默认仍叫 pytorch_lora_weights.safetensors
+    commit_message: str = "Upload LoRA weights",
+    extra_files: Optional[Dict[str, str]] = None,  # {本地路径: 远端路径}
+) -> str:
+    """
+    只上传 LoRA 权重文件到 Hugging Face Hub（仓库类型为 model）。
+    若远端已有同名且内容一致则跳过。返回仓库的 Web URL。
+    """
+    token = token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+    if not token:
+        raise ValueError("Missing token. Set HF_TOKEN or pass token=...")
+
+    # 1) 解析本地文件路径：支持传目录或文件
+    if os.path.isdir(src_path):
+        local_file = os.path.join(src_path, LORA_FILE_BASE_NAME)
+    else:
+        local_file = src_path
+
+    if not os.path.isfile(local_file):
+        raise FileNotFoundError(f"LoRA file not found: {local_file}")
+    if not local_file.endswith(".safetensors"):
+        raise ValueError("Expect a .safetensors file")
+
+    # 2) 远端文件名
+    remote_file = remote_name or LORA_FILE_BASE_NAME
+
+    # 3) 创建仓库（存在即复用）
+    create_repo(repo_id=repo_id, repo_type="model", private=private, exist_ok=True, token=token)
+    api = HfApi(token=token)
+
+    # 4) 构建远端文件→sha 索引，用于跳过相同文件
+    try:
+        remote_idx = _remote_sha_index(api, repo_id)
+    except Exception:
+        remote_idx = {}
+
+    # 5) 主 LoRA 文件：仅在不存在或内容不同时上传
+    local_sha = _sha256(local_file)
+    if remote_idx.get(remote_file) != local_sha:
+        api.upload_file(
+            path_or_fileobj=local_file,
+            path_in_repo=remote_file,         # 可用 "lora/xxx.safetensors" 放子目录
+            repo_id=repo_id,
+            repo_type="model",
+            commit_message=commit_message,
+        )
+
+    # 6) 可选：额外文件（README / train_config.yaml / adapter_config.json 等）
+    if extra_files:
+        for lp, rp in extra_files.items():
+            if not os.path.isfile(lp):
+                raise FileNotFoundError(f"Extra file not found: {lp}")
+            sha = _sha256(lp)
+            # 若远端已有且内容一致，则跳过
+            if remote_idx.get(rp) == sha:
+                continue
+            api.upload_file(
+                path_or_fileobj=lp,
+                path_in_repo=rp,
+                repo_id=repo_id,
+                repo_type="model",
+                commit_message=f"Add/Update {os.path.basename(rp)}",
+            )
+
+    # 7) 返回网页地址（不要再取 .html_url）
+    return f"https://huggingface.co/{repo_id}"
+
 if __name__ == "__main__":
     from datasets import get_dataset_config_names
     a = get_dataset_config_names("TsienDragon/face_segmentation_20")
@@ -255,3 +346,6 @@ if __name__ == "__main__":
 
     lora_path = download_lora()
     print(lora_path)
+    lora_weight = '/tmp/image_edit_lora/character_composition_fp16/characterCompositionQwenImageEditFp16/v1/pytorch_lora_weights.safetensors'
+    train_config = '/mnt/nas/public2/lilong/repos/qwen-image-finetune/tests/test_configs/test_example_qwen_image_edit_fp16_character_composition.yaml'
+    upload_lora_safetensors(lora_weight, 'TsienDragon/qwen-image-edit-character-composition', extra_files={train_config: 'train_config.yaml'})

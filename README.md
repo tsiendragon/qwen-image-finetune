@@ -73,7 +73,7 @@ dd = load_editing_dataset("TsienDragon/face_segmentation_20")
 sample = dd["train"][0]
 ```
 
-Dataset structure reference and upload/download instructions are in [`docs/huggingface-dataset.md`](docs/huggingface-dataset.md). We will remove the dataset copies under this repository and rely on Hugging Face going forward.
+Dataset structure reference and upload/download instructions are in [`docs/huggingface-related.md`](docs/huggingface-related.md). We will remove the dataset copies under this repository and rely on Hugging Face going forward.
 
 ## Quick Start
 
@@ -401,7 +401,7 @@ We welcome contributions to improve this documentation:
 ### Technical Support
 - **Training Issues**: See [Training Guide](docs/training.md) troubleshooting
 - **Data Preparation**: See [Data Preparation Guide](docs/data-preparation.md) for dataset setup
-- **HuggingFace Datasets**: See [HuggingFace Dataset Guide](docs/huggingface-dataset.md) for cloud datasets
+- **HuggingFace Model & Dataset**: See [HuggingFace Related Guide](docs/huggingface-related.md) for cloud datasets and LoRA model management
 - **Optimizer Selection**: See [Training Guide](docs/training.md#optimizer-selection) for available optimizers
 - **FLUX Kontext Training**: See [Training Guide](docs/training.md#flux-kontext-lora-training) for multi-precision training
 - **Setup Problems**: Check [Setup Guide](docs/setup.md) common issues
