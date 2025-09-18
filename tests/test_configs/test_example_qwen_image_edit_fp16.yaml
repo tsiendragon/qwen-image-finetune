@@ -28,12 +28,12 @@ data:
         target_size: [832, 576]
         controls_size: [[832, 576]]
 
-  batch_size: 16  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 
 logging:
-  output_dir: /tmp/image_edit_lora/fp16/  # change the path to your own output path
+  output_dir: /tmp/image_edit_lora/face_seg/  # change the path to your own output path
   report_to: "tensorboard"
   tracker_project_name: faceSegQwenImageEditFp16
   sampling:
@@ -79,8 +79,8 @@ resume: null
 
 cache:
   devices:
-    vae_encoder: cuda:1
-    text_encoder: cuda:0
+    vae: cuda:2
+    text_encoder: cuda:2
   cache_dir: ${logging.output_dir}/cache
   use_cache: true
   prompt_empty_drop_keys:

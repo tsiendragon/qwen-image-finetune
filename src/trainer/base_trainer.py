@@ -63,8 +63,6 @@ class BaseTrainer(ABC):
 
         # 为save_last_checkpoint功能添加属性
         self.training_interrupted = False
-        self.setup_signal_handlers()
-
         self.log_model_info()
         self.load_preprocessor()
         self.pipeline_class = self.get_pipeline_class()
@@ -304,7 +302,9 @@ class BaseTrainer(ABC):
         for _, batch in enumerate(train_dataloader):
             # 检查是否收到中断信号
             if self.training_interrupted:
-                logger.info("检测到训练中断信号，停止训练...")
+                logger.info("检测到训练中断信号，保存最后检查点后退出本epoch...")
+                # 立刻做一次“last”保存（即使不是 checkpointing_steps 整除）
+                self.save_checkpoint(epoch, self.global_step, is_last=True)
                 return
 
             with self.accelerator.accumulate(self.dit):
@@ -388,6 +388,7 @@ class BaseTrainer(ABC):
 
     def fit(self, train_dataloader):
         """Main training loop implementation."""
+        self.setup_signal_handlers()
         self.setup_accelerator()
         self.load_model()
         if self.config.resume is not None:
@@ -572,7 +573,7 @@ class BaseTrainer(ABC):
     def save_checkpoint(self, epoch, global_step, is_last=False):
         """Save checkpoint"""
         self.fps_logger.pause()
-        if self.global_step % self.config.train.checkpointing_steps != 0:
+        if not is_last and (self.global_step % self.config.train.checkpointing_steps != 0):
             self.fps_logger.resume()
             return
         if self.accelerator.is_main_process:

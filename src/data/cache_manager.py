@@ -58,7 +58,7 @@ class EmbeddingCacheManager:
         ), "hash_maps and data keys must be the same"
         assert set(hash_maps.values()).issubset(
             set(file_hashes.keys())
-        ), "hash_maps values must be a subset of file_hashes keys"
+        ), f"hash_maps {hash_maps.values()} must be a subset of file_hashes keys {file_hashes.keys()}"
         file_hashes = {k: v[0] if isinstance(v, list) else v for k, v in file_hashes.items()}
         main_hash = file_hashes["main_hash"]
         metadata_path = self.get_metadata_path(self.cache_root, main_hash)

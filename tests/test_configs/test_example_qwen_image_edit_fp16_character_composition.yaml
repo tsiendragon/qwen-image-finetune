@@ -74,7 +74,7 @@ train:
     text_encoder: cuda:1
 
 trainer: QwenImageEdit
-resume: null
+resume: /tmp/image_edit_lora/character_composition_fp16/characterCompositionQwenImageEditFp16/v0/checkpoint-99-200
 
 cache:
   devices:

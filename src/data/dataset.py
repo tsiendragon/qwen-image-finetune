@@ -395,6 +395,8 @@ class ImageDataset(Dataset):
                 file_hashes[f"control_{i+1}_hash"] = self.cache_manager.get_hash(data['controls'][i])
                 controls_sum_hash += file_hashes[f"control_{i+1}_hash"]
             file_hashes['controls_sum_hash'] = controls_sum_hash
+        elif 'control' in data:
+            file_hashes['controls_sum_hash'] = file_hashes['control_hash']
         file_hashes['main_hash'] = main_hash
         return file_hashes
 
@@ -496,6 +498,8 @@ class ImageDataset(Dataset):
                 data[f'control_{i+1}'] = data['controls'][i]
             del data['controls']
             data['n_controls'] = n_controls
+        else:
+            data['n_controls'] = 0
         return data
 
 

@@ -53,9 +53,9 @@ def main():
         shuffle = False
         droplast = False
         logging.info('In cache mode, adjust batch_size, shuffle, droplast')
-        logging.info('\tbatch_size', batch_size)
-        logging.info('\tshuffle', shuffle)
-        logging.info('\tdroplast', droplast)
+        logging.info('\tbatch_size {batch_size}' )
+        logging.info(f'\tshuffle {shuffle}')
+        logging.info(f'\tdroplast {droplast}')
     train_dataloader = loader(
         config.data.class_path,
         config.data.init_args,
