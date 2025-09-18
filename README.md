@@ -35,7 +35,7 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 - **Dual Model Support**: Complete support for both Qwen-Image-Edit and FLUX Kontext model architectures
 - **Multi-Precision Training**: FP16, FP8, and FP4 quantization levels for different hardware requirements
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
-- [**Edit Mask Loss** feature documentation in `docs/prd/image_edit_mask_loss.md`](docs/prd/image_edit_mask_loss.md) Advanced mask-weighted loss function for focused training on edit regions
+- [**Edit Mask Loss** feature documentation in `docs/image_edit_mask_loss.md`](docs/image_edit_mask_loss.md) Advanced mask-weighted loss function for focused training on edit regions
 - [**Speed Optimization** including quantilizationand flash attention in `docs/speed_optimization.md`](docs/speed_optimization.md)
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
 - **Validation Sampling**: Real-time training progress monitoring with TensorBoard visualization
@@ -62,9 +62,12 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 
 ## Dataset
 
-We recommend using the curated dataset hosted on Hugging Face instead of keeping samples in-repo. The dataset used in our examples and configs:
+Here we provided two toy datasets in the huggingface that user can efficiently use to train the model.
 
 - Face segmentation dataset: [`TsienDragon/face_segmentation_20`](https://huggingface.co/datasets/TsienDragon/face_segmentation_20)
+![alt text](docs/images/image-37.png)
+- Character composition dataset: [`TsienDragon/character-composition`](https://huggingface.co/datasets/TsienDragon/character-composition)
+![Mask Loss Overview](docs/images/image-36.png)
 
 Quick usage:
 
@@ -75,7 +78,7 @@ dd = load_editing_dataset("TsienDragon/face_segmentation_20")
 sample = dd["train"][0]
 ```
 
-Dataset structure reference and upload/download instructions are in [`docs/huggingface-related.md`](docs/huggingface-related.md). We will remove the dataset copies under this repository and rely on Hugging Face going forward.
+Dataset structure reference and upload/download instructions are in [`docs/huggingface-related.md`](docs/huggingface-related.md). For datasets with CSV metadata files, use `upload_editing_dataset_from_csv()` which supports mixed image formats and flexible directory structures. We will remove the dataset copies under this repository and rely on Hugging Face going forward.
 
 ## Quick Start
 

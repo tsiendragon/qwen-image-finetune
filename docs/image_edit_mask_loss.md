@@ -1,15 +1,16 @@
 # Image Edit Mask Loss Enhancement
 
 ## Overview
-This document describes an optional mask-weighted loss component designed to improve image editing performance by focusing training attention on edit regions while maintaining full backward compatibility with existing training pipelines.
 
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-  <img src="../images/image-3.png" alt="Source Image" style="width: 30%; height: auto;">
-  <img src="../images/image-4.png" alt="Target Image" style="width: 30%; height: auto;">
-  <img src="../images/edit_region_mask.png" alt="Edit Region Mask" style="width: 30%; height: auto;">
-</div>
+This document describes an optional mask-weighted loss component designed to enhance image editing performance by focusing training attention on edit regions while maintaining full backward compatibility with existing training pipelines.
+
+![Mask Loss Overview](images/image-36.png)
+
+A dataset that supports mask-based training is available at TsienDragon/character-composition: https://huggingface.co/datasets/TsienDragon/character-composition
+
 ## Problem Statement
-Current image editing training treats all image regions equally during loss computation, leading to suboptimal performance in scenarios where only specific edit regions differ between source and target images. This uniform weighting dilutes the training signal from critical edit areas, resulting in slower convergence and reduced editing quality.
+
+Current image editing training approaches treat all image regions equally during loss computation, leading to suboptimal performance in scenarios where only specific edit regions differ between source and target images. This uniform weighting dilutes the training signal from critical edit areas, resulting in slower convergence and reduced editing quality.
 
 ## Solution Architecture
 
@@ -50,9 +51,12 @@ Step 4: Alignment with Packed Latents
 ```
 
 #### Mathematical Formulation
+
 ```python
 def map_mask_to_latent(image_mask: Tensor) -> Tensor:
     """
+    Transform image-space mask to latent-space sequence weights.
+
     Args:
         image_mask: [B, H, W] - Binary mask in image space
     Returns:
@@ -85,6 +89,8 @@ def map_mask_to_latent(image_mask: Tensor) -> Tensor:
 ```
 
 ### 2. Dual Loss Computation
+
+The system employs a dual loss strategy that combines:
 - **Original Loss**: Standard flow matching loss (unchanged for backward compatibility)
 - **Mask Loss**: Weighted loss emphasizing edit regions with higher importance
 - **Combined Loss**: `final_loss = (1-α) × original_loss + α × mask_loss`
@@ -92,6 +98,7 @@ def map_mask_to_latent(image_mask: Tensor) -> Tensor:
 ### 3. Implementation Strategy
 
 #### Configuration (Incremental)
+
 ```yaml
 loss:
     mask_loss: false          # Enable mask-weighted loss computation
@@ -104,6 +111,7 @@ data:
 ```
 
 #### Core Function Signature
+
 ```python
 class MaskEditLoss:
     def __init__(self, foreground_weight=2.0, background_weight=1.0):
@@ -142,6 +150,7 @@ class MaskEditLoss:
         loss = torch.mean(weighted_loss.reshape(target.shape[0], -1), 1).mean()
         return loss
 ```
+
 ## Dataset Structure with Edit Masks
 
 The dataset structure supports optional edit masks alongside existing image pairs and text prompts:

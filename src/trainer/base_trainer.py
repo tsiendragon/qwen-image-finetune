@@ -143,42 +143,11 @@ class BaseTrainer(ABC):
         logging.info(f"使用训练版本目录: {versioned_dir}")
 
     def _is_valid_training_version(self, version_path):
-        """检查版本是否包含有效的训练数据（步数 >= 5）"""
+        """if the folder consist checkpoint, return True"""
         # 检查 checkpoint 目录
-        checkpoints = []
-        if os.path.exists(version_path):
-            for item in os.listdir(version_path):
-                if item.startswith("checkpoint-") and os.path.isdir(
-                    os.path.join(version_path, item)
-                ):
-                    try:
-                        # 从 checkpoint-{epoch}-{global_step} 中提取 global_step
-                        parts = item.split("-")
-                        if len(parts) >= 3:
-                            global_step = int(parts[2])
-                            checkpoints.append(global_step)
-                    except (ValueError, IndexError):
-                        continue
-
-        # 检查 tensorboard 日志（现在直接在版本目录下）
-        has_logs = False
-        if os.path.exists(version_path):
-            # 查找 tensorboard 事件文件，可能在项目名子目录中
-            for root, dirs, files in os.walk(version_path):
-                log_files = [f for f in files if f.startswith("events.out.tfevents")]
-                if log_files:
-                    has_logs = True
-                    break
-
-        # 如果有检查点且最大步数 >= 5，或者只有日志文件但没有检查点，认为有效
-        if checkpoints:
-            return max(checkpoints) >= 5
-        elif has_logs:
-            # 如果只有日志但没有检查点，可能是训练刚开始就中断了，认为无效
-            return False
-        else:
-            # 既没有检查点也没有日志，认为无效
-            return False
+        import glob
+        checkpoints = glob.glob(f"{version_path}/*/*.safetensors")
+        return len(checkpoints) > 0
 
     def accelerator_prepare(self, train_dataloader):
         """Prepare accelerator"""

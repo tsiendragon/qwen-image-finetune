@@ -14,7 +14,8 @@ data:
   class_path: src.data.dataset.ImageDataset
   init_args:
     dataset_path:
-      - /mnt/nas/public2/lilong/data/openimages/character_composition/train/
+      - repo_id: TsienDragon/character-composition
+        split: train
     caption_dropout_rate: 0.0
     prompt_image_dropout_rate: 0.0
     use_edit_mask: true  # if true, dataset output edit mask

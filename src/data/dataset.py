@@ -421,7 +421,7 @@ class ImageDataset(Dataset):
             if control is not None:
                 data['control'] = control[0].convert('RGB')
                 if len(control) > 1:
-                    data['controls'] = data['controls'][1:]
+                    data['controls'] = control[1:]
                     data['controls'] = [img.convert('RGB') for img in data['controls']]
                     if self.selected_control_indexes is not None:
                         data['controls'] = [data['controls'][i-1] for i in self.selected_control_indexes]

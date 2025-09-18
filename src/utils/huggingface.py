@@ -584,7 +584,17 @@ if __name__ == "__main__":
     # print(url)
 
     # 测试 CSV 格式数据集上传
-    upload_editing_dataset_from_csv(
-        '/mnt/nas/public2/lilong/data/openimages/character_composition',
-        'TsienDragon/character-composition'
-    )
+    # upload_editing_dataset_from_csv(
+    #     '/mnt/nas/public2/lilong/data/openimages/character_composition',
+    #     'TsienDragon/character-composition'
+    # )
+    dd = load_editing_dataset('TsienDragon/character-composition')
+    print(dd)
+    print(dd['train'][0])
+    print(dd['test'][0])
+    print(len(dd['train']))
+    print(len(dd['test']))
+    print(dd['train'].features)
+    print(dd['test'].features)
+    print(dd['train'].column_names)
+    print(dd['test'].column_names)

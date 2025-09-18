@@ -82,6 +82,8 @@ Unified HF Dataset schema:
 
 ## Upload to Hugging Face Hub
 
+### Method 1: Standard Directory Structure Upload
+
 Use script `upload_dataset.py` (internally calls `upload_editing_dataset`):
 
 ```python
@@ -100,11 +102,71 @@ Or run the example script directly (modify as needed):
 python upload_dataset.py
 ```
 
-Notes:
+### Method 2: CSV Metadata Upload
+
+For datasets with CSV metadata files, use `upload_editing_dataset_from_csv`:
+
+```python
+from src.utils.hugginface import upload_editing_dataset_from_csv
+
+upload_editing_dataset_from_csv(
+    root_dir="/path/to/dataset",         # contains train.csv and/or test.csv
+    repo_id="<org_or_user>/<dataset>",  # e.g.: "TsienDragon/character-composition"
+    private=True                         # public or private
+)
+```
+
+**CSV Format Requirements:**
+
+- **train.csv**: Should contain columns `image,control,control_1,prompt`
+- **test.csv**: Should contain columns `control,control_1,prompt` (no target image)
+- **Flexible columns**: Supports `control_2`, `control_3`, etc. for additional control images
+- **Path format**: All paths should be relative to the root directory
+
+**Example CSV structure:**
+
+```
+root_dir/
+├── train.csv                    # metadata for training split
+├── test.csv                     # metadata for test split
+├── train/
+│   ├── target/
+│   │   ├── sample1.png         # target images
+│   │   └── sample1_mask.png    # optional mask files
+│   └── control/
+│       ├── sample1.png         # main control images
+│       └── sample1_control_1.webp  # additional control images
+└── test/
+    └── control/
+        ├── sample2.webp        # test control images
+        └── sample2_control_1.png
+```
+
+**Example train.csv:**
+```csv
+image,control,control_1,prompt
+train/target/sample1.png,train/control/sample1.png,train/control/sample1_control_1.webp,Add character to scene
+```
+
+**Example test.csv:**
+```csv
+control,control_1,prompt
+test/control/sample2.webp,test/control/sample2_control_1.png,Generate character composition
+```
+
+**Advanced Features:**
+
+- **Multi-format Support**: Automatically detects and supports `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`, `.tif` (case insensitive)
+- **Format Auto-correction**: If CSV records incorrect format (e.g., `.png` but actual file is `.webp`), system automatically finds the correct file
+- **Flexible Mask Detection**: Searches for mask files in both `control/` and `target/` directories
+- **Mixed Format Support**: Each control image can have different formats (e.g., main control is `.png`, additional control is `.webp`)
+
+**Notes:**
 
 - First run will automatically create HF dataset repository (if it doesn't exist).
 - Error will be raised if both `train/` and `test/` are missing; at least one must be provided.
 - If a sample lacks control images, it will be skipped with a warning in the logs.
+- CSV method is more flexible for complex datasets with mixed formats or non-standard directory structures.
 
 ---
 

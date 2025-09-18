@@ -139,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mask processing pipeline: Image space → VAE downsampling → 2×2 patch merging → Latent space sequence alignment
 - Dual loss computation: Combination of original loss + mask-weighted loss
 - Support for joint application of timestep weights and mask weights
-- Detailed implementation documentation: `docs/prd/image_edit_mask_loss.md`
+- Detailed implementation documentation: `docs/image_edit_mask_loss.md`
 
 ---
 
