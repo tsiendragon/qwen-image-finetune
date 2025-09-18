@@ -6,10 +6,10 @@ from typing import Dict, List, Optional
 import os
 import re
 from datasets import Dataset, DatasetDict, Features, Image, Value, Sequence
-from huggingface_hub import create_repo, hf_hub_download, HfApi, create_repo
+from huggingface_hub import create_repo, hf_hub_download, HfApi
 from src.trainer.base_trainer import LORA_FILE_BASE_NAME
 
-_IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+_IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif")
 
 FEATURES = Features(
     {
@@ -136,6 +136,214 @@ def _collect_split(root: Path, split: str) -> Dataset:
     return Dataset.from_list(rows, features=FEATURES)
 
 
+def _find_image_with_any_format(root: Path, csv_path: str) -> Optional[Path]:
+    """
+    根据 CSV 中的路径查找实际存在的图像文件，自动尝试所有支持的格式。
+
+    Args:
+        root: 数据集根目录
+        csv_path: CSV 中记录的相对路径（可能格式不正确）
+
+    Returns:
+        实际存在的图像文件路径，如果未找到则返回 None
+    """
+    csv_path = Path(csv_path)
+
+    # 首先尝试 CSV 中记录的确切路径
+    exact_path = root / csv_path
+    if exact_path.exists():
+        return exact_path
+
+    # 如果确切路径不存在，尝试所有支持的格式
+    stem_path = exact_path.with_suffix("")  # 去掉扩展名
+
+    for ext in _IMG_EXTS:
+        # 尝试小写扩展名
+        candidate = Path(str(stem_path) + ext)
+        if candidate.exists():
+            return candidate
+
+        # 尝试大写扩展名
+        candidate = Path(str(stem_path) + ext.upper())
+        if candidate.exists():
+            return candidate
+
+    return None
+
+
+def _collect_split_from_csv(root: Path, split: str) -> Dataset:
+    """
+    Build a HF Dataset from CSV metadata file.
+
+    Expected structure:
+      root/split.csv - CSV with columns: image,control,control_1,prompt (train)
+                       or control,control_1,prompt (test)
+      root/ - all image files referenced in CSV
+
+    CSV columns:
+    - image: target image path (optional, e.g., train/target/xxx.png)
+    - control: main control image path (e.g., train/control/xxx.png)
+    - control_1, control_2, ...: additional control images
+    - prompt: text prompt
+    """
+    import pandas as pd
+
+    csv_file = root / f"{split}.csv"
+    if not csv_file.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_file}")
+
+    df = pd.read_csv(csv_file)
+
+    # 检测CSV列结构
+    required_cols = ["control", "prompt"]
+    for col in required_cols:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column '{col}' in {csv_file}")
+
+    rows: List[dict] = []
+
+    for idx, row in df.iterrows():
+        # 生成ID
+        if "image" in df.columns and pd.notna(row["image"]):
+            # 从target图像路径生成ID
+            base_id = Path(row["image"]).stem
+        else:
+            # 从control图像路径生成ID
+            base_id = Path(row["control"]).stem
+
+        # 收集控制图像 - 自动查找正确格式
+        control_images = []
+
+        # 主控制图像
+        main_control_path = _find_image_with_any_format(root, row["control"])
+        if main_control_path:
+            control_images.append(str(main_control_path))
+
+        # 额外控制图像 (control_1, control_2, ...)
+        control_idx = 1
+        while f"control_{control_idx}" in df.columns:
+            if pd.notna(row[f"control_{control_idx}"]):
+                extra_control_path = _find_image_with_any_format(root, row[f"control_{control_idx}"])
+                if extra_control_path:
+                    control_images.append(str(extra_control_path))
+            control_idx += 1
+
+        if not control_images:
+            print(f"[WARN] Skipping row {idx}: no control images found")
+            continue
+
+        # 目标图像 (可选) - 自动查找正确格式
+        target_image = None
+        if "image" in df.columns and pd.notna(row["image"]):
+            target_path = _find_image_with_any_format(root, row["image"])
+            if target_path:
+                target_image = str(target_path)
+
+        # 查找mask (可选) - 可能在 control 或 target 目录中
+        control_mask = None
+        control_parent = Path(row['control']).parent
+        control_stem = Path(row['control']).stem
+
+        # 构建可能的 mask 路径 - 支持多种图像格式
+        potential_masks = []
+
+        # 在 control 目录中查找所有支持的格式
+        for ext in _IMG_EXTS:
+            potential_masks.extend([
+                root / control_parent / f"{control_stem}_mask{ext}",
+                root / control_parent / f"{control_stem}_mask{ext.upper()}",
+            ])
+
+        # 如果有 target 图像，也在 target 目录中查找
+        if "image" in df.columns and pd.notna(row["image"]):
+            target_parent = Path(row["image"]).parent
+            target_stem = Path(row["image"]).stem
+            for ext in _IMG_EXTS:
+                potential_masks.extend([
+                    root / target_parent / f"{target_stem}_mask{ext}",
+                    root / target_parent / f"{target_stem}_mask{ext.upper()}",
+                    # 也尝试用 control 的 stem 在 target 目录中查找
+                    root / target_parent / f"{control_stem}_mask{ext}",
+                    root / target_parent / f"{control_stem}_mask{ext.upper()}",
+                ])
+
+        for potential_mask in potential_masks:
+            if potential_mask.exists():
+                control_mask = str(potential_mask)
+                break
+
+        rows.append({
+            "id": base_id,
+            "control_images": control_images,
+            "control_mask": control_mask,
+            "target_image": target_image,
+            "prompt": str(row["prompt"]).strip(),
+        })
+
+    if not rows:
+        raise RuntimeError(f"[{split}] No valid samples found in CSV")
+
+    print(f"[{split}] Loaded {len(rows)} samples from CSV")
+    return Dataset.from_list(rows, features=FEATURES)
+
+
+def upload_editing_dataset_from_csv(root_dir: str, repo_id: str,
+                                    private: bool = True) -> None:
+    """
+    Build dataset from CSV metadata files and push to HF Hub.
+
+    Expected structure:
+      root_dir/
+        train.csv - CSV with image,control,control_1,prompt columns
+        test.csv  - CSV with control,control_1,prompt columns
+        train/target/xxx.png - target images
+        train/control/xxx.png - control images
+        test/control/xxx.png - control images
+
+    Args:
+        root_dir: Directory containing CSV files and images
+        repo_id: HuggingFace repository ID (e.g., "username/dataset-name")
+        private: Whether to create a private repository
+    """
+    token = os.environ.get("HUGGINGFACE_HUB_TOKEN") or os.environ.get("HF_TOKEN")
+    if not token:
+        msg = "Set HUGGINGFACE_HUB_TOKEN or HF_TOKEN in environment."
+        raise EnvironmentError(msg)
+
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+
+    root = Path(root_dir)
+    splits: Dict[str, Dataset] = {}
+
+    # 检查并加载CSV文件
+    for split in ("train", "test"):
+        csv_file = root / f"{split}.csv"
+        if csv_file.exists():
+            try:
+                splits[split] = _collect_split_from_csv(root, split)
+            except Exception as e:
+                print(f"[WARN] Failed to load {split} split: {e}")
+                continue
+
+    if not splits:
+        msg = "No valid splits found. Expected train.csv and/or test.csv"
+        raise RuntimeError(msg)
+
+    dsd = DatasetDict(splits)
+
+    create_repo(
+        repo_id, repo_type="dataset", private=private, exist_ok=True, token=token
+    )
+    dsd.push_to_hub(
+        repo_id,
+        private=private,
+        token=token,
+        commit_message="upload dataset from CSV (multi-control, unified schema)",
+    )
+    size_info = ', '.join([k+':'+str(len(v)) for k, v in dsd.items()])
+    print(f"✅ Pushed {repo_id} | splits={list(dsd.keys())} | sizes={{{size_info}}}")
+
+
 def upload_editing_dataset(root_dir: str, repo_id: str, private: bool = True) -> None:
     """
     Build {train,test} with unified schema and push to HF Hub (dataset repo).
@@ -245,6 +453,7 @@ def _sha256(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+
 def _remote_sha_index(api: HfApi, repo_id: str) -> Dict[str, str]:
     """返回 {path_in_repo: sha256_hex}（自动处理 LFS或非LFS）"""
     idx = {}
@@ -255,6 +464,8 @@ def _remote_sha_index(api: HfApi, repo_id: str) -> Dict[str, str]:
         elif getattr(s, "sha", None):  # 非LFS少见
             idx[s.rfilename] = s.sha
     return idx
+
+
 
 def upload_lora_safetensors(
     src_path: str,                 # 本地 .safetensors 文件路径，或包含它的目录
@@ -329,33 +540,51 @@ def upload_lora_safetensors(
     # 7) 返回网页地址（不要再取 .html_url）
     return f"https://huggingface.co/{repo_id}"
 
+
+
 if __name__ == "__main__":
     from datasets import get_dataset_config_names
     a = get_dataset_config_names("TsienDragon/face_segmentation_20")
-    # returns ['default']
+    # # returns ['default']
     print(a, type(a))
     for x in a:
         print(x, type(x))
-    print(is_huggingface_repo("TsienDragon/face_segmentation0"))
+    # print(is_huggingface_repo("TsienDragon/face_segmentation0"))
 
-    dataset = load_editing_dataset("TsienDragon/face_segmentation_20", split="train")
-    print(dataset)
-    data = dataset[0]
-    print(data)
-    print('len', len(dataset))
+    # dataset = load_editing_dataset("TsienDragon/face_segmentation_20", split="train")
+    # print(dataset)
+    # data = dataset[0]
+    # print(data)
+    # print('len', len(dataset))
 
-    lora_path = download_lora()
-    print(lora_path)
-    # lora_weight = '/tmp/image_edit_lora/character_composition_fp16/characterCompositionQwenImageEditFp16/v1/pytorch_lora_weights.safetensors'
-    # train_config = '/mnt/nas/public2/lilong/repos/qwen-image-finetune/tests/test_configs/test_example_qwen_image_edit_fp16_character_composition.yaml'
-    # upload_lora_safetensors(lora_weight, 'TsienDragon/qwen-image-edit-character-composition', extra_files={train_config: 'train_config.yaml'})
+    # lora_path = download_lora()
+    # print(lora_path)
+    # Test LoRA upload
+    # lora_weight = '/tmp/image_edit_lora/character_composition_fp16/'
+    # lora_weight += 'characterCompositionQwenImageEditFp16/v1/'
+    # lora_weight += 'pytorch_lora_weights.safetensors'
+    # train_config = '/mnt/nas/public2/lilong/repos/qwen-image-finetune/'
+    # train_config += 'tests/test_configs/'
+    # train_config += 'test_example_qwen_image_edit_fp16_character_composition.yaml'
+    # upload_lora_safetensors(
+    #     lora_weight, 'TsienDragon/qwen-image-edit-character-composition',
+    #     extra_files={train_config: 'train_config.yaml'}
+    # )
 
-    # lora_weight = '/tmp/image_edit_lora/character_composition_fp16/characterCompositionFluxKontextFp16/v0/pytorch_lora_weights.safetensors/pytorch_lora_weights.safetensors'
-    # train_config ='/mnt/nas/public2/lilong/repos/qwen-image-finetune/tests/test_configs/test_example_fluxkontext_fp16.yaml'
-    # url  = upload_lora_safetensors(lora_weight, 'TsienDragon/flux-kontext-face-segmentation', extra_files={train_config: 'train_config.yaml'})
+
+    # lora_weight = '/tmp/image_edit_lora/character_composition_fp16/'
+    # lora_weight += 'characterCompositionFluxKontextFp16/pytorch_lora_weights.safetensors'
+    # train_config = '/mnt/nas/public2/lilong/repos/qwen-image-finetune/'
+    # train_config += 'tests/test_configs/'
+    # train_config += 'test_example_fluxkontext_fp16_character_composition.yaml'
+    # url = upload_lora_safetensors(
+    #     lora_weight, 'TsienDragon/flux-kontext-character-composition',
+    #     extra_files={train_config: 'train_config.yaml'}
+    # )
     # print(url)
 
-    lora_weight='/tmp/image_edit_lora/character_composition_fp16/characterCompositionFluxKontextFp16/pytorch_lora_weights.safetensors'
-    train_config='/mnt/nas/public2/lilong/repos/qwen-image-finetune/tests/test_configs/test_example_fluxkontext_fp16_character_composition.yaml'
-    url = upload_lora_safetensors(lora_weight, 'TsienDragon/flux-kontext-character-composition', extra_files={train_config: 'train_config.yaml'})
-    print(url)
+    # 测试 CSV 格式数据集上传
+    upload_editing_dataset_from_csv(
+        '/mnt/nas/public2/lilong/data/openimages/character_composition',
+        'TsienDragon/character-composition'
+    )
