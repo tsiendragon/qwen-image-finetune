@@ -33,7 +33,7 @@ data:
   shuffle: true
 
 logging:
-  output_dir: /tmp/image_edit_lora/face_seg/  # change the path to your own output path
+  output_dir: /tmp/image_edit_lora/  # change the path to your own output path
   report_to: "tensorboard"
   tracker_project_name: faceSegQwenImageEditFp16
   sampling:
@@ -81,7 +81,7 @@ cache:
   devices:
     vae: cuda:2
     text_encoder: cuda:2
-  cache_dir: ${logging.output_dir}/cache
+  cache_dir: ${logging.output_dir}/${logging.tracker_project_name}/cache
   use_cache: true
   prompt_empty_drop_keys:
     - prompt_embeds

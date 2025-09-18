@@ -127,35 +127,26 @@ CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file accelerate_config.yam
 
 The framework provides various pre-configured training setups for different models and hardware requirements:
 
-| Config File | Model | Precision | Key Features | GPU Memory | Recommended GPU |
-|------------|-------|-----------|--------------|------------|-----------------|
-| `face_seg_config.yaml` | Qwen-Image-Edit | BF16 | Standard training, best quality | ~48.6GB | A100 |
-| `face_seg_fp4_config.yaml` | Qwen-Image-Edit | FP4 | 4-bit quantized, memory efficient | ~22.5GB | A100/RTX4090 |
-| `face_seg_fp4_4090.yaml` | Qwen-Image-Edit | FP4 | Optimized for RTX 4090 | ~23.3GB | RTX 4090 |
-| `face_seg_flux_kontext_fp16.yaml` | FLUX Kontext | FP16 | Full precision, best quality | ~50GB | A100 |
-| `face_seg_flux_kontext_fp16_huggingface_dataset.yaml` | FLUX Kontext | FP16 | HuggingFace dataset support | ~50GB | A100 |
-| `face_seg_flux_kontext_fp8.yaml` | FLUX Kontext | FP8 | 8-bit quantized, balanced | ~35GB | A100 |
-| `face_seg_flux_kontext_fp4.yaml` | FLUX Kontext | FP4 | 4-bit quantized, most efficient | ~24GB | RTX 4090/A100 |
+| Config File | Model | Precision | Key Features | GPU Memory | Recommended GPU | fps (second/batch) |
+|------------|-------|-----------|--------------|------------|-----------------|---|
+| `tests/test_configs/test_example_fluxkontext_fp16_character_composition.yaml` | Flux-Kontext| BF16 |Multi Control Image Lora Training |A100  | 26G |2.9|
+| `tests/test_configs/test_example_fluxkontext_fp16.yaml` | Flux-Kontext | FP16 | Standard Lora Training | A100 | 27G|3.4|
+| `tests/test_configs/test_example_qwen_image_edit_fp16_character_composition.yaml` | Qwen-Image-Edit | FP16 | Multi Control Image Lora Training |A100 | 42G| 2.8|
+| `tests/test_configs/test_example_qwen_image_edit_fp16.yaml` | Qwen-Image-Edit | FP16 | Standard Lora Training | A100 | 43G |3.8|
+
+GPU recommended with the following settings:
 - batchsize: 2
 - gradient-checkpoint: True
 - Adam8bit
-**Key Configuration Differences:**
+- image shape
+  - character_composition: `[[384, 672], [512,512]]`
+  - face-segmentation: `[[832, 576]]`
 
-- **Qwen-Image-Edit Configs**:
-  - Standard BF16: Uses `Qwen/Qwen-Image-Edit` base model
-  - FP4 versions: Use `ovedrive/qwen-image-edit-4bit` quantized model
-  - All use LoRA rank 16 for efficient fine-tuning
-
-- **FLUX Kontext Configs**:
-  - FP16: Uses standard FLUX Kontext or `camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers`
-  - FP8: Uses `camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers`
-  - FP4: Uses `eramth/flux-kontext-4bit-fp4`
-  - Includes additional `text_encoder_2` for T5 model
 
 **Usage Example:**
 ```bash
 # For FLUX Kontext FP4 training on RTX 4090
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/face_seg_flux_kontext_fp4.yaml
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
 ```
 
 #### Training with RTX4090

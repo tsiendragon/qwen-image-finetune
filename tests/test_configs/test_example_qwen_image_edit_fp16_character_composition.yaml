@@ -27,12 +27,12 @@ data:
         target_size:  [384, 672] # [768, 1344]
         controls_size: [[384, 672], [512,512]]
 
-  batch_size: 16  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 
 logging:
-  output_dir: /tmp/image_edit_lora/character_composition_fp16/  # change the path to your own output path
+  output_dir: /tmp/image_edit_lora/  # change the path to your own output path
   report_to: "tensorboard"
   tracker_project_name: characterCompositionQwenImageEditFp16
   sampling:
@@ -70,18 +70,17 @@ train:
   low_memory: True  # is used low_memory mode, then the model will be loaded on the specified devices
   # otherwise, the model will be loaded on all the gpus
   fit_device:
-    vae_encoder: cuda:1
+    vae: cuda:1
     text_encoder: cuda:1
 
 trainer: QwenImageEdit
-resume: /tmp/image_edit_lora/character_composition_fp16/characterCompositionQwenImageEditFp16/v1/checkpoint-598-1200/
-# /tmp/image_edit_lora/character_composition_fp16/characterCompositionQwenImageEditFp16/v0/checkpoint-99-200
+resume: null
 
 cache:
   devices:
     vae: cuda:2
     text_encoder: cuda:0
-  cache_dir: ${logging.output_dir}/cache
+  cache_dir: ${logging.output_dir}/${logging.tracker_project_name}/cache
   use_cache: true
   prompt_empty_drop_keys:
     - prompt_embeds
