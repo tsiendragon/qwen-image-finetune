@@ -1,24 +1,27 @@
-# TODO list
+# TODO List
 
+## Completed Features
 - [x] Flash attention speedup
-- [x] DDP training in rtx 4090
-- [x] Edit Mask Loss 支持 (v1.4.0)
-- [x] Dataset: cache hash caclculated
-- [x] multi dataset_path supported
-- [x] resume training
-- [x] Fix lora training without cache function
-- [x] non-caching training mode with memory efficiency
-- [x] tensorboard log dir add version when resume training
-- [x] Flux Kontext Lora (v1.5.0)
-- [x] HuggingFace Dataset 支持 (v1.5.2)
-- [x] 修正额外控制图像命名规则文档 (v1.5.3)
-- [x] training step dtype convertion simplification
+- [x] DDP training on RTX 4090
+- [x] Edit Mask Loss support (v1.4.0)
+- [x] Dataset: cache hash calculated
+- [x] Multi dataset_path supported
+- [x] Resume training
+- [x] Fix LoRA training without cache function
+- [x] Non-caching training mode with memory efficiency
+- [x] TensorBoard log dir add version when resume training
+- [x] Flux Kontext LoRA (v1.5.0)
+- [x] HuggingFace Dataset support (v1.5.2)
+- [x] Fix additional control image naming rule documentation (v1.5.3)
+- [x] Training step dtype conversion simplification
 - [x] Validation Sampling During Training (v1.6.0)
-- [x] HuggingFace兼容的LoRA格式 (v1.6.0)
-- [x] LoRA权重自动上传功能 (v1.6.0)
-- [x] 训练完成时保存最终检查点 (v1.6.0)
-- [ ] FSDP training
-- [ ] customized the pipeline based on diffusers pipeline which is compatibility for multi-controls
-- [ ] sampling for training monitoring with tensorboard
-- [ ] online quantize for training and inference
-- [ ] release dataset in huggingface for character-composition
+- [x] HuggingFace compatible LoRA format (v1.6.0)
+- [x] Automatic LoRA weight upload functionality (v1.6.0)
+- [x] Save final checkpoint on training completion (v1.6.0)
+
+## Planned Features
+- [ ] FSDP training support
+- [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
+- [ ] Sampling for training monitoring with TensorBoard
+- [ ] Online quantization for training and inference
+- [ ] Release character-composition dataset on HuggingFace
