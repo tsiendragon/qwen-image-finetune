@@ -8,7 +8,8 @@
 ## [未发布]
 
 ### 新增
-- 待添加...
+- save last checkpoint when finished, interupted
+- use compatible lora statedict filename and format with huggingface, that can use diffusers pipeline to load the lora`# pipe.load_lora_weights(lora_weight, prefix="", adapter_name="lora_edit")`
 
 ### 改进
 - 待添加...

@@ -34,6 +34,8 @@ from diffusers import FluxKontextPipeline
 logger = logging.getLogger(__name__)
 
 
+LORA_FILE_BASE_NAME='pytorch_lora_weights.safetensors'
+
 class BaseTrainer(ABC):
     """
     Abstract base class for all trainer implementations.
@@ -394,7 +396,7 @@ class BaseTrainer(ABC):
         if self.config.resume is not None:
             # add the checkpoint in lora.pretrained_weight config
             self.config.model.lora.pretrained_weight = os.path.join(
-                self.config.resume, "model.safetensors"
+                self.config.resume, LORA_FILE_BASE_NAME
             )
             logging.info(
                 f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
@@ -586,13 +588,39 @@ class BaseTrainer(ABC):
                     self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last"
                 )
             os.makedirs(save_path, exist_ok=True)
-            self.accelerator.save_state(save_path)
+
+            lora_weight = os.path.join(save_path, LORA_FILE_BASE_NAME)
+            self.save_lora(lora_weight, adapter_name=self.adapter_name)
+
             state_info = {"global_step": global_step, "epoch": epoch, "is_last": is_last}
-            git_info = get_git_info()
-            state_info.update(git_info)
+            if is_last:
+                self.accelerator.save_state(save_path)
+                git_info = get_git_info()
+                state_info.update(git_info)
             with open(os.path.join(save_path, "state.json"), "w") as f:
                 json.dump(state_info, f)
         self.fps_logger.resume()
+
+    def save_lora(self, save_path, adapter_name=None):
+        """Save LoRA weights"""
+        if not save_path.endswith(LORA_FILE_BASE_NAME):
+            print(f"Warning: save_path should better end with {LORA_FILE_BASE_NAME}")
+        if self.accelerator is not None:
+            unwrapped_transformer = self.accelerator.unwrap_model(self.dit)
+        else:
+            unwrapped_transformer = self.dit
+        if is_compiled_module(unwrapped_transformer):
+            unwrapped_transformer = unwrapped_transformer._orig_mod
+        adapter_name = self.adapter_name if adapter_name is None else adapter_name
+
+        lora_state_dict = convert_state_dict_to_diffusers(
+            get_peft_model_state_dict(unwrapped_transformer, adapter_name=adapter_name)
+        )
+        # Use FluxKontextPipeline's save method if available, otherwise use generic method
+        self.pipeline_class.save_lora_weights(
+            save_path, lora_state_dict, safe_serialization=True
+        )
+        logging.info(f"Saved LoRA weights to {save_path}")
 
     def save_train_config(self):
         import yaml
@@ -760,21 +788,6 @@ class BaseTrainer(ABC):
     def load_model(self, **kwargs):
         """Load and initialize model components."""
         pass
-
-    def save_lora(self, save_path):
-        """Save LoRA weights"""
-        unwrapped_transformer = self.accelerator.unwrap_model(self.dit)
-        if is_compiled_module(unwrapped_transformer):
-            unwrapped_transformer = unwrapped_transformer._orig_mod
-
-        lora_state_dict = convert_state_dict_to_diffusers(
-            get_peft_model_state_dict(unwrapped_transformer)
-        )
-        # Use FluxKontextPipeline's save method if available, otherwise use generic method
-        self.pipeline_class.save_lora_weights(
-            save_path, lora_state_dict, safe_serialization=True
-        )
-        logging.info(f"Saved LoRA weights to {save_path}")
 
     @abstractmethod
     def encode_prompt(self, *args, **kwargs):

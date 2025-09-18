@@ -853,7 +853,6 @@ class QwenImageEditTrainer(BaseTrainer):
 
             for controls in additional_controls:
                 controls = self.preprocessor.preprocess({"controls": controls}, controls_size=controls_size)["controls"]
-                print('controls size', controls.shape)
                 for i, control in enumerate(controls):
                     new_controls[f"control_{i+1}"].append(control)
             for k, v in new_controls.items():
