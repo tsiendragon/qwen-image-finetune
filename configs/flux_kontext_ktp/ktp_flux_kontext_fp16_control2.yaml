@@ -1,0 +1,96 @@
+model:
+  pretrained_model_name_or_path: black-forest-labs/FLUX.1-Kontext-dev
+  quantize: false
+  lora:
+    r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
+    lora_alpha: 16  # LoRA alpha, usually equal to r
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+    adapter_name: "lora_edit"
+
+
+data:
+  class_path: src.data.dataset.ImageDataset
+  init_args:
+    dataset_path:
+      - /raid/lilong/data/kyc_gen/ktp_v1.5/dataset1/
+      - /raid/lilong/data/kyc_gen/ktp_v1.5/dataset1_crop/
+    caption_dropout_rate: 0.0
+    prompt_image_dropout_rate: 0.0
+    use_edit_mask: true  # if true, dataset output edit mask
+    selected_control_indexes: [2]  # choose third in additional control. 0-th is the main control
+    processor:
+      class_path: src.data.preprocess.ImageProcessor
+      init_args:
+        process_type: resize
+        resize_mode: bilinear
+        target_size: [576,832]  # height width
+        controls_size: [[576,832], [576,832]]
+
+  batch_size: 8  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: /raid/lilong/data/experiment/FluxKontextKtpLoraFp16  # change the path to your own output path
+  report_to: tensorboard
+  tracker_project_name: ktp_inpaint_multicontrol
+  sampling:
+    enable: false
+    validation_steps: 100
+    num_samples: 1
+    seed: 42
+    validation_data: null
+
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  init_args:
+    lr: 0.0001  # face segmentation task uses smaller learning rate
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: cosine  # cosine scheduler, better for fine-grained tasks
+  warmup_steps: 50  # increase warmup steps
+  num_cycles: 0.5
+  power: 1.0
+
+
+loss:
+  mask_loss: false
+  forground_weight: 2.0
+  background_weight: 1.0
+
+train:
+  gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
+  max_train_steps: 10000  # face segmentation data is small, reduce training steps
+  checkpointing_steps: 100  # save checkpoints more frequently
+  max_grad_norm: 1.0
+  mixed_precision: bf16
+  gradient_checkpointing: True  # enable gradient checkpointing to save memory
+  low_memory: True  # is used low_memory mode, then the model will be loaded on the specified devices
+  # otherwise, the model will be loaded on all the gpus
+  fit_device:
+    vae_encoder: cuda:1
+    text_encoder: cuda:1
+
+trainer: FluxKontext
+resume: null
+
+cache:
+  devices:
+    vae_encoder: cuda:1
+    text_encoder: cuda:0
+    text_encoder_2: cuda:0
+  cache_dir: ${logging.output_dir}/cache
+  use_cache: true
+  prompt_empty_drop_keys:
+    - prompt_embed
+    - pooled_prompt_embed
+
+predict:
+  devices:
+    vae: cuda:1
+    text_encoder: cuda:1 # CLIP
+    text_encoder_2: cuda:1  # T5
+    dit: cuda:1

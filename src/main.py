@@ -4,8 +4,22 @@ from src.data.dataset import loader
 from src.utils.options import parse_args
 from src.utils.logger import get_logger
 from src.utils.seed import seed_everything
+from src.data.config import TrMode
+from src.data.config import Config
+import logging
 
 logger = get_logger(__name__, log_level="INFO")
+
+
+def import_trainer(config: Config):
+    trainer_type = config.trainer_type
+    if trainer_type == 'QwenImageEdit':
+        from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer as Trainer
+    elif trainer_type == 'FluxKontext':
+        from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
+    else:
+        raise ValueError(f"Invalid trainer type: {trainer_type}")
+    return Trainer
 
 
 def main():
@@ -24,26 +38,34 @@ def main():
     seed_everything(1234)
 
     # 创建训练器
-    trainer_type = config.train.trainer
-    if trainer_type == 'QwenImageEdit':
-        from src.qwen_image_edit_trainer import QwenImageEditTrainer as Trainer
-    elif trainer_type == 'FluxKontext':
-        from src.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
-    else:
-        raise ValueError(f"Invalid trainer type: {trainer_type}")
-
+    Trainer = import_trainer(config)
     trainer = Trainer(config)
+    if config.mode != TrMode.fit:
+        # if not in training, skip caption dropout
+        config.data.init_args.caption_dropout_rate = 0
 
     # 加载数据
+    batch_size = config.data.batch_size
+    shuffle = config.data.shuffle
+    droplast = True
+    if config.mode == TrMode.cache:
+        batch_size = 1
+        shuffle = False
+        droplast = False
+        logging.info('In cache mode, adjust batch_size, shuffle, droplast')
+        logging.info('\tbatch_size {batch_size}' )
+        logging.info(f'\tshuffle {shuffle}')
+        logging.info(f'\tdroplast {droplast}')
     train_dataloader = loader(
         config.data.class_path,
         config.data.init_args,
-        batch_size=config.data.batch_size,
+        batch_size=batch_size,
         num_workers=config.data.num_workers,
-        shuffle=config.data.shuffle,
+        shuffle=shuffle,
+        drop_last=droplast,
     )
 
-    if config.mode == 'cache':
+    if config.mode == TrMode.cache:
         try:
             from accelerate.hooks import remove_hook_from_module
             remove_hook_from_module(trainer.text_encoder)

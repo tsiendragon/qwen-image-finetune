@@ -287,6 +287,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
         """
         from tqdm import tqdm
 
+
+
         self.cache_manager = train_dataloader.cache_manager
         vae_encoder_device = self.config.cache.vae_encoder_device
         text_encoder_device = self.config.cache.text_encoder_device

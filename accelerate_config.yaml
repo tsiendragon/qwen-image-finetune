@@ -14,3 +14,25 @@ tpu_env: []
 tpu_use_cluster: false
 tpu_use_sudo: false
 use_cpu: false
+
+fsdp_config:
+  xla: false
+  sync_module_states: true
+  forward_prefetch: true
+  backward_prefetch: BACKWARD_PRE
+  activation_checkpointing: true
+  activation_cpu_offload: false
+  state_dict_type: SHARDED_STATE_DICT
+  # Crucial in PyTorch>=2.1 to avoid flat-param issues:
+  use_orig_params: true
+  # Sharding strategy: FULL_SHARD is memory-best, HYBRID_SHARD for multi-node
+  sharding_strategy: FULL_SHARD
+  # Auto-wrap policy: wrap big layers (Transformer blocks, etc.)
+  auto_wrap_policy: SIZE_BASED_WRAP
+  min_num_params: 1000000    # tune: 0.5M–5M typical
+  # Optional CPU offload of params/optim (usually avoid unless memory is tight):
+  cpu_offload: false
+  # Gradient checkpointing granularity:
+  checkpointing_policy: "HINTS"  # or "EVERY_LAYER"
+  # Clip grad to keep stability:
+  gradient_clipping: 1.0

@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s | %(levelname)s | %(name)s: %(message)s"
+log_cli_date_format = "%H:%M:%S"
+# For prints to show while still capturing:
+addopts = ["--capture=tee-sys"]
+
+[tool.flake8]
+max-line-length = 120
+extend-ignore = ["E203","W503"]  # common with Black
+
+[tool.black]
+line-length = 120

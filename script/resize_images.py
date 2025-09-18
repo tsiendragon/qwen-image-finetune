@@ -12,6 +12,8 @@ import argparse
 from tqdm import tqdm
 
 
+
+
 def resize_image_if_needed(input_path, output_path, max_width=1024):
     """
     如果图片宽度大于max_width，则调整大小并保持宽高比

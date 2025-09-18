@@ -1,5 +1,4 @@
 import os
-import random
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -10,13 +9,26 @@ import numpy as np
 import cv2
 import importlib
 import logging
-import hashlib
-# 删除重复的 typing 导入，已在上方统一导入 Optional, Dict, List, Any
-from src.data.cache_manager import EmbeddingCacheManager, check_cache_exists
-from src.utils.hugginface import load_editing_dataset, is_huggingface_repo
+import random
+
+from src.data.cache_manager import EmbeddingCacheManager
+from src.utils.huggingface import load_editing_dataset, is_huggingface_repo
+from src.utils.tools import hash_string_md5
+from src.data.config import DatasetInitArgs
+import re
+from pathlib import Path
+
+IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
-IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
+_pat_end = re.compile(r'control_(\d+)\.(?:png|jpe?g|webp)$', re.IGNORECASE)
+
+
+def is_control_image(path: str):
+    """返回 (ok, d)。ok=True 表示以 control_{d}.png/jpg/jpeg/webp 结尾；d 为整数。"""
+    name = Path(path).name
+    m = _pat_end.search(name)
+    return m is not None
 
 
 def _first_existing(base_dir: str, stem: str, exts=IMG_EXTS) -> Optional[str]:
@@ -27,20 +39,23 @@ def _first_existing(base_dir: str, stem: str, exts=IMG_EXTS) -> Optional[str]:
     return None
 
 
-def _collect_extra_controls(control_dir: str, stem: str) -> List[str]:
-    """匹配 stem_1.*, stem_2.*, …（只收集数值后缀），排除 *_mask."""
-    out = []
+def get_number_of_controls(control_dir: str, stem: str) -> int:
     for ext in IMG_EXTS:
-        for p in glob.glob(os.path.join(control_dir, f"{stem}_*{ext}")):
-            bn = os.path.basename(p)
-            name_no_ext = os.path.splitext(bn)[0]
-            if name_no_ext.endswith("_mask"):
+        control_paths = glob.glob(os.path.join(control_dir, f"{stem}_control_[0-99]*{ext}"))
+        if len(control_paths) > 0:
+            return len(control_paths)
+    return 0
+
+
+def _collect_extra_controls(control_dir: str, stem: str, num_controls: int) -> List[str]:
+    """匹配 stem_control_1.*, stem_control_2.*, …（使用 _control_N 格式），排除 *_mask."""
+    out = []
+    for i in range(1, num_controls + 1):
+        for ext in IMG_EXTS:
+            control_path = os.path.join(control_dir, f"{stem}_control_{i}{ext}")
+            if os.path.exists(control_path):
+                out.append(control_path)
                 continue
-            suf = name_no_ext[len(stem) + 1:]  # 去掉 'stem_'
-            if suf.isdigit():
-                out.append(p)
-    # 依据数字后缀排序，确保确定性
-    out.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0].split("_")[-1]))
     return out
 
 
@@ -62,7 +77,7 @@ class ImageDataset(Dataset):
     返回的样本在不同缓存模式下包含不同键：
     - cached=False: 包含 'image' (C,H,W), 'control' (C,H,W), 'prompt' (str), 'file_paths' (dict)，以及可选 'mask'
     - cached=True 且旧式缓存存在: 另含 'pixel_latent', 'control_latent',
-      'prompt_embed', 'prompt_embeds_mask', 'empty_prompt_embed',
+      'prompt_embeds', 'prompt_embeds_mask', 'empty_prompt_embed',
       'empty_prompt_embeds_mask' 等张量
     - cached=True 且仅有新式缓存: 返回缓存子目录名对应的键及其张量
 
@@ -76,16 +91,13 @@ class ImageDataset(Dataset):
         'image_size': (512, 512),
         'use_cache': True,
         'cache_dir': '/path/to/cache',
-        'random_crop': False,
-        'center_crop': True,
-        'center_crop_ratio': 0.9,
     }
     dataset = ImageDataset(data_config)
     loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4, collate_fn=collate_fn)
     batch = next(iter(loader))
     ```
     """
-    def __init__(self, data_config):
+    def __init__(self, data_config: DatasetInitArgs):
         """
         初始化数据集。
         Args:
@@ -94,11 +106,7 @@ class ImageDataset(Dataset):
                 - image_size: 目标尺寸 [img_w, img_h] 或 int，默认 None（不缩放）
                 - cache_dir: 缓存目录路径，提供则可用缓存
                 - use_cache: 是否使用缓存，默认 True
-                - random_crop: 是否随机正方形裁剪，默认 False（需配合 crop_size）
-                - crop_size: 随机裁剪后缩放到的边长，默认 None
-                - crop_scale: 随机裁剪的缩放范围 [min, max]，默认 [0.8, 1.0]
-                - center_crop: 是否启用按比例的中心裁剪，默认 False
-                - center_crop_ratio: 中心裁剪相对最大可裁区域的缩放比例，默认 1.0
+                - selected_control_indexes: 选择的控制图像索引，默认 None
 
         期望的数据集目录结构（每个根路径下）:
             dataset_root/
@@ -107,13 +115,14 @@ class ImageDataset(Dataset):
                 xxx.txt          # 与图像同名的 caption 文本
               control_images/
                 xxx.png
+                xxx_1.png
+                xxx_2.png
                 xxx_mask.png     # 可选，若存在则会返回 'mask'
 
         示例:
         ```python
         cfg = {
             'dataset_path': ['/data/ds1', '/data/ds2'],
-            'image_size': (512, 512),
             'use_cache': True,
             'cache_dir': '/data/cache'
         }
@@ -123,7 +132,7 @@ class ImageDataset(Dataset):
         ```
         """
         self.data_config = data_config
-        dataset_path = data_config.get('dataset_path', './dataset')
+        dataset_path = data_config.dataset_path
 
         # 支持多个数据集路径
         if isinstance(dataset_path, (list, tuple)):
@@ -133,20 +142,10 @@ class ImageDataset(Dataset):
 
         self.hf_datasets = {}
 
-        self.image_size = data_config.get('image_size', None)
-        self.cache_dir = data_config.get('cache_dir', None)
-        self.use_cache = data_config.get('use_cache', True)
+        self.cache_dir = data_config.cache_dir
+        self.use_cache = data_config.use_cache
+        self.selected_control_indexes = data_config.selected_control_indexes
 
-        # 随机裁剪配置
-        self.random_crop = data_config.get('random_crop', False)
-        self.crop_size = data_config.get('crop_size', None)
-        self.crop_scale = data_config.get('crop_scale', [0.8, 1.0])
-
-        # center crop 配置
-        self.center_crop = data_config.get('center_crop', False)
-        self.center_crop_ratio = data_config.get('center_crop_ratio', 1.0)
-
-        # 初始化缓存管理器
         if self.use_cache and self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
             self.cache_manager = EmbeddingCacheManager(self.cache_dir)
@@ -155,20 +154,17 @@ class ImageDataset(Dataset):
             self.cache_manager = None
             print("缓存未启用")
 
-        self.cache_exists = check_cache_exists(self.cache_dir) if self.cache_dir else False
-        if self.cache_exists:
-            cache_subfolders = glob.glob(self.cache_dir+"/*")
-            self.cache_keys = [os.path.basename(cache_subfolder) for cache_subfolder in cache_subfolders]
-        else:
-            self.cache_keys = []
+        self.cache_exists = self.cache_manager.exist(self.cache_dir) if self.cache_manager else False
         # loading datsets
         self._load_all_datasets()
+        self.load_processor()
 
-        # 图像预处理变换 - 将[img_w, img_h] 转换为transforms.Resize期望的 (height, width) 格式
-        if isinstance(self.image_size, (tuple, list)):
-            self.resize_size = (self.image_size[0], self.image_size[1])  # (width, height)
-        else:
-            self.resize_size = self.image_size
+    def load_processor(self):
+        """load processor"""
+        from src.utils.tools import instantiate_class
+        class_path = self.data_config.processor.class_path
+        init_args = self.data_config.processor.init_args
+        self.preprocessor = instantiate_class(class_path, init_args)
 
     def _load_all_datasets(self):
         """Load datasets from local directories or Hugging Face repositories."""
@@ -205,7 +201,7 @@ class ImageDataset(Dataset):
         and metadata for later access.
         """
         # Load the dataset (this is fast, just creates the dataset object)
-        dataset = load_editing_dataset(repo_id, split=self.data_config.get('split', split))
+        dataset = load_editing_dataset(repo_id, split=split)
         # Store HF dataset reference
         dataset_info = {
             'type': 'huggingface',
@@ -251,8 +247,8 @@ class ImageDataset(Dataset):
             images_dirs, control_dirs
         """
 
-        image_possible_names = ['training_images', 'images', 'target_images']
-        control_possible_names = ['control_images', 'control', 'condition_images']
+        image_possible_names = ['training_images', 'images', 'target_images', 'target', 'targets']
+        control_possible_names = ['control_images', 'control', 'condition_images', 'controls']
 
         # 查找图像目录
         images_dir = None
@@ -276,11 +272,12 @@ class ImageDataset(Dataset):
     def _scan_image_files(self, images_dir, control_dir):
         """
         扫描所有数据集中的成对样本。
+        假定 target 图片一定存在
         样本需满足：
             - images_dir/xyz.(jpg|jpeg|png|bmp)
             - control_dir/xyz.(jpg|jpeg|png|bmp)
-            - control_dir/xyz_1.(jpg|jpeg|png|bmp) [additional control images]
-            - control_dir/xyz_2.(jpg|jpeg|png|bmp) [additional control images]
+            - control_dir/xyz_control_1.(jpg|jpeg|png|bmp) [additional control images]
+            - control_dir/xyz_control_2.(jpg|jpeg|png|bmp) [additional control images]
         prompt file could be in either images_dir or control_dir
             - images_dir/xyz.txt 作为 prompt
             - control_dir/xyz.txt 作为 prompt
@@ -290,42 +287,54 @@ class ImageDataset(Dataset):
 
         Returns:
             List[dict]: 'image' 'control: list[str]' 'caption' 'dataset_index' 'mask_file'
+
         """
         # first looking for prompt text
-        prompt_files = glob.glob(os.path.join(images_dir, '*.txt'))
-        prompt_files += glob.glob(os.path.join(control_dir, '*.txt'))
+
+        # first search target images
+        target_images = glob.glob(os.path.join(images_dir, '*.*'))
+        target_images = [img for img in target_images if img.endswith(IMG_EXTS)]
+        # exclude mask images
+        target_images = [img for img in target_images if not img.endswith('_mask.png')]
+        target_images = [img for img in target_images if not is_control_image(img)]
+        # exclude control images
+
         samples = []
 
         start_idx = len(self.all_samples)
 
         # 用 stem 归并（同 stem 出现两边时优先 images_dir 文本）
-        stem_to_prompt = {}
-        for p in prompt_files:
-            stem = os.path.splitext(os.path.basename(p))[0]
-            # 如果已存在 images_dir 的 prompt，就不被 control_dir 覆盖
-            if stem in stem_to_prompt:
-                # 维持优先级：images_dir 优先；否则若当前是 images_dir 则覆盖
-                if os.path.dirname(stem_to_prompt[stem]) != images_dir and os.path.dirname(p) == images_dir:
-                    stem_to_prompt[stem] = p
-            else:
-                stem_to_prompt[stem] = p
+        stems = [os.path.splitext(os.path.basename(p))[0] for p in target_images]
+
+        # filter these stems that dont have correspoding images
+        stems = [s for s in stems if _first_existing(images_dir, s) is not None]
+
+        logging.info('found %d prompts', len(stems))
 
         # 2) 对每个 stem 按需拼装样本
         n = 0
-        for stem, ptxt in sorted(stem_to_prompt.items()):
+        from tqdm import tqdm
+
+        num_controls = get_number_of_controls(control_dir, stems[0])
+        print('num_controls', num_controls)
+        logging.info('found %d controls', num_controls)
+        logging.info(f'found with stem {control_dir}/{stems[0]}')
+        for stem in tqdm(stems, desc='matching prompts'):
             # source image（必须在 images_dir）
             image_path = _first_existing(images_dir, stem)
-            if not image_path:
-                continue  # 无图跳过
+            if image_path is None:
+                logging.info(f'skipping {stem} because no image found')
+                continue
 
             # control image（必须在 control_dir）
             main_control = _first_existing(control_dir, stem)
-            if not main_control:
-                continue  # 无控制图跳过
 
             # 额外控制图
-            extras = _collect_extra_controls(control_dir, stem)
-            controls = [main_control] + extras
+            if main_control is not None:
+                extras = _collect_extra_controls(control_dir, stem, num_controls)
+                controls = [main_control] + extras
+            else:
+                controls = [None]
 
             img_txt = os.path.join(images_dir, f"{stem}.txt")
             ctl_txt = os.path.join(control_dir, f"{stem}.txt")
@@ -351,174 +360,110 @@ class ImageDataset(Dataset):
                 }
             )
             n += 1
+        logging.info(f" samples[0]: {samples[0]}")
         return samples
 
     def __repr__(self) -> str:
         msg = f"""ImageDataset(
             dataset_paths={self.dataset_paths},
-            image_size={self.image_size},
             cache_dir={self.cache_dir},
             use_cache={self.use_cache},
-            random_crop={self.random_crop},
-            crop_size={self.crop_size},
-            crop_scale={self.crop_scale},
-            center_crop={self.center_crop},
-            center_crop_ratio={self.center_crop_ratio})
         """
         return msg
 
-    def get_random_crop_bbox(self, h, w):
-        """
-        生成随机正方形裁剪的边界框（需启用 random_crop）。
-        Args:
-            h: 图像高度
-            w: 图像宽度
-        Returns:
-            tuple: (x, y, crop_w, crop_h) 裁剪区域；未启用时返回 None
+    def get_file_hashes(self, data):
+        file_hashes = {}
+        main_hash = ""
+        if 'image' in data:
+            file_hashes['image_hash'] = self.cache_manager.get_hash(data['image'])
+            main_hash += file_hashes['image_hash']
+        if 'control' in data:
+            file_hashes['control_hash'] = self.cache_manager.get_hash(data['control'])
+            main_hash += file_hashes['control_hash']
+        if 'prompt' in data:
+            file_hashes['prompt_hash'] = hash_string_md5(data['prompt'])
+            main_hash += file_hashes['prompt_hash']
+        if 'prompt' in data:
+            file_hashes['empty_prompt_hash'] = hash_string_md5("empty")
+        if 'control' in data and 'prompt' in data:
+            file_hashes['control_prompt_hash'] = self.cache_manager.get_hash(data['control'], data['prompt'])
+        if 'control' in data and 'prompt' in data:
+            file_hashes['control_empty_prompt_hash'] = self.cache_manager.get_hash(data['control'], "empty")
+        if 'controls' in data:
+            controls_sum_hash = file_hashes['control_hash']
+            for i in range(len(data['controls'])):
+                file_hashes[f"control_{i+1}_hash"] = self.cache_manager.get_hash(data['controls'][i])
+                controls_sum_hash += file_hashes[f"control_{i+1}_hash"]
+            file_hashes['controls_sum_hash'] = controls_sum_hash
+        elif 'control' in data:
+            file_hashes['controls_sum_hash'] = file_hashes['control_hash']
+        file_hashes['main_hash'] = main_hash
+        return file_hashes
 
-        示例:
-        ```python
-        dataset.random_crop = True
-        dataset.crop_size = 256
-        bbox = dataset.get_random_crop_bbox(h=768, w=1024)
-        ```
-        """
-        if not self.random_crop:
-            return None
+    def data_key_exist(self, data, key):
+        if key in data and data[key] is not None:
+            return True
+        return False
 
-        # 计算随机缩放因子
-        scale = random.uniform(self.crop_scale[0], self.crop_scale[1])
+    def load_data(self, idx):
+        if idx >= self.__len__():
+            raise IndexError(f"Index {idx} out of range for dataset of size {self.__len__()}")
+        sample = self.all_samples[idx]
+        data = {}
+        if sample['dataset_type'] == 'huggingface':
+            local_index = sample['local_index']
+            repo_id = sample['repo_id']
+            data_item = self.hf_datasets[repo_id]['dataset'][local_index]
+            if data_item['target_image'] is not None:
+                image = data_item['target_image'].convert('RGB')
+                data['image'] = image
+            control = data_item['control_images']
+            if control is not None:
+                data['control'] = control[0].convert('RGB')
+                if len(control) > 1:
+                    data['controls'] = control[1:]
+                    data['controls'] = [img.convert('RGB') for img in data['controls']]
+                    if self.selected_control_indexes is not None:
+                        data['controls'] = [data['controls'][i-1] for i in self.selected_control_indexes]
 
-        # 选择较小的边作为基准，确保裁剪出正方形
-        min_side = min(h, w)
-        crop_size_final = int(min_side * scale)
+            prompt = data_item['prompt']
+            data['prompt'] = prompt
+            if data_item['control_mask'] is not None:
+                data['mask'] = np.array(data_item['control_mask'].convert('L'))
 
-        # 随机选择裁剪位置
-        if w > crop_size_final:
-            x = random.randint(0, w - crop_size_final)
-        else:
-            x = 0
-
-        if h > crop_size_final:
-            y = random.randint(0, h - crop_size_final)
-        else:
-            y = 0
-
-        return (x, y, crop_size_final, crop_size_final)
-
-    def get_center_crop_bbox(self, h, w):
-        """
-        生成中心裁剪的边界框，按目标宽高比取最大区域（需启用 center_crop）。
-        Args:
-            h: 图像高度
-            w: 图像宽度
-        Returns:
-            tuple: (x, y, crop_w, crop_h) 裁剪区域；未启用时返回 None
-
-        示例:
-        ```python
-        dataset.center_crop = True
-        dataset.resize_size = (512, 512)
-        bbox = dataset.get_center_crop_bbox(h=720, w=1280)
-        ```
-        """
-        if not self.center_crop:
-            return None
-
-        # 确定目标宽高比
-        if self.resize_size is not None:
-            if isinstance(self.resize_size, (tuple, list)):
-                target_w, target_h = self.resize_size
-            else:
-                target_w = target_h = self.resize_size
-        else:
-            # 如果没有指定 resize_size，默认使用正方形
-            target_w = target_h = min(h, w)
-
-        # 计算目标宽高比
-        target_ratio = target_w / target_h
-
-        # 根据图像尺寸和目标比例，计算能容纳的最大裁剪区域
-        # 按照目标比例，计算两种可能的裁剪尺寸
-        crop_w_by_height = int(h * target_ratio)  # 按高度限制计算宽度
-        crop_h_by_width = int(w / target_ratio)   # 按宽度限制计算高度
-
-        if crop_w_by_height <= w:
-            # 高度是限制因素，使用完整高度
-            crop_h = h
-            crop_w = crop_w_by_height
-        else:
-            # 宽度是限制因素，使用完整宽度
-            crop_w = w
-            crop_h = crop_h_by_width
-
-        # 应用 center_crop_ratio 进行缩放
-        crop_w = int(crop_w * self.center_crop_ratio)
-        crop_h = int(crop_h * self.center_crop_ratio)
-
-        # 计算中心裁剪位置
-        x = (w - crop_w) // 2
-        y = (h - crop_h) // 2
-
-        return (x, y, crop_w, crop_h)
-
-    def apply_crop_and_resize(self, img, bbox=None):
-        """
-        应用裁剪并按配置调整大小。
-        Args:
-            img: 输入图像，(H, W, C) 或 (H, W)
-            bbox: 裁剪边界框 (x, y, w, h)，None 则不裁剪
-        Returns:
-            numpy.ndarray: 处理后的图像
-
-        示例:
-        ```python
-        img = cv2.imread('/path/a.png')[:, :, ::-1]
-        out = dataset.apply_crop_and_resize(img, bbox=(10, 20, 256, 256))
-        ```
-        """
-        if bbox is not None:
-            x, y, w, h = bbox
-            img = img[y:y+h, x:x+w]
-
-        # 调整到目标尺寸
-        if self.random_crop and self.crop_size is not None:
-            img = cv2.resize(img, (self.crop_size, self.crop_size))
-        elif self.center_crop and self.resize_size is not None:
-            # center crop 后需要 resize 到目标尺寸
-            img = cv2.resize(img, self.resize_size)
-        elif self.resize_size is not None:
-            img = cv2.resize(img, self.resize_size)
-
-        return img
-
-    def preprocess(self, image_path, crop_bbox=None):
-        """
-        读取并预处理单个图像，返回 CHW 格式。
-        Args:
-            image_path: 图像路径或已加载的 numpy 数组
-            crop_bbox: 可选裁剪边界框 (x, y, w, h)
-        Returns:
-            numpy.ndarray: (C, H, W)
-
-        示例:
-        ```python
-        arr = dataset.preprocess('/path/a.png', crop_bbox=None)  # (3,H,W)
-        ```
-        """
-        if isinstance(image_path, str):
-            img = cv2.imread(image_path)
-            img = img[:, :, ::-1]  # BGR to RGB
-        else:
-            img = image_path
-
-        # 应用裁剪和调整大小
-        img = self.apply_crop_and_resize(img, crop_bbox)
-
-        # 转换为CHW格式
-        if len(img.shape) == 3:
-            img = img.transpose(2, 0, 1)  # ，C,H,W
-        return img
+            if self.use_cache:
+                file_hashes = self.get_file_hashes(data)
+                data['file_hashes'] = file_hashes
+        else:  # loaded locally
+            data_item = self.all_samples[idx]
+            #  {
+            #         "image": image_path,
+            #         "control": controls,
+            #         "caption": prompt_file,
+            #         "mask_file": mask_file,
+            #         "dataset_type": "local",
+            #         "local_index": n,
+            #         "global_index": start_idx + n,
+            #     }
+            # ) If, not exist return None
+            # 读取提示文本
+            if self.data_key_exist(data_item, 'image'):
+                data['image'] = data_item['image']
+            if self.data_key_exist(data_item, 'control'):
+                data['control'] = data_item['control'][0]
+                if len(data_item['control']) > 1:
+                    data['controls'] = data_item['control'][1:]
+                    if self.selected_control_indexes is not None:
+                        data['controls'] = [data['controls'][i-1] for i in self.selected_control_indexes]
+            if self.data_key_exist(data_item, 'mask_file'):
+                data['mask'] = cv2.imread(data_item['mask_file'], 0)
+            if self.data_key_exist(data_item, 'caption'):
+                with open(data_item['caption'], 'r', encoding='utf-8') as f:
+                    prompt = f.read().strip()
+                data['prompt'] = prompt
+            file_hashes = self.get_file_hashes(data)
+            data['file_hashes'] = file_hashes
+        return data
 
     def __getitem__(self, idx):
         """
@@ -536,207 +481,26 @@ class ImageDataset(Dataset):
         prompt = item['prompt']   # str
         ```
         """
-        if idx >= self.__len__():
-            raise IndexError(f"Index {idx} out of range for dataset of size {self.__len__()}")
-        sample = self.all_samples[idx]
-        if sample['dataset_type'] == 'huggingface':
-            local_index = sample['local_index']
-            repo_id = sample['repo_id']
-            data_item = self.hf_datasets[repo_id]['dataset'][local_index]
-            image = np.array(data_item['target_image'].convert('RGB'))
-            control = data_item['control_images']
-            if control is not None:
-                control = np.array(control[0].convert('RGB'))
+        data = self.load_data(idx)
+        data = self.preprocessor.preprocess(data)
+        data['cached'] = False
+        if self.use_cache and self.cache_exists:
+            if random.random() < self.data_config.caption_dropout_rate:
+                replace_empty_embeddings = True
             else:
-                control = None
-            prompt = data_item['prompt']
-            if data_item['control_mask'] is not None:
-                mask_numpy = np.array(data_item['control_mask'].convert('L'))
-            else:
-                mask_numpy = None
-
-            if self.use_cache:
-                prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-                repo_id_str = repo_id.replace('/', '_')
-                image_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
-                control_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
-                prompt_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
-                empty_prompt_hash = f"{repo_id_str}_{local_index}_{prompt_hash}"
-
+                replace_empty_embeddings = False
+            prompt_empty_drop_keys = self.data_config.prompt_empty_drop_keys
+            data = self.cache_manager.load_cache(data, replace_empty_embeddings, prompt_empty_drop_keys)
+            data['cached'] = True
+        if 'controls' in data:
+            n_controls = len(data['controls'])
+            for i in range(n_controls):
+                data[f'control_{i+1}'] = data['controls'][i]
+            del data['controls']
+            data['n_controls'] = n_controls
         else:
-            data_item = self.all_samples[idx]
-            #  {
-            #         "image": image_path,
-            #         "control": controls,
-            #         "caption": prompt_file,
-            #         "mask_file": mask_file,
-            #         "dataset_type": "local",
-            #         "local_index": n,
-            #         "global_index": start_idx + n,
-            #     }
-            # ) If, not exist return None
-            # 读取提示文本
-
-            with open(data_item['caption'], 'r', encoding='utf-8') as f:
-                prompt = f.read().strip()
-
-            if self.use_cache:
-                image_hash = self.cache_manager.get_file_hash_for_image(data_item['image'])
-                control_hash = self.cache_manager.get_file_hash_for_image(data_item['control'][0])
-                prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], prompt)
-                empty_prompt_hash = self.cache_manager.get_file_hash_for_prompt(data_item['image'], "empty")
-
-            image = data_item['image']
-            control = data_item['control'][0]
-            mask_file = data_item['mask_file']
-            mask_numpy = None
-            if mask_file is not None and os.path.exists(mask_file):
-                mask_numpy = cv2.imread(mask_file, 0)
-
-        # 如果启用裁剪，生成共同的裁剪边界框
-        crop_bbox = None
-        if (self.random_crop and self.crop_size is not None) or self.center_crop:
-            # 读取第一个图像来获取尺寸（假设image和control尺寸相同）
-            if isinstance(image, str):
-                temp_img = cv2.imread(image)
-            else:
-                temp_img = image
-            if temp_img is not None:
-                h, w = temp_img.shape[:2]
-                if self.center_crop:
-                    crop_bbox = self.get_center_crop_bbox(h, w)
-                elif self.random_crop and self.crop_size is not None:
-                    crop_bbox = self.get_random_crop_bbox(h, w)
-
-        image_numpy = self.preprocess(image, crop_bbox)
-
-        # 加载控制图像（使用相同的裁剪边界框）
-        control_numpy = self.preprocess(control, crop_bbox)
-
-        has_mask = False
-        if mask_numpy is not None:
-            mask_numpy = self.preprocess(mask_numpy, crop_bbox)
-            has_mask = True
-        print('cache_exists', self.cache_exists)
-        print('use_cache', self.use_cache)
-        if self.cache_exists and self.use_cache:
-            # 如果启用缓存，尝试加载缓存的嵌入
-            # 检查缓存是否存在
-            # TODO: original implementation
-            cache_file = os.path.join(self.cache_dir, 'prompt_embeds_mask', f"{image_hash}.pt")
-            old_style = os.path.exists(cache_file)
-
-            if old_style:
-                cached_data = {}
-                for cache_type, file_hash in [
-                    ('pixel_latent', image_hash),
-                    ('control_latent', control_hash),
-                    ('prompt_embed', prompt_hash),
-                    ('prompt_embeds_mask', prompt_hash),
-                    ('empty_prompt_embed', empty_prompt_hash),
-                    ('empty_prompt_embeds_mask', empty_prompt_hash),
-                ]:
-                    cached_embedding = self.cache_manager.load_cache(cache_type, file_hash)
-                    cached_data[cache_type] = cached_embedding
-                if random.random() < self.data_config.get('cache_drop_rate', 0.0):
-                    for key in self.data_config.get('prompt_empty_drop_keys', []):
-                        empty_key = f'empty_{key}'
-                        cached_data[key] = cached_data[empty_key]
-
-                # 如果所有缓存都存在，返回缓存数据
-                data = {
-                    'cached': True,
-                    'image': image_numpy,
-                    'control': control_numpy,
-                    'pixel_latent': cached_data['pixel_latent'],
-                    'control_latent': cached_data['control_latent'],
-                    'prompt_embed': cached_data['prompt_embed'],
-                    'prompt_embeds_mask': cached_data['prompt_embeds_mask'],
-                    'prompt': prompt,
-                    'file_hashes': {
-                        'image_hash': image_hash,
-                        'control_hash': control_hash,
-                        'prompt_hash': prompt_hash,
-                        'empty_prompt_hash': empty_prompt_hash
-                    }
-                }
-                if has_mask:
-                    data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
-                self.check_none_output(data)
-                return data
-            else:
-                data = {}
-                for cache_type in self.cache_keys:
-                    cache_path = os.path.join(self.cache_dir, cache_type, f"{prompt_hash}.pt")
-                    loaded_data = torch.load(cache_path, map_location='cpu', weights_only=False)
-                    # 确保加载的数据没有梯度信息
-                    loaded_data = loaded_data.detach()
-                    data[cache_type] = loaded_data
-                data.update(
-                    {
-                        'cached': True,
-                        'image': image_numpy,
-                        'control': control_numpy,
-                        'prompt': prompt,
-                    }
-                )
-                if has_mask:
-                    data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
-                self.check_none_output(data)
-                return data
-        else:
-
-            # 如果没有缓存或缓存不完整，返回原始数据
-
-            data = {
-                'cached': False,
-                'image': image_numpy,
-                'control': control_numpy,
-                'prompt': prompt,
-            }
-            if self.use_cache:
-                data['file_hashes'] = {
-                    'image_hash': image_hash,
-                    'control_hash': control_hash,
-                    'prompt_hash': prompt_hash,
-                    'empty_prompt_hash': empty_prompt_hash
-                }
-            if has_mask:
-                data['mask'] = (mask_numpy > 125).astype(np.float32)  # convet to 0 or 1
-            self.check_none_output(data)
-            return data
-
-    def check_none_output(self, data: dict):
-        """
-        断言数据字典（含嵌套）中的值均非 None。
-        Args:
-            data: 返回的数据字典
-        Raises:
-            AssertionError: 若存在 None 值
-        """
-        for k, v in data.items():
-            if isinstance(v, dict):
-                for kk, vv in v.items():
-                    assert vv is not None, f"value is None for key {kk} in {k}"
-            else:
-                assert v is not None, f"value is None for key {k}"
-
-    def get_cache_stats(self) -> Optional[Dict[str, int]]:
-        """
-        获取缓存统计信息。
-        Returns:
-            Optional[Dict[str, int]]: 缓存统计字典；未启用缓存返回 None
-
-        示例:
-        ```python
-        stats = dataset.get_cache_stats()
-        if stats:
-            print(stats)
-        ```
-        """
-        if self.cache_manager:
-            return self.cache_manager.get_cache_stats()
-        return None
+            data['n_controls'] = 0
+        return data
 
 
 def pad_to_max_shape(tensors, padding_value=0):
@@ -807,7 +571,8 @@ def loader(
         init_args: dict,
         batch_size: int = 1,
         num_workers: int = 0,
-        shuffle: bool = True) -> DataLoader:
+        shuffle: bool = True,
+        drop_last=True) -> DataLoader:
     """
     动态加载数据集类并创建 DataLoader。
     Args:
@@ -845,22 +610,29 @@ def loader(
     # 使用init_args实例化类
     dataset = dataset_class(init_args)
     cache_manager = dataset.cache_manager
-
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=False,
-        collate_fn=collate_fn
+        collate_fn=collate_fn,
+        drop_last=drop_last,
     )
     setattr(dataloader, 'cache_manager', cache_manager)
     return dataloader
 
 
 if __name__ == "__main__":
+    import logging
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level='INFO',
+    )
     from src.data.config import load_config_from_yaml
     config_file = 'configs/face_seg_flux_kontext_fp16_huggingface_dataset.yaml'
+    config_file = 'tests/test_configs/test_example_fluxkontext_fp16_character_composition.yaml'
     config = load_config_from_yaml(config_file)
     data_config = config.data
     dataloader = loader(
@@ -871,13 +643,19 @@ if __name__ == "__main__":
         data_config.shuffle
     )
     for batch in dataloader:
+        print('batch keys', batch.keys())
+
         for k, v in batch.items():
+            print(k)
             if isinstance(v, torch.Tensor):
                 print(k, v.shape)
             else:
                 print(k, v)
-
         break
     print(batch['cached'])
     print(batch['file_hashes'])
     print(dataloader.cache_manager)
+    # print('batch type', type(batch['image'][0]), batch['image'])
+    print(batch['prompt'])
+    print(batch['control_1'].shape)
+

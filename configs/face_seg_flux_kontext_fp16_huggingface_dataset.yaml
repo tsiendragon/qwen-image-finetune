@@ -15,9 +15,9 @@ data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path:
-      # - /raid/lilong/data/face_seg/train/  # change the path to your own dataset path
-      - split: train
-        repo_id: TsienDragon/face_segmentation_20
+      - /raid/lilong/data/face_seg/test/  # change the path to your own dataset path
+      # - split: test
+        # repo_id: TsienDragon/face_segmentation_20
     image_size: [864, 1048]  # face segmentation usually uses 512x512
     caption_dropout_rate: 0.05  # reduce caption dropout, because the task is relatively specialized
     prompt_image_dropout_rate: 0.05

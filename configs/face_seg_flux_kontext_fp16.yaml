@@ -6,8 +6,8 @@ model:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
     lora_alpha: 16  # LoRA alpha, usually equal to r
     init_lora_weights: "gaussian"
-    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
-    # target_modules: "(.*x_embedder|.*transformer_blocks\\.[0-9]+\\.(norm|norm1)\\.linear|.*transformer_blocks\\.[0-9]+\\.attn\\.(to_k|to_q|to_v|to_add_out)|.*transformer_blocks\\.[0-9]+\\.attn\\.to_out\\.0|.*single_transformer_blocks\\.[0-9]+\\.attn\\.to_out|.*single_transformer_blocks\\.[0-9]+\\.(proj_mlp|proj_out)|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.norm1_context\\.linear|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.attn\\.(to_add_out|add_k_proj|add_q_proj|add_v_proj))"
+    # target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    target_modules: "(.*x_embedder|.*transformer_blocks\\.[0-9]+\\.(norm|norm1)\\.linear|.*transformer_blocks\\.[0-9]+\\.attn\\.(to_k|to_q|to_v|to_add_out)|.*transformer_blocks\\.[0-9]+\\.attn\\.to_out\\.0|.*single_transformer_blocks\\.[0-9]+\\.attn\\.to_out|.*single_transformer_blocks\\.[0-9]+\\.(proj_mlp|proj_out)|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.norm1_context\\.linear|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.0\\.proj|.*(?<!single_)transformer_blocks\\.[0-9]+\\.ff_context\\.net\\.2|.*(?<!single_)transformer_blocks\\.[0-9]+\\.attn\\.(to_add_out|add_k_proj|add_q_proj|add_v_proj))"
     pretrained_weight: null
     adapter_name: "lora_edit"
 
@@ -36,6 +36,14 @@ logging:
   logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "face_segmentation_lora"
+
+  # Sampling during training configuration
+  sampling:
+    enable: false              # Enable/disable sampling functionality
+    validation_steps: 200      # Run validation sampling every N training steps
+    num_samples: 4            # Number of samples to generate and log per validation
+    seed: 42                  # Seed for reproducible sampling
+    validation_data: null     # Path to validation dataset or list of control-prompt pairs
 
 optimizer:
   class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
