@@ -3,20 +3,22 @@
 - [x] Flash attention speedup
 - [x] DDP training in rtx 4090
 - [x] Edit Mask Loss 支持 (v1.4.0)
-- [ ] Dataset: cache hash caclculated
+- [x] Dataset: cache hash caclculated
 - [x] multi dataset_path supported
 - [x] resume training
-- [ ] Fix lora training without cache function
+- [x] Fix lora training without cache function
 - [x] non-caching training mode with memory efficiency
-- [ ] FSDP training
-- [ ] tensorboard log dir add version when resume training
+- [x] tensorboard log dir add version when resume training
 - [x] Flux Kontext Lora (v1.5.0)
 - [x] HuggingFace Dataset 支持 (v1.5.2)
 - [x] 修正额外控制图像命名规则文档 (v1.5.3)
-- [ ] training step dtype convertion simplification
+- [x] training step dtype convertion simplification
 - [x] Validation Sampling During Training (v1.6.0)
 - [x] HuggingFace兼容的LoRA格式 (v1.6.0)
 - [x] LoRA权重自动上传功能 (v1.6.0)
 - [x] 训练完成时保存最终检查点 (v1.6.0)
-- [ ] training step dtype convertion simplification
-- [ ] Web UI for training monitoring
+- [ ] FSDP training
+- [ ] customized the pipeline based on diffusers pipeline which is compatibility for multi-controls
+- [ ] sampling for training monitoring with tensorboard
+- [ ] online quantize for training and inference
+- [ ] release dataset in huggingface for character-composition
