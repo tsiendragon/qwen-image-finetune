@@ -346,6 +346,16 @@ if __name__ == "__main__":
 
     lora_path = download_lora()
     print(lora_path)
-    lora_weight = '/tmp/image_edit_lora/character_composition_fp16/characterCompositionQwenImageEditFp16/v1/pytorch_lora_weights.safetensors'
-    train_config = '/mnt/nas/public2/lilong/repos/qwen-image-finetune/tests/test_configs/test_example_qwen_image_edit_fp16_character_composition.yaml'
-    upload_lora_safetensors(lora_weight, 'TsienDragon/qwen-image-edit-character-composition', extra_files={train_config: 'train_config.yaml'})
+    # lora_weight = '/tmp/image_edit_lora/character_composition_fp16/characterCompositionQwenImageEditFp16/v1/pytorch_lora_weights.safetensors'
+    # train_config = '/mnt/nas/public2/lilong/repos/qwen-image-finetune/tests/test_configs/test_example_qwen_image_edit_fp16_character_composition.yaml'
+    # upload_lora_safetensors(lora_weight, 'TsienDragon/qwen-image-edit-character-composition', extra_files={train_config: 'train_config.yaml'})
+
+    # lora_weight = '/tmp/image_edit_lora/character_composition_fp16/characterCompositionFluxKontextFp16/v0/pytorch_lora_weights.safetensors/pytorch_lora_weights.safetensors'
+    # train_config ='/mnt/nas/public2/lilong/repos/qwen-image-finetune/tests/test_configs/test_example_fluxkontext_fp16.yaml'
+    # url  = upload_lora_safetensors(lora_weight, 'TsienDragon/flux-kontext-face-segmentation', extra_files={train_config: 'train_config.yaml'})
+    # print(url)
+
+    lora_weight='/tmp/image_edit_lora/character_composition_fp16/characterCompositionFluxKontextFp16/pytorch_lora_weights.safetensors'
+    train_config='/mnt/nas/public2/lilong/repos/qwen-image-finetune/tests/test_configs/test_example_fluxkontext_fp16_character_composition.yaml'
+    url = upload_lora_safetensors(lora_weight, 'TsienDragon/flux-kontext-character-composition', extra_files={train_config: 'train_config.yaml'})
+    print(url)

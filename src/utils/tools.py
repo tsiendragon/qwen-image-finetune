@@ -243,5 +243,16 @@ def infer_image_tensor(t: torch.Tensor) -> Dict[str, object]:
         "range": rng,
     }
 
+
+def calculate_sha256_file(filepath):
+    sha256_hash = hashlib.sha256()
+    # Open the file in binary read mode ('rb')
+    with open(filepath, 'rb') as f:
+        # Read in chunks
+        for chunk in iter(lambda: f.read(4096), b''):
+            sha256_hash.update(chunk)
+    return sha256_hash.hexdigest()
+
+
 if __name__ == "__main__":
     print(get_git_info())

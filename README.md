@@ -313,6 +313,97 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
   </table>
 </div>
 
+### Multi Control
+#### Qwen Image Edit with multi-controls
+<div align="center">
+  <table>
+    <tr>
+      <th align="center">Prompt Image 1</th>
+      <th align="center">Prompt Image 2</th>
+      <th align="center">Generated Image</th>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/image-22.png" alt="Multi Control Example 1" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-23.png" alt="Multi Control Example 2" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-24.png" alt="Multi Control Example 3" style="max-width: 100%; height: auto;">
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/image-25.png" alt="Multi Control Example 4" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-26.png" alt="Multi Control Example 5" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-27.png" alt="Multi Control Example 6" style="max-width: 100%; height: auto;">
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/image-28.png" alt="Multi Control Example 7" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-29.png" alt="Multi Control Example 8" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-30.png" alt="Multi Control Example 9" style="max-width: 100%; height: auto;">
+      </td>
+    </tr>
+  </table>
+  <p><em><strong>Multi Control Examples from <a href="https://huggingface.co/TsienDragon/qwen-image-edit-character-composition">TsienDragon/qwen-image-edit-character-composition</a></strong></em></p>
+</div>
+
+#### Flux Kontext with multi controls
+
+<div align="center">
+  <table>
+    <tr>
+      <th align="center">Prompt Image 1</th>
+      <th align="center">Prompt Image 2</th>
+      <th align="center">Generated Image</th>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/image-22.png" alt="Multi Control Example 1" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-23.png" alt="Multi Control Example 2" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-31.png" alt="Multi Control Example 3" style="max-width: 100%; height: auto;">
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/image-34.png" alt="Multi Control Example 4" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-33.png" alt="Multi Control Example 5" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-32.png" alt="Multi Control Example 6" style="max-width: 100%; height: auto;">
+      </td>
+    </tr>
+    <tr>
+      <td align="center">
+        <img src="docs/images/image-28.png" alt="Multi Control Example 7" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-29.png" alt="Multi Control Example 8" style="max-width: 100%; height: auto;">
+      </td>
+      <td align="center">
+        <img src="docs/images/image-35.png" alt="Multi Control Example 9" style="max-width: 100%; height: auto;">
+      </td>
+    </tr>
+  </table>
+  <p><em><strong>Multi Control Examples from <a href="TsienDragon/flux-kontext-character-composition">TsienDragon/flux-kontext-character-composition</a></strong></em></p>
+</div>
 
 ## Speed
 
@@ -337,6 +428,7 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
 
 ## Inference
 ### Single Control
+- Use trainer in this repo
 ```python
 # Inference with trained LoRA model
 from src.qwen_image_edit_trainer import QwenImageEditTrainer
@@ -371,8 +463,27 @@ result[0]
 result[0].save("output_segmentation.png")
 print("Generated face segmentation saved as output_segmentation.png")
 ```
+- Use diffusers pipeline
+
+```python
+import torch
+from PIL import Image
+from diffusers import QwenImageEditPipeline
+from diffusers.utils import load_image
+
+pipe = QwenImageEditPipeline.from_pretrained("Qwen/Qwen-Image-Edit", torch_dtype=torch.bfloat16,height=512, width=512,
+    output_type='np')
+pipe.to("cuda:0")
+
+pipe.load_lora_weights("TsienDragon/qwen-image-edit-lora-face-segmentation")
+images_out = pipe(prompt_image, prompt,negative_prompt="", num_inference_steps=20, output_type='pil', true_cfg_scale=1.0).images
+
+```
 ### Multi Control
 
+## Notebooks Tutorials
+- [Predict with Flux-Kontext](tests/trainer/test_flux_kontext_predict.ipynb)
+- [Predict with Qwen-Image-Edit](tests/trainer/test_qwen-image-edit.ipynb)
 ## Debug
 [Record of bugs encountered in `docs/debug.md`](docs/debug.md)
 

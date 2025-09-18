@@ -33,8 +33,8 @@ from src.data.cache_manager import EmbeddingCacheManager
 from diffusers import FluxKontextPipeline
 logger = logging.getLogger(__name__)
 
+LORA_FILE_BASE_NAME = 'pytorch_lora_weights.safetensors'
 
-LORA_FILE_BASE_NAME='pytorch_lora_weights.safetensors'
 
 class BaseTrainer(ABC):
     """
@@ -394,10 +394,15 @@ class BaseTrainer(ABC):
         self.setup_accelerator()
         self.load_model()
         if self.config.resume is not None:
+            import glob
             # add the checkpoint in lora.pretrained_weight config
-            self.config.model.lora.pretrained_weight = os.path.join(
-                self.config.resume, LORA_FILE_BASE_NAME
-            )
+            model_files = glob.glob(os.path.join(self.config.resume, "*.safetensors"))
+            if len(model_files) > 0:
+                self.config.model.lora.pretrained_weight = model_files[0]
+            else:
+                self.config.model.lora.pretrained_weight = os.path.join(
+                    self.config.resume, LORA_FILE_BASE_NAME
+                )
             logging.info(
                 f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
             )
@@ -589,8 +594,7 @@ class BaseTrainer(ABC):
                 )
             os.makedirs(save_path, exist_ok=True)
 
-            lora_weight = os.path.join(save_path, LORA_FILE_BASE_NAME)
-            self.save_lora(lora_weight, adapter_name=self.adapter_name)
+            self.save_lora(save_path, adapter_name=self.adapter_name)
 
             state_info = {"global_step": global_step, "epoch": epoch, "is_last": is_last}
             if is_last:
@@ -601,10 +605,10 @@ class BaseTrainer(ABC):
                 json.dump(state_info, f)
         self.fps_logger.resume()
 
-    def save_lora(self, save_path, adapter_name=None):
+    def save_lora(self, save_folder, adapter_name=None):
         """Save LoRA weights"""
-        if not save_path.endswith(LORA_FILE_BASE_NAME):
-            print(f"Warning: save_path should better end with {LORA_FILE_BASE_NAME}")
+        if not save_folder.endswith(".safetensors"):
+            print(f"Warning: save_folder {save_folder} should a folder")
         if self.accelerator is not None:
             unwrapped_transformer = self.accelerator.unwrap_model(self.dit)
         else:
@@ -618,9 +622,9 @@ class BaseTrainer(ABC):
         )
         # Use FluxKontextPipeline's save method if available, otherwise use generic method
         self.pipeline_class.save_lora_weights(
-            save_path, lora_state_dict, safe_serialization=True
+            save_folder, lora_state_dict, safe_serialization=True
         )
-        logging.info(f"Saved LoRA weights to {save_path}")
+        logging.info(f"Saved LoRA weights to {save_folder}")
 
     def save_train_config(self):
         import yaml
@@ -712,20 +716,37 @@ class BaseTrainer(ABC):
     def load_pretrain_lora_model(
         cls, transformer: torch.nn.Module, config, adapter_name: str, stage='fit',
     ):
+        """
+        load the pretrained lora model. Support both local filepath and huggingface repo-id
+        Examples of pretrained_weight:
+            - TsienDragon/qwen-image-edit-character-composition
+            - TsienDragon/qwen-image-edit-character-composition/model.safetensors
+            - <local_path>/pytorch_lora_weights.safetensors
+            - <local_path>/<filename>.safetensors
+        >>>
+        """
         from src.utils.lora_utils import classify_lora_weight
         from src.utils.huggingface import download_lora
 
         pretrained_weight = getattr(config.model.lora, "pretrained_weight", None)
         if pretrained_weight:
             if not os.path.exists(pretrained_weight):
-                # try as the huggingface repos
-                repo_id = "/".join(pretrained_weight.split("/")[:2])
-                filename = pretrained_weight.split("/")[-1]
+                # if the pretrained_weight is a repo-id, add
+                # try as the huggingface repos LORA_FILE_BASE_NAME
+                if pretrained_weight.endswith(".safetensors"):
+                    repo_id = pretrained_weight.split("/")[:2]
+                    filename = pretrained_weight.split("/")[-1]
+                else:
+                    repo_id = pretrained_weight
+                    filename = LORA_FILE_BASE_NAME
                 try:
                     pretrained_weight = download_lora(repo_id, filename)
                 except Exception as e:
                     logging.warning(f"Failed to download lora from {pretrained_weight}: {e}")
                     pass
+            from src.utils.tools import calculate_sha256_file
+            sha256 = calculate_sha256_file(pretrained_weight)
+            logging.info(f"sha256 for pretrained_weight: {sha256}")
             lora_type = classify_lora_weight(pretrained_weight)
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
