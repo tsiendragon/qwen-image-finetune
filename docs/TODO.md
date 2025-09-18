@@ -14,6 +14,9 @@
 - [x] HuggingFace Dataset 支持 (v1.5.2)
 - [x] 修正额外控制图像命名规则文档 (v1.5.3)
 - [ ] training step dtype convertion simplification
-- [ ] Validation Sampling During Training (v1.6.0)
+- [x] Validation Sampling During Training (v1.6.0)
+- [x] HuggingFace兼容的LoRA格式 (v1.6.0)
+- [x] LoRA权重自动上传功能 (v1.6.0)
+- [x] 训练完成时保存最终检查点 (v1.6.0)
 - [ ] training step dtype convertion simplification
 - [ ] Web UI for training monitoring

@@ -8,15 +8,31 @@
 ## [未发布]
 
 ### 新增
-- save last checkpoint when finished, interupted
-- use compatible lora statedict filename and format with huggingface, that can use diffusers pipeline to load the lora`# pipe.load_lora_weights(lora_weight, prefix="", adapter_name="lora_edit")`
-- upload lora weights to huggingface model
+- 待添加...
 
 ### 改进
 - 待添加...
 
 ### 修复
 - 待添加...
+
+---
+
+## [1.6.0] - 2025-09-18
+
+### 新增
+- **训练完成时保存最终检查点**: 在训练完成或中断时自动保存最后的检查点，确保训练进度不丢失
+- **HuggingFace兼容的LoRA格式**: LoRA权重现在使用与HuggingFace兼容的状态字典文件名和格式，可直接使用diffusers管道加载，例如：`pipe.load_lora_weights(lora_weight, prefix="", adapter_name="lora_edit")`
+- **LoRA权重自动上传**: 支持将训练完成的LoRA权重自动上传到HuggingFace模型仓库
+
+### 改进
+- **训练工作流优化**: 改善了训练完成后的权重保存和管理流程
+- **兼容性增强**: 提升了与HuggingFace生态系统的集成度，方便模型分享和部署
+
+### 技术细节
+- LoRA状态字典格式完全兼容HuggingFace标准
+- 自动检查点保存机制确保训练鲁棒性
+- 支持一键上传训练结果到HuggingFace Hub
 
 ---
 

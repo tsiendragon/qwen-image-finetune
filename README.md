@@ -40,6 +40,8 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
 - **Validation Sampling**: Real-time training progress monitoring with TensorBoard visualization
 - **Resume Training**: Seamless training resumption from checkpoints with full state recovery
+- **HuggingFace Integration**: Full compatibility with HuggingFace ecosystem for LoRA weights sharing and deployment
+- **Auto-Upload to HuggingFace**: One-click upload of trained LoRA weights to HuggingFace Hub
 - **Multi-GPU Support**: Distributed training capabilities with gradient accumulation
 - **Quantization Support**: FP4/FP8/FP16 quantization for reduced memory usage and performance optimization
 - **Flexible Architecture**: Modular design supporting various vision-language tasks
