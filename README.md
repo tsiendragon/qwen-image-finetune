@@ -561,6 +561,6 @@ We welcome contributions to improve this documentation:
 - [Pull Requests](../../pulls) - Code contributions
 
 
-**📝 Note**: This documentation is continuously updated. Last updated: 2025/08/28
+**📝 Note**: This documentation is continuously updated. Last updated: 2025/09/19
 
 **⭐ Tip**: Use the navigation links above to jump to specific topics, or browse sequentially for a complete understanding of the framework.
