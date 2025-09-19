@@ -36,6 +36,30 @@ logger = logging.getLogger(__name__)
 LORA_FILE_BASE_NAME = 'pytorch_lora_weights.safetensors'
 
 
+def collect_lora_linears(root: nn.Module):
+    loras = []
+    for m in root.modules():
+        if isinstance(m, nn.Linear):
+            # 常见 PEFT LoRA 标记
+            if hasattr(m, "lora_A") or hasattr(m, "lora_B") \
+               or hasattr(m, "lora_embedding_A") or hasattr(m, "lora_embedding_B") \
+               or hasattr(m, "lora_edit"):  # 你自定义的标记
+                loras.append(m)
+                continue
+            # 兜底：该 Linear 下有名字包含 "lora" 的子参数，或除了 weight/bias 外仍有可训练参数
+            names_params = dict(m.named_parameters(recurse=False))
+            if any(("lora" in n) for n in names_params.keys()):
+                loras.append(m)
+                continue
+            other_trainables = [
+                p for n, p in names_params.items()
+                if n not in ("weight", "bias") and p.requires_grad
+            ]
+            if other_trainables:
+                loras.append(m)
+    return loras
+
+
 class BaseTrainer(ABC):
     """
     Abstract base class for all trainer implementations.
@@ -153,9 +177,31 @@ class BaseTrainer(ABC):
         """Prepare accelerator"""
         from diffusers.loaders import AttnProcsLayers
         from src.utils.lora_utils import get_lora_layers
-
         lora_layers_model = AttnProcsLayers(get_lora_layers(self.dit))
-
+        print('lora number of parameters')
+        n_p = 0
+        i = 0
+        for name, param in lora_layers_model.named_parameters():
+            i += 1
+            if i <= 5:
+                print(name, param.shape)
+            n_p += param.numel()
+        print(f'lora number of parameters: {n_p}')
+        p_trainable = 0
+        i = 0
+        for name, param in self.dit.named_parameters():
+            i += 1
+            if param.requires_grad:
+                p_trainable += param.numel()
+                if 'lora' not in name:
+                    print('non-lora got grad', name, param.numel())
+                else:
+                    if i<= 5:
+                        print(name, param.shape)
+            else:
+                if 'lora' in name:
+                    print('lora got no grad', name, param.numel())
+        print(f"trainable number of parameters: {p_trainable}")
         # 根据配置决定是否启用梯度检查点
         if self.config.train.gradient_checkpointing:
             self.dit.enable_gradient_checkpointing()
@@ -169,9 +215,56 @@ class BaseTrainer(ABC):
             )
             logging.info(f"Loaded optimizer and scheduler from {self.config.resume}")
 
-        lora_layers_model, optimizer, train_dataloader, lr_scheduler = (
+        plug = getattr(self.accelerator.state, "fsdp_plugin", None)
+        if plug is not None:
+            from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
+            import torch
+            torch.backends.cuda.enable_flash_sdp(False)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+            torch.backends.cuda.enable_math_sdp(False)
+
+            plug.use_orig_params = True
+            plug.ignored_modules = collect_lora_linears(self.dit)
+
+            plug.limit_all_gathers = True
+            plug.forward_prefetch = False
+            # plug.backward_prefetch = BackwardPrefetch.BACKWARD_PRE  # 边回传边预取
+            plug.backward_prefetch = BackwardPrefetch.BACKWARD_POST
+
+            plug.sync_module_states = True        # 主卡广播初始化，避免不一致
+            plug.min_num_params = 5_000_000
+
+            plug.mixed_precision = MixedPrecision(
+                    param_dtype=torch.bfloat16,
+                    reduce_dtype=torch.bfloat16,
+                    buffer_dtype=torch.bfloat16,
+                    cast_forward_inputs=False,
+                )
+            from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy, size_based_auto_wrap_policy
+            from torch.distributed.fsdp import ShardingStrategy, BackwardPrefetch
+
+            from src.models.transformer_qwenimage import QwenImageTransformerBlock  # 你的类路径
+            from functools import partial
+
+            # plug.auto_wrap_policy = partial(
+            #     transformer_auto_wrap_policy,
+            #     transformer_layer_cls={QwenImageTransformerBlock},  # 注意：是关键字参数
+            # )
+            plug.auto_wrap_policy = partial(size_based_auto_wrap_policy, min_num_params=10_000_000)
+
+            # from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+            plug.sharding_strategy = ShardingStrategy.FULL_SHARD  #SHARD_GRAD_OP
+            from torch.backends.cuda import sdp_kernel
+            sdp_kernel(enable_flash=False, enable_math=False, enable_mem_efficient=True)
+
+            self.dit = self.dit.to('cpu')
+            torch.cuda.empty_cache()
+            import gc
+            gc.collect()
+
+        self.dit, optimizer, train_dataloader, lr_scheduler = (
             self.accelerator.prepare(
-                lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
+                self.dit, self.optimizer, train_dataloader, self.lr_scheduler
             )
         )
         self.optimizer = optimizer
@@ -390,6 +483,7 @@ class BaseTrainer(ABC):
         train_dataloader = self.accelerator_prepare(train_dataloader)
         logging.info("***** Running training *****")
         print_model_summary_table(self.dit)
+
         self.fps_logger.start()
         self.save_train_config()
         self.setup_progressbar()
@@ -497,7 +591,8 @@ class BaseTrainer(ABC):
 
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
-            mixed_precision=self.config.train.mixed_precision,
+            # mixed_precision=self.config.train.mixed_precision,
+            mixed_precision="no",  # ← 关键
             log_with=self.config.logging.report_to,
             project_config=accelerator_project_config,
         )

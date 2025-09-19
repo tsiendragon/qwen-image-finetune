@@ -288,7 +288,7 @@ class QwenImageEditTrainer(BaseTrainer):
                 self.vae.requires_grad_(False).eval()
 
             gc.collect()
-            self.dit.to(self.accelerator.device)
+            # self.dit.to(self.accelerator.device)
             self.dit.requires_grad_(False)
             self.dit.train()
             for name, param in self.dit.named_parameters():
@@ -301,7 +301,7 @@ class QwenImageEditTrainer(BaseTrainer):
             # Non-cache mode: need all encoders
             self.vae.to(self.accelerator.device)
             self.text_encoder.to(self.accelerator.device)
-            self.dit.to(self.accelerator.device)
+            # self.dit.to(self.accelerator.device)
             self.vae.decoder.to("cpu")
 
             self.vae.requires_grad_(False).eval()
