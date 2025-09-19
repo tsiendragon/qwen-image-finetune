@@ -139,6 +139,7 @@ The framework provides various pre-configured training setups for different mode
 | `tests/test_configs/test_example_qwen_image_edit_fp16_character_composition.yaml` | Qwen-Image-Edit | FP16 | Multi Control Image Lora Training |A100 | 42G| 2.8|
 | `tests/test_configs/test_example_qwen_image_edit_fp16.yaml` | Qwen-Image-Edit | FP16 | Standard Lora Training | A100 | 43G |3.8|
 
+
 GPU recommended with the following settings:
 - batchsize: 2
 - gradient-checkpoint: True
@@ -153,6 +154,38 @@ GPU recommended with the following settings:
 # For FLUX Kontext FP4 training on RTX 4090
 CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
 ```
+#### FSDP training
+- Setup
+In the [accelerate config](accelerate_config.yaml), choose proper distributed_type and choose proper num_processes (the number of gpus you want to use)
+```
+distributed_type: FSDP #NO # MULTI_GPU, FSDP
+num_processes: 2
+```
+
+
+- Memory cost compare
+
+|config| model | dtype | desc | machine| GPU memory | speed (second / batch)|
+|---   | ---   | ---   | ---  | ---    |  ---       |  --- |
+|  [qwen-config](tests/test_configs/test_example_qwen_image_edit_fp16.yaml) | Qwen-Image-Edit | FP16 | Standard Lora Training | A100x1 | 43G |3.8|
+|  [qwen-config](tests/test_configs/test_example_qwen_image_edit_fp16.yaml)| Qwen-Image-Edit | FP16 | Standard Lora Training | A100x2(DDP) | 55G |3.1|
+|  [qwen-config](tests/test_configs/test_example_qwen_image_edit_fp16.yaml) | Qwen-Image-Edit | FP16 | Standard Lora Training | A100x3(DDP) | 55G |3.41|
+| [qwen-config](tests/test_configs/test_example_qwen_image_edit_fp16.yaml) | Qwen-Image-Edit | FP16 | Standard Lora Training | A100x2(FSDP) | 38G |4.66|
+|  [qwen-config](tests/test_configs/test_example_qwen_image_edit_fp16.yaml) | Qwen-Image-Edit | FP16 | Standard Lora Training | A100x3(FSDP) | 22.2G |4.8|
+
+**Parameter Summary Information over different local ranks**
+<table>
+<tr>
+<td align="center"><b>Rank-0</b></td>
+<td align="center"><b>Rank-1</b></td>
+<td align="center"><b>Rank-2</b></td>
+</tr>
+<tr>
+<td><img src="docs/images/image-38.png" alt="Rank-0" width="300"/></td>
+<td><img src="docs/images/image-39.png" alt="Rank-1" width="300"/></td>
+<td><img src="docs/images/image-40.png" alt="Rank-2" width="300"/></td>
+</tr>
+</table>
 
 #### Training with RTX4090
 
@@ -528,6 +561,6 @@ We welcome contributions to improve this documentation:
 - [Pull Requests](../../pulls) - Code contributions
 
 
-**📝 Note**: This documentation is continuously updated. Last updated: 2025/08/28
+**📝 Note**: This documentation is continuously updated. Last updated: 2025/09/19
 
 **⭐ Tip**: Use the navigation links above to jump to specific topics, or browse sequentially for a complete understanding of the framework.

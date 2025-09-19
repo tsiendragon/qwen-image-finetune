@@ -28,8 +28,8 @@ data:
         target_size:  [384, 672] # [768, 1344]
         controls_size: [[384, 672], [512,512]]
 
-  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
-  num_workers: 2
+  batch_size: 8  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  num_workers: 8
   shuffle: true
 
 logging:

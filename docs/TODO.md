@@ -18,9 +18,11 @@
 - [x] HuggingFace compatible LoRA format (v1.6.0)
 - [x] Automatic LoRA weight upload functionality (v1.6.0)
 - [x] Save final checkpoint on training completion (v1.6.0)
+- [x] FSDP training support (v2.1.0)
+- [x] Multi-control image training with multiple input images (v2.0.0)
+- [x] Enhanced HuggingFace dataset upload for multi-control scenarios (v2.1.0)
 
 ## Planned Features
-- [ ] FSDP training support
 - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
 - [ ] Sampling for training monitoring with TensorBoard
 - [ ] Online quantization for training and inference

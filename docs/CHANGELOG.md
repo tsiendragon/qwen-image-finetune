@@ -17,6 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - To be added...
 
 ---
+
+## [2.1.0] - 2025-09-19
+
+### Added
+- **FSDP Training Support**: Implemented Fully Sharded Data Parallel (FSDP) training capabilities for enhanced memory efficiency on multi-GPU setups
+  - 支持 FSDP 分布式训练模式，显著降低单卡显存占用
+  - 自动参数分片和梯度同步，支持大规模模型训练
+  - 提供 FSDP 配置示例和性能对比数据
+
+### Changed
+- **Training Configuration**: Updated default FSDP configuration settings for optimal performance
+- **Documentation Enhancement**: Added comprehensive FSDP training guides and multi-control image examples
+
+### Technical Details
+- FSDP memory optimization: Single GPU memory usage reduced from 43G to 22.2G on A100 with 3-GPU setup
+- Complete FSDP vs DDP performance comparison documentation
+
+---
+
 ## [2.0.0] - 2025-09-18
 Update to v2.0.0 with the refactored codes
 ## [1.6.0] - 2025-09-18
