@@ -11,6 +11,7 @@ test_ic*
 tests/outputs/
 configs/local_examples/
 .Python
+run_local.sh
 build/
 develop-eggs/
 dist/
