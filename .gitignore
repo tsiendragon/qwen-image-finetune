@@ -9,7 +9,9 @@ sub_modules/
 test_ic*
 # Distribution / packaging
 tests/outputs/
+configs/local_examples/
 .Python
+run_local.sh
 build/
 develop-eggs/
 dist/
@@ -31,6 +33,7 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+configs/flux_kontext_ktp/
 MANIFEST
 try.ipynb
 try*.ipynb

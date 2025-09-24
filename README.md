@@ -6,6 +6,7 @@
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
+- **CSV dataset support**: 2025 Sep 24 - support csv dataset path
 - **Multi Control**: 2025 Sep 16
 <div align="center">
   <table>
@@ -78,7 +79,11 @@ dd = load_editing_dataset("TsienDragon/face_segmentation_20")
 sample = dd["train"][0]
 ```
 
-Dataset structure reference and upload/download instructions are in [`docs/huggingface-related.md`](docs/huggingface-related.md). For datasets with CSV metadata files, use `upload_editing_dataset_from_csv()` which supports mixed image formats and flexible directory structures. We will remove the dataset copies under this repository and rely on Hugging Face going forward.
+Dataset structure reference and upload/download instructions are in [`docs/huggingface-related.md`](docs/huggingface-related.md).
+
+**新增CSV数据格式支持 (v2.2.0)**: 现在支持基于CSV元数据文件的数据集管理，提供更灵活的数据集结构。对于使用CSV元数据文件的数据集，使用 `upload_editing_dataset_from_csv()` 函数，该函数支持混合图像格式和灵活的目录结构。CSV格式允许自定义列名映射，适应不同的数据集结构需求。
+
+We will remove the dataset copies under this repository and rely on Hugging Face going forward.
 
 ## Quick Start
 

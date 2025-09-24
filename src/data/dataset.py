@@ -10,6 +10,7 @@ import cv2
 import importlib
 import logging
 import random
+import pandas as pd
 
 from src.data.cache_manager import EmbeddingCacheManager
 from src.utils.huggingface import load_editing_dataset, is_huggingface_repo
@@ -42,6 +43,7 @@ def _first_existing(base_dir: str, stem: str, exts=IMG_EXTS) -> Optional[str]:
 def get_number_of_controls(control_dir: str, stem: str) -> int:
     for ext in IMG_EXTS:
         control_paths = glob.glob(os.path.join(control_dir, f"{stem}_control_[0-99]*{ext}"))
+        print('control_paths', control_paths, 'stem', stem)
         if len(control_paths) > 0:
             return len(control_paths)
     return 0
@@ -181,6 +183,8 @@ class ImageDataset(Dataset):
                 dataset_path = repo_id
             if is_huggingface_repo(dataset_path):
                 samples = self._load_huggingface_dataset(dataset_path, split=split)
+            elif isinstance(dataset_path, str) and dataset_path.endswith('.csv'):
+                samples = self._load_csv_dataset(dataset_path)
             else:
                 samples = self._load_local_dataset(dataset_path)
                 # [image_file, control_files, prompt_file, mask_file, dataset_type, local_index, global_index]
@@ -234,6 +238,44 @@ class ImageDataset(Dataset):
         image_dir, control_dir = self._find_directories(dataset_path)
         # 2. find the image_files and control_files, prompt file or mask file [optional]
         samples = self._scan_image_files(image_dir, control_dir)
+        return samples
+
+    def _load_csv_dataset(self, dataset_path: str) -> List[dict]:
+        """Load dataset from CSV file.
+        samples.append(
+                {
+                    "image": image_path,
+                    "control": controls,
+                    "caption": prompt_file,
+                    "mask_file": mask_file,
+                    "dataset_type": "local",
+                    "local_index": n,
+                    "global_index": start_idx + n,
+                }
+            )
+        """
+
+        df = pd.read_csv(dataset_path)
+        start_idx = len(self.all_samples)
+        # calculate contrl numbers
+        columns = df.columns
+        columns = [x for x in columns if 'path_control' in x]
+        control_keys = sorted(columns)
+        samples = []
+        for idx, row in df.iterrows():
+            controls = [row[x] for x in control_keys]
+            mask_file = row["path_mask"]
+            prompt = row["prompt"]
+            samples.append({
+                "image": row["path_target"],
+                "control": controls,
+                "caption": prompt,
+                "mask_file": mask_file,
+                "dataset_type": "local_csv",
+                "local_index": idx,
+                "global_index": start_idx + idx,
+
+            })
         return samples
 
     def _find_directories(self, dataset_path: str) -> List[str]:
@@ -316,6 +358,7 @@ class ImageDataset(Dataset):
         from tqdm import tqdm
 
         num_controls = get_number_of_controls(control_dir, stems[0])
+
         print('num_controls', num_controls)
         logging.info('found %d controls', num_controls)
         logging.info(f'found with stem {control_dir}/{stems[0]}')
@@ -457,9 +500,11 @@ class ImageDataset(Dataset):
                         data['controls'] = [data['controls'][i-1] for i in self.selected_control_indexes]
             if self.data_key_exist(data_item, 'mask_file'):
                 data['mask'] = cv2.imread(data_item['mask_file'], 0)
-            if self.data_key_exist(data_item, 'caption'):
+            if self.data_key_exist(data_item, 'caption') and data_item['dataset_type'] == 'local':
                 with open(data_item['caption'], 'r', encoding='utf-8') as f:
                     prompt = f.read().strip()
+            else:
+                prompt = data_item['caption']
                 data['prompt'] = prompt
             file_hashes = self.get_file_hashes(data)
             data['file_hashes'] = file_hashes
