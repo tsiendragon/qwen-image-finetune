@@ -3,12 +3,41 @@ description: Project-wide conventions for this repo
 alwaysApply: true
 ---
 # project convention
-## Update Version
-When asked to update to a new version, you should Do the following
-1. Increase the version in @VERSION
-2. Summarize current changes and add it into change log in @docs/CHANGELOG.md
+## commit rules
+Avery time when want to name a new version for the project. Do
+1. Increase the version in @VERSION, depend on the changes to determine which version to increase, refer `Version Update` section
+2. Add change log in @docs/changelog.md
 3. Update todo list in @docs/todo.md
-4. If it a new feature, add a paragraph in the README.md. If it is changes to bug fix. Correction the description in README.md if needed. If new docs created., cite it in README.md which is the entry point of the project
-5. git commit the changes
-6. git push to remote
-7. git create merge request
+4. git commit the changes
+5. In the README.md update the new updates and cite relevent docs
+6. Push to remote
+7. git add version tag and push to origin
+8. git create merge request
+
+## Version Update
+Version format: <major>.<minor>.<patch>
+• MAJOR – any breaking change:
+• CLI/config schema rename/removal; changed defaults that alter results
+• Incompatible checkpoint/state_dict format (no auto-migrator)
+• Incompatible data contract (columns/keys/shapes/labels)
+• Default training/metric semantics change (same seed → different numbers)
+• Removing a documented feature or supported API
+• MINOR – backwards-compatible additions:
+• New features/flags (default OFF), new callbacks/optimizers/schedulers
+• New datasets/loaders adhering to existing interfaces
+• User-visible perf wins without changing outputs
+• PATCH – no API/format change:
+• Bug fixes, small UX/logging/doc updates
+• Internal refactors; dependency bumps that don’t break behavior
+• Quick rules:
+• “Will old scripts/checkpoints/data break or results change by default?” → MAJOR
+• “Can users ignore it and everything stays the same?” + adds capability → MINOR
+• Else → PATCH
+• Pre-release tags: -alpha.N (experimental), -beta.N (feature-complete), -rc.N (bugfix-only)
+• Guardrails:
+•   Provide checkpoint/config migrators; if present and defaults unchanged, avoid MAJOR
+•   CI must load N−1/N−2 checkpoints & configs unless a MAJOR release
+
+## Other rules
+1. do note create examples/ script or other script for example usage. Make the code/project concise and clean
+2. Do not use relative import in code. For exmaple, do not use `from ..models.base_network import BaseNetwork`, but use `from src.models.base_network import BaseNetwork`

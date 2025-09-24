@@ -21,9 +21,11 @@
 - [x] FSDP training support (v2.1.0)
 - [x] Multi-control image training with multiple input images (v2.0.0)
 - [x] Enhanced HuggingFace dataset upload for multi-control scenarios (v2.1.0)
+- [x] CSV数据格式支持 - 支持基于CSV元数据文件的数据集管理 (v2.2.0)
 
 ## Planned Features
 - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
 - [ ] Sampling for training monitoring with TensorBoard
 - [ ] Online quantization for training and inference
 - [ ] Release character-composition dataset on HuggingFace
+- [ ] Qwen-Imag-Edit-2509 support
