@@ -6,6 +6,7 @@
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
+- **Qwen-Image-Edit-2509(Plus)**: support. Read here for [changes of the Qwen-Image-Edit-Plus verison](docs/architecture/qwen_image_edit_plus.md)
 - **CSV dataset support**: 2025 Sep 24 - support csv dataset path
 - **Multi Control**: 2025 Sep 16
 <div align="center">
