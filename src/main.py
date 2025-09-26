@@ -17,6 +17,8 @@ def import_trainer(config: Config):
         from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer as Trainer
     elif trainer_type == 'FluxKontext':
         from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
+    elif trainer_type == 'QwenImageEditPlus':
+        from src.trainer.qwen_image_edit_plus_trainer import QwenImageEditPlusTrainer as Trainer
     else:
         raise ValueError(f"Invalid trainer type: {trainer_type}")
     return Trainer

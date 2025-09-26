@@ -7,7 +7,7 @@ import os
 import re
 from datasets import Dataset, DatasetDict, Features, Image, Value, Sequence
 from huggingface_hub import create_repo, hf_hub_download, HfApi
-from src.trainer.base_trainer import LORA_FILE_BASE_NAME
+from src.trainer.constants import LORA_FILE_BASE_NAME
 
 _IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif")
 

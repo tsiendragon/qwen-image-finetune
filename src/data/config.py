@@ -427,6 +427,7 @@ class CacheConfig(BaseModel):
 # ----------------------------
 class TrainerKind(str, Enum):
     QwenImageEdit = "QwenImageEdit"
+    QwenImageEditPlus = "QwenImageEditPlus"
     FluxKontext = "FluxKontext"
 
 

@@ -165,6 +165,7 @@ class QwenImageEditTrainer(BaseTrainer):
         else:
             raise ValueError(f"Invalid image layout: {tensor_info['layout']}")
 
+
         if tensor_info["range"] == "0-255":
             image = image / 255.0
             image = 2 * image - 1
@@ -174,9 +175,10 @@ class QwenImageEditTrainer(BaseTrainer):
             pass
         else:
             raise ValueError(f"Invalid image range: {tensor_info['range']}")
+
         return image
 
-    def preprocess_image_for_text_encoder(self, image):
+    def preprocess_image_for_text_encoder(self, image, best_resolution=None) -> torch.Tensor:
         """
         the image process passed to text encoder
         image to the text encoder
@@ -203,6 +205,11 @@ class QwenImageEditTrainer(BaseTrainer):
             image = (image + 1) / 2 * 255
         else:
             raise ValueError(f"Invalid image range: {tensor_info['range']}")
+        if best_resolution is not None:
+            new_width, new_height = calculate_best_resolution(image.shape[3], image.shape[2], best_resolution)
+            print('new_width, new_height', new_width, new_height)
+            image = F.interpolate(image, size=(new_height, new_width), mode="bilinear")
+            print('image shape after interpolate', image.shape)
         return image
 
     def prepare_latents(
