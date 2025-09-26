@@ -6,7 +6,7 @@
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
-- **Qwen-Image-Edit-2509(Plus)**: support. Read here for [changes of the Qwen-Image-Edit-Plus verison](docs/architecture/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrain model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
+- **🔥 Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/architecture/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
   <div align="center">
     <table>
       <tr>
@@ -594,6 +594,6 @@ We welcome contributions to improve this documentation:
 - [Pull Requests](../../pulls) - Code contributions
 
 
-**📝 Note**: This documentation is continuously updated. Last updated: 2025/09/19
+**📝 Note**: This documentation is continuously updated. Last updated: 2025/09/26
 
 **⭐ Tip**: Use the navigation links above to jump to specific topics, or browse sequentially for a complete understanding of the framework.
