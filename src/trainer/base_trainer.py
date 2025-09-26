@@ -10,8 +10,11 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy  # transformer_auto_wrap_policy
+from torch.distributed.fsdp import ShardingStrategy, BackwardPrefetch
 import os
 import shutil
+import glob
 import json
 from functools import partial
 import numpy as np
@@ -20,12 +23,14 @@ from tqdm import tqdm
 from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
 from peft.utils import get_peft_model_state_dict
-from torch.backends.cuda import sdp_kernel
-from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy  # transformer_auto_wrap_policy
-from torch.distributed.fsdp import ShardingStrategy, BackwardPrefetch
 import logging
 import PIL
 import signal
+import importlib
+
+import safetensors.torch
+from src.models.quantize import quantize_model_to_fp8
+from src.utils.tools import calculate_sha256_file
 from src.data.config import Config
 from src.utils.model_summary import print_model_summary_table
 from src.utils.lora_utils import FpsLogger
@@ -34,9 +39,12 @@ from src.utils.tools import instantiate_class
 from src.scheduler.custom_flowmatch_scheduler import FlowMatchEulerDiscreteScheduler
 from src.data.cache_manager import EmbeddingCacheManager
 from diffusers import FluxKontextPipeline
+from src.utils.lora_utils import classify_lora_weight
+from src.utils.huggingface import download_lora
+from src.trainer.constants import LORA_FILE_BASE_NAME
+
 logger = logging.getLogger(__name__)
 
-LORA_FILE_BASE_NAME = 'pytorch_lora_weights.safetensors'
 
 
 def collect_lora_linears(root: nn.Module):
@@ -44,9 +52,13 @@ def collect_lora_linears(root: nn.Module):
     for m in root.modules():
         if isinstance(m, nn.Linear):
             # 常见 PEFT LoRA 标记
-            if hasattr(m, "lora_A") or hasattr(m, "lora_B") \
-               or hasattr(m, "lora_embedding_A") or hasattr(m, "lora_embedding_B") \
-               or hasattr(m, "lora_edit"):  # 你自定义的标记
+            if (
+                hasattr(m, "lora_A")
+                or hasattr(m, "lora_B")
+                or hasattr(m, "lora_embedding_A")
+                or hasattr(m, "lora_embedding_B")
+                or hasattr(m, "lora_edit")
+            ):  # 你自定义的标记
                 loras.append(m)
                 continue
             # 兜底：该 Linear 下有名字包含 "lora" 的子参数，或除了 weight/bias 外仍有可训练参数
@@ -54,10 +66,7 @@ def collect_lora_linears(root: nn.Module):
             if any(("lora" in n) for n in names_params.keys()):
                 loras.append(m)
                 continue
-            other_trainables = [
-                p for n, p in names_params.items()
-                if n not in ("weight", "bias") and p.requires_grad
-            ]
+            other_trainables = [p for n, p in names_params.items() if n not in ("weight", "bias") and p.requires_grad]
             if other_trainables:
                 loras.append(m)
     return loras
@@ -112,9 +121,11 @@ class BaseTrainer(ABC):
 
     def setup_signal_handlers(self):
         """设置信号处理器来捕获Ctrl+C中断"""
+
         def signal_handler(signum, frame):
             logging.info("收到中断信号，准备保存最后一个检查点...")
             self.training_interrupted = True
+
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
@@ -172,7 +183,7 @@ class BaseTrainer(ABC):
     def _is_valid_training_version(self, version_path):
         """if the folder consist checkpoint, return True"""
         # 检查 checkpoint 目录
-        import glob
+
         checkpoints = glob.glob(f"{version_path}/*/*.safetensors")
         return len(checkpoints) > 0
 
@@ -186,12 +197,8 @@ class BaseTrainer(ABC):
             self.dit.enable_gradient_checkpointing()
         if self.config.resume is not None:
             # self.accelerator.load_state(self.config.train.resume_from_checkpoint)
-            self.optimizer.load_state_dict(
-                torch.load(os.path.join(self.config.resume, "optimizer.bin"))
-            )
-            self.lr_scheduler.load_state_dict(
-                torch.load(os.path.join(self.config.resume, "scheduler.bin"))
-            )
+            self.optimizer.load_state_dict(torch.load(os.path.join(self.config.resume, "optimizer.bin")))
+            self.lr_scheduler.load_state_dict(torch.load(os.path.join(self.config.resume, "scheduler.bin")))
             logging.info(f"Loaded optimizer and scheduler from {self.config.resume}")
 
         # sdp_kernel(enable_flash=False, enable_math=False, enable_mem_efficient=True)
@@ -199,7 +206,7 @@ class BaseTrainer(ABC):
         plug = getattr(self.accelerator.state, "fsdp_plugin", None)
         if plug is not None:
             from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
-            import torch
+
             # torch.backends.cuda.enable_flash_sdp(False)
             torch.backends.cuda.enable_flash_sdp(True)
 
@@ -213,14 +220,14 @@ class BaseTrainer(ABC):
             # plug.backward_prefetch = BackwardPrefetch.BACKWARD_POST
             plug.forward_prefetch = True
             plug.backward_prefetch = BackwardPrefetch.BACKWARD_PRE  # 边回传边预取
-            plug.sync_module_states = True        # 主卡广播初始化，避免不一致
-            plug.min_num_params = 20_000_000  #5_000_000
+            plug.sync_module_states = True  # 主卡广播初始化，避免不一致
+            plug.min_num_params = 20_000_000  # 5_000_000
             plug.mixed_precision = MixedPrecision(
-                    param_dtype=torch.bfloat16,
-                    reduce_dtype=torch.bfloat16,
-                    buffer_dtype=torch.bfloat16,
-                    cast_forward_inputs=False,
-                )
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.bfloat16,
+                buffer_dtype=torch.bfloat16,
+                cast_forward_inputs=False,
+            )
             # from src.models.transformer_qwenimage import QwenImageTransformerBlock  # 你的类路径
             # plug.auto_wrap_policy = partial(
             #     transformer_auto_wrap_policy,
@@ -228,26 +235,24 @@ class BaseTrainer(ABC):
             # )
             plug.auto_wrap_policy = partial(size_based_auto_wrap_policy, min_num_params=plug.min_num_params)
             # from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-            plug.sharding_strategy = ShardingStrategy.FULL_SHARD #FULL_SHARD   # SHARD_GRAD_OP
+            plug.sharding_strategy = ShardingStrategy.FULL_SHARD  # FULL_SHARD   # SHARD_GRAD_OP
 
-            self.dit = self.dit.to('cpu')
+            self.dit = self.dit.to("cpu")
             torch.cuda.empty_cache()
             import gc
+
             gc.collect()
 
-            self.dit, optimizer, train_dataloader, lr_scheduler = (
-                self.accelerator.prepare(
-                    self.dit, self.optimizer, train_dataloader, self.lr_scheduler
-                )
+            self.dit, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
+                self.dit, self.optimizer, train_dataloader, self.lr_scheduler
             )
         else:
             from diffusers.loaders import AttnProcsLayers
             from src.utils.lora_utils import get_lora_layers
+
             lora_layers_model = AttnProcsLayers(get_lora_layers(self.dit))
-            lora_layers_model, optimizer, train_dataloader, lr_scheduler = (
-                self.accelerator.prepare(
-                    lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
-                )
+            lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
+                lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
             )
             self.dit = self.dit.to(self.accelerator.device)
         self.optimizer = optimizer
@@ -329,14 +334,10 @@ class BaseTrainer(ABC):
     def forward_loss(self, model_pred, target, weighting=None, edit_mask=None):
         if edit_mask is None:
             if weighting is None:
-                loss = torch.nn.functional.mse_loss(
-                    model_pred, target, reduction="mean"
-                )
+                loss = torch.nn.functional.mse_loss(model_pred, target, reduction="mean")
             else:
                 loss = torch.mean(
-                    (
-                        weighting.float() * (model_pred.float() - target.float()) ** 2
-                    ).reshape(target.shape[0], -1),
+                    (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
                     1,
                 )
                 loss = loss.mean()
@@ -367,9 +368,7 @@ class BaseTrainer(ABC):
                 self.optimizer.zero_grad()
             if self.accelerator.sync_gradients:
                 avg_loss = self.accelerator.gather(loss.detach()).mean()
-                self.train_loss = (
-                    avg_loss.item() / self.config.train.gradient_accumulation_steps
-                )
+                self.train_loss = avg_loss.item() / self.config.train.gradient_accumulation_steps
                 self.running_loss = 0.9 * self.running_loss + 0.1 * self.train_loss
                 self.update_progressbar(
                     logs={
@@ -381,10 +380,7 @@ class BaseTrainer(ABC):
                     }
                 )
                 self.save_checkpoint(epoch, self.global_step)
-                if (
-                    self.validation_sampler
-                    and self.validation_sampler.should_run_validation(self.global_step)
-                ):
+                if self.validation_sampler and self.validation_sampler.should_run_validation(self.global_step):
                     self.fps_logger.pause()
                     try:
                         self.validation_sampler.run_validation_loop(
@@ -414,11 +410,7 @@ class BaseTrainer(ABC):
 
         # if max_train_steps exist, use is None, use num_epochs
 
-        self.num_epochs = int(
-            self.config.train.max_train_steps
-            / self.batch_size
-            / self.accelerator.num_processes
-        )
+        self.num_epochs = int(self.config.train.max_train_steps / self.batch_size / self.accelerator.num_processes)
 
     def update_progressbar(self, logs: dict):
         self.accelerator.log(logs, step=self.global_step)
@@ -426,7 +418,7 @@ class BaseTrainer(ABC):
             "loss": f"{logs['loss']:.3f}",
             "smooth_loss": f"{logs['smooth_loss']:.3f}",
             "lr": f"{logs['lr']:.1e}",
-            "epoch": logs['epoch'],
+            "epoch": logs["epoch"],
             "fps": f"{logs['fps']:.2f}",
         }
         self.progress_bar.update(1)
@@ -440,17 +432,14 @@ class BaseTrainer(ABC):
         self.load_model()
         if self.config.resume is not None:
             import glob
+
             # add the checkpoint in lora.pretrained_weight config
             model_files = glob.glob(os.path.join(self.config.resume, "*.safetensors"))
             if len(model_files) > 0:
                 self.config.model.lora.pretrained_weight = model_files[0]
             else:
-                self.config.model.lora.pretrained_weight = os.path.join(
-                    self.config.resume, LORA_FILE_BASE_NAME
-                )
-            logging.info(
-                f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}"
-            )
+                self.config.model.lora.pretrained_weight = os.path.join(self.config.resume, LORA_FILE_BASE_NAME)
+            logging.info(f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}")
         if self.config.model.quantize:
             self.dit = self.quantize_model(
                 self.dit,
@@ -512,10 +501,8 @@ class BaseTrainer(ABC):
             )
 
         if self.config.model.lora.pretrained_weight is not None:
-            logging.info('load lora from pretrained weight')
-            self.load_pretrain_lora_model(
-                self.dit, self.config, self.config.lora_adapter_name, stage="predict"
-            )
+            logging.info("load lora from pretrained weight")
+            self.load_pretrain_lora_model(self.dit, self.config, self.config.lora_adapter_name, stage="predict")
 
         self.setup_model_device_train_mode(stage="predict")
         logging.info("setup_model_device_train_mode done")
@@ -551,9 +538,7 @@ class BaseTrainer(ABC):
             image = (image * 255).round().astype("uint8")
             if image.shape[-1] == 1:
                 # special case for grayscale (single channel) images
-                pil_images = [
-                    PIL.Image.fromarray(image.squeeze(), mode="L") for image in image
-                ]
+                pil_images = [PIL.Image.fromarray(image.squeeze(), mode="L") for image in image]
             else:
                 pil_images = [PIL.Image.fromarray(image) for image in image]
 
@@ -585,15 +570,11 @@ class BaseTrainer(ABC):
             # Create a simple config dict with only basic types for TensorBoard
             try:
                 simple_config = {
-                    "learning_rate": float(
-                        self.config.optimizer.init_args.get("lr", 0.0001)
-                    ),
+                    "learning_rate": float(self.config.optimizer.init_args.get("lr", 0.0001)),
                     "batch_size": int(self.config.data.batch_size),
                     "max_train_steps": int(self.config.train.max_train_steps),
                     "num_epochs": int(self.config.train.num_epochs),
-                    "gradient_accumulation_steps": int(
-                        self.config.train.gradient_accumulation_steps
-                    ),
+                    "gradient_accumulation_steps": int(self.config.train.gradient_accumulation_steps),
                     "mixed_precision": str(self.config.train.mixed_precision),
                     "lora_r": int(self.config.model.lora.r),
                     "lora_alpha": int(self.config.model.lora.lora_alpha),
@@ -605,9 +586,7 @@ class BaseTrainer(ABC):
                 logging.warning(f"Failed to initialize trackers with config: {e}")
                 # Initialize without config if there's an error
                 self.accelerator.init_trackers("")
-        logging.info(
-            f"Number of devices used in DDP training: {self.accelerator.num_processes}"
-        )
+        logging.info(f"Number of devices used in DDP training: {self.accelerator.num_processes}")
 
         # Set weight data type
         if self.accelerator.mixed_precision == "fp16":
@@ -616,10 +595,7 @@ class BaseTrainer(ABC):
             self.weight_dtype = torch.bfloat16
 
         # Create output directory
-        if (
-            self.accelerator.is_main_process
-            and self.config.logging.output_dir is not None
-        ):
+        if self.accelerator.is_main_process and self.config.logging.output_dir is not None:
             os.makedirs(self.config.logging.output_dir, exist_ok=True)
 
         logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
@@ -632,20 +608,16 @@ class BaseTrainer(ABC):
             return
         if self.accelerator.is_main_process:
             logging.info(f"Saving checkpoint to {self.config.logging.output_dir}")
-            save_path = os.path.join(
-                self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}"
-            )
+            save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}")
             if is_last:
-                save_path = os.path.join(
-                    self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last"
-                )
+                save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last")
             os.makedirs(save_path, exist_ok=True)
 
             self.save_lora(save_path, adapter_name=self.adapter_name)
 
             state_info = {"global_step": global_step, "epoch": epoch, "is_last": is_last}
             if is_last:
-                plug = self.accelerator.state.fsdp_plugin if hasattr(self.accelerator.state, 'fsdp_plugin') else None
+                plug = self.accelerator.state.fsdp_plugin if hasattr(self.accelerator.state, "fsdp_plugin") else None
                 if plug is None:
                     self.accelerator.save_state(save_path)  # when save in fsdp, will cause problem
                 git_info = get_git_info()
@@ -670,18 +642,14 @@ class BaseTrainer(ABC):
             get_peft_model_state_dict(unwrapped_transformer, adapter_name=adapter_name)
         )
         # Use FluxKontextPipeline's save method if available, otherwise use generic method
-        self.pipeline_class.save_lora_weights(
-            save_folder, lora_state_dict, safe_serialization=True
-        )
+        self.pipeline_class.save_lora_weights(save_folder, lora_state_dict, safe_serialization=True)
         logging.info(f"Saved LoRA weights to {save_folder}")
 
     def save_train_config(self):
         import yaml
 
         d_json = self.config.model_dump(mode="json", exclude_none=True)
-        train_yaml_file = os.path.join(
-            self.config.logging.output_dir, "train_config.yaml"
-        )
+        train_yaml_file = os.path.join(self.config.logging.output_dir, "train_config.yaml")
         os.makedirs(self.config.logging.output_dir, exist_ok=True)
         with open(train_yaml_file, "w") as f:
             yaml.dump(d_json, f, default_flow_style=False, sort_keys=False)
@@ -690,38 +658,24 @@ class BaseTrainer(ABC):
         """Configure optimizer and learning rate scheduler"""
         from diffusers.optimization import get_scheduler
 
-        trainable_named_params = [
-            (name, param)
-            for name, param in self.dit.named_parameters()
-            if param.requires_grad
-        ]
+        trainable_named_params = [(name, param) for name, param in self.dit.named_parameters() if param.requires_grad]
         lora_layers = [param for _, param in trainable_named_params]
 
         # Log how many parameters are in training and show one example
-        if (
-            getattr(self, "accelerator", None) is None
-        ) or self.accelerator.is_main_process:
+        if (getattr(self, "accelerator", None) is None) or self.accelerator.is_main_process:
             total_elements = sum(p.numel() for p in lora_layers)
-            logging.info(
-                f"Trainable parameters: {len(lora_layers)} tensors, total elements: {total_elements}"
-            )
+            logging.info(f"Trainable parameters: {len(lora_layers)} tensors, total elements: {total_elements}")
             if len(trainable_named_params) > 0:
                 example_name, example_param = trainable_named_params[0]
-                logging.info(
-                    f"Example trainable param: {example_name}, shape={tuple(example_param.shape)}"
-                )
+                logging.info(f"Example trainable param: {example_name}, shape={tuple(example_param.shape)}")
                 logging.info(f"Example dtype: {example_param.dtype}")
 
         # Use optimizer parameters from configuration
-
-        import importlib
-
         optimizer_config = self.config.optimizer.init_args
         class_path = self.config.optimizer.class_path
         module_name, class_name = class_path.rsplit(".", 1)
         cls = getattr(importlib.import_module(module_name), class_name)
         logging.info(f"Using optimizer: {cls}, {class_path}")
-        # cls = getattr(importlib.import_module(class_path), class_path)
         self.optimizer = cls(
             lora_layers,
             **optimizer_config,
@@ -736,8 +690,6 @@ class BaseTrainer(ABC):
 
     @classmethod
     def quantize_model(cls, model, device):
-        from src.models.quantize import quantize_model_to_fp8
-
         model = quantize_model_to_fp8(
             model,
             engine="bnb",
@@ -763,7 +715,11 @@ class BaseTrainer(ABC):
 
     @classmethod
     def load_pretrain_lora_model(
-        cls, transformer: torch.nn.Module, config, adapter_name: str, stage='fit',
+        cls,
+        transformer: torch.nn.Module,
+        config,
+        adapter_name: str,
+        stage="fit",
     ):
         """
         load the pretrained lora model. Support both local filepath and huggingface repo-id
@@ -774,9 +730,6 @@ class BaseTrainer(ABC):
             - <local_path>/<filename>.safetensors
         >>>
         """
-        from src.utils.lora_utils import classify_lora_weight
-        from src.utils.huggingface import download_lora
-
         pretrained_weight = getattr(config.model.lora, "pretrained_weight", None)
         if pretrained_weight:
             if not os.path.exists(pretrained_weight):
@@ -793,23 +746,19 @@ class BaseTrainer(ABC):
                 except Exception as e:
                     logging.warning(f"Failed to download lora from {pretrained_weight}: {e}")
                     pass
-            from src.utils.tools import calculate_sha256_file
+
+
             sha256 = calculate_sha256_file(pretrained_weight)
             logging.info(f"sha256 for pretrained_weight: {sha256}")
             lora_type = classify_lora_weight(pretrained_weight)
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
-                transformer.load_lora_adapter(
-                    pretrained_weight, adapter_name=adapter_name
-                )
-                logging.info(
-                    f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}"
-                )
+                transformer.load_lora_adapter(pretrained_weight, adapter_name=adapter_name)
+                logging.info(f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}")
             else:
                 # add lora first
                 # Configure model
                 cls.add_lora_adapter(transformer, config, adapter_name)
-                import safetensors.torch
 
                 missing, unexpected = transformer.load_state_dict(
                     safetensors.torch.load_file(pretrained_weight),
@@ -817,14 +766,12 @@ class BaseTrainer(ABC):
                 )
                 if len(unexpected) > 0:
                     raise ValueError(f"Unexpected keys: {unexpected}")
-                logging.info(
-                    f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}"
-                )
+                logging.info(f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}")
                 logging.info(f"missing keys: {len(missing)}, {missing[0]}")
                 # self.load_lora(self.config.model.lora.pretrained_weight)
             logging.info(f"set_lora: Loaded lora from {pretrained_weight}")
 
-        elif stage == 'fit':
+        elif stage == "fit":
             cls.add_lora_adapter(transformer, config, adapter_name)
 
     def normalize_image(self, image: torch.Tensor) -> torch.Tensor:
@@ -832,9 +779,7 @@ class BaseTrainer(ABC):
         image = image.to(self.weight_dtype)
         return image * 2.0 - 1.0
 
-    def prepare_predict_timesteps(
-        self, num_inference_steps: int, image_seq_len: int
-    ) -> Tuple[torch.Tensor, int]:
+    def prepare_predict_timesteps(self, num_inference_steps: int, image_seq_len: int) -> Tuple[torch.Tensor, int]:
         """prepare timesteps for prediction"""
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         mu = calculate_shift(
@@ -870,9 +815,7 @@ class BaseTrainer(ABC):
         pass
 
     @abstractmethod
-    def prepare_embeddings(
-        self, batch: dict, stage: str = "fit"
-    ) -> Dict[str, torch.Tensor]:
+    def prepare_embeddings(self, batch: dict, stage: str = "fit") -> Dict[str, torch.Tensor]:
         """Prepare embeddings for prediction. Call vae encoder and prompt encoder
         to get the embeddings. Used in fit & predict
         Update the embeddings keys in batch dict
@@ -893,9 +836,7 @@ class BaseTrainer(ABC):
         pass
 
     @abstractmethod
-    def sampling_from_embeddings(
-        self, embeddings: Dict[str, torch.Tensor]
-    ) -> torch.Tensor:
+    def sampling_from_embeddings(self, embeddings: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Sampling from embeddings. Only handle the latent diffusion steps. Output the final latents. Need
         to decode the latents to images.
         """

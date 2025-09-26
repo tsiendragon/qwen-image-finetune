@@ -6,7 +6,33 @@
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
-- **Qwen-Image-Edit-2509(Plus)**: support. Read here for [changes of the Qwen-Image-Edit-Plus verison](docs/architecture/qwen_image_edit_plus.md)
+- **Qwen-Image-Edit-2509(Plus)**: support. Read here for [changes of the Qwen-Image-Edit-Plus verison](docs/architecture/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrain model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
+  <div align="center">
+    <table>
+      <tr>
+        <td align="center">
+          <img src="docs/images/image-41.png" alt="Image 41" width="200"/>
+          <br>
+          <em>Original Image</em>
+        </td>
+        <td align="center">
+          <img src="docs/images/image-42.png" alt="Image 42" width="200"/>
+          <br>
+          <em>LoRA for Face Segmentation</em>
+        </td>
+        <td align="center">
+          <img src="docs/images/image-43.png" alt="Image 43" width="200"/>
+          <br>
+          <em>Original with Character Composition (Plus version support multiple image composition natively)</em>
+        </td>
+        <td align="center">
+          <img src="docs/images/image-44.png" alt="Image 44" width="200"/>
+          <br>
+          <em>LoRA with Character Composition</em>
+        </td>
+      </tr>
+    </table>
+  </div>
 - **CSV dataset support**: 2025 Sep 24 - support csv dataset path
 - **Multi Control**: 2025 Sep 16
 <div align="center">
@@ -140,11 +166,12 @@ The framework provides various pre-configured training setups for different mode
 
 | Config File | Model | Precision | Key Features | GPU Memory | Recommended GPU | fps (second/batch) |
 |------------|-------|-----------|--------------|------------|-----------------|---|
-| `tests/test_configs/test_example_fluxkontext_fp16_character_composition.yaml` | Flux-Kontext| BF16 |Multi Control Image Lora Training |A100  | 26G |2.9|
-| `tests/test_configs/test_example_fluxkontext_fp16.yaml` | Flux-Kontext | FP16 | Standard Lora Training | A100 | 27G|3.4|
-| `tests/test_configs/test_example_qwen_image_edit_fp16_character_composition.yaml` | Qwen-Image-Edit | FP16 | Multi Control Image Lora Training |A100 | 42G| 2.8|
-| `tests/test_configs/test_example_qwen_image_edit_fp16.yaml` | Qwen-Image-Edit | FP16 | Standard Lora Training | A100 | 43G |3.8|
-
+| [fluxkontext fp16 character composition](tests/test_configs/test_example_fluxkontext_fp16_character_composition.yaml) | Flux-Kontext| BF16 |Multi Control Image Lora Training |A100  | 26G |2.9|
+| [fluxkontext fp16 face segmentation](tests/test_configs/test_example_fluxkontext_fp16.yaml) | Flux-Kontext | FP16 | Standard Lora Training | A100 | 27G|3.4|
+| [qwen-image-edit fp16 character composition](tests/test_configs/test_example_qwen_image_edit_fp16_character_composition.yaml) | Qwen-Image-Edit | FP16 | Multi Control Image Lora Training |A100 | 42G| 2.8|
+| [qwen-image-edit fp16 face segmentation](tests/test_configs/test_example_qwen_image_edit_fp16.yaml) | Qwen-Image-Edit | FP16 | Standard Lora Training | A100 | 43G |3.8|
+|[qwen-iamge-edit-plus character composition](tests/test_configs/test_example_qwen_image_edit_plus_fp4_character_composition.yaml)|Qwen-Image-Edit-Plus | fp4 | fp4 lora training| A100 | 33| 3.8|
+|[qwen-iamge-edit-plus fp4 face segmentation](tests/test_configs/test_example_qwen_image_edit_plus_fp4.yaml)|Qwen-Image-Edit-Plus | fp4 | fp4 lora training| A100 | 27.9| 3.6|
 
 GPU recommended with the following settings:
 - batchsize: 2
