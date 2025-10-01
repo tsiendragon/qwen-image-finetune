@@ -4,6 +4,155 @@ import PIL
 import torch
 import logging
 from src.data.config import ImageProcessorInitArgs
+from src.utils.images import calculate_best_resolution
+
+import math
+
+
+def _count_pairs_and_examples(area, min_side=256, max_side=2048, step=16, max_examples=12):
+    """
+    对指定 area，统计满足：
+      H=step*a, W=step*b, a,b ∈ [min_side/step, max_side/step] 且 a*b = area/(step*step)
+    的 (H,W) 有序对数量，并返回若干示例。
+    """
+    if area % (step*step) != 0:
+        return 0, []
+    N = area // (step*step)
+    amin, amax = min_side // step, max_side // step
+
+    count = 0
+    examples = []
+    for a in range(amin, amax + 1):
+        if N % a != 0:
+            continue
+        b = N // a
+        if amin <= b <= amax:
+            H, W = step * a, step * b
+            count += 1
+            # 收集少量示例，避免返回过大
+            if len(examples) < max_examples:
+                examples.append((H, W))
+    return count, examples
+
+
+def best_area_near(
+    A, tol=0.20, min_side=256, max_side=2048, step=16, max_examples=12
+):
+    """
+    输入面积 A，返回：
+      - best_area: 在 [A*(1-tol), A*(1+tol)] 内、可分解 (H,W)（满足16整除与边界）最多的面积
+      - count: 该 best_area 下的 (H,W) 组合数（有序对）
+      - examples: 若干满足条件的 (H,W) 示例（不超过 max_examples）
+    并列时，优先与 A 相对误差更小者；再并列取面积更小者。
+    """
+    if A <= 0:
+        raise ValueError("A must be positive.")
+    lo = math.ceil(A * (1 - tol))
+    hi = math.floor(A * (1 + tol))
+
+    # 仅枚举能被 (step*step) 整除的候选面积
+    base = step * step  # 256
+    start = ((lo + base - 1) // base) * base
+    if start > hi:
+        return None  # 窗口内没有满足 16*16 可整除的候选
+
+    best = None  # (count, rel_err, area, examples)
+    area = start
+    while area <= hi:
+        cnt, exs = _count_pairs_and_examples(area, min_side, max_side, step, max_examples)
+        if cnt > 0:
+            rel_err = abs(area - A) / A
+            item = (cnt, rel_err, area, exs)
+            if best is None:
+                best = item
+            else:
+                # 先比组合数，再比与A的相对误差，再比面积大小
+                if (item[0] > best[0] or
+                    (item[0] == best[0] and (item[1] < best[1] or
+                      (item[1] == best[1] and item[2] < best[2])))):
+                    best = item
+        area += base
+
+    if best is None:
+        return None
+
+    cnt, rel_err, area_star, exs = best
+    return {
+        "best_area": area_star,
+        "count": cnt,
+        "relative_error": rel_err,
+        "examples": exs
+    }
+
+
+def best_hw_given_area(
+    A: int,
+    w: int,
+    h: int,
+    step: int = 16,
+    min_side: int | None = None,
+    max_side: int | None = None,
+):
+    """
+    在固定面积 A 下，枚举所有 (new_w, new_h)，要求：
+      1) new_w % step == 0, new_h % step == 0
+      2) new_w * new_h == A
+      3) （若提供）min_side <= new_w,new_h <= max_side
+    从中选使 new_w/new_h 最接近 w/h 的解（比例距离用对数距离以保证对称性）。
+    并列时用 (|new_w - w| + |new_h - h|) 打破；再并列选较小的 max(new_w,new_h)。
+
+    返回: (new_w, new_h)；若无解则返回 None。
+    """
+    base = step * step
+    if A % base != 0:
+        # 面积必须能被 (step*step) 整除，否则无法分成 step 的倍数
+        return None
+
+    target_ratio = w / h
+    N = A // base  # 令 new_w = step*b, new_h = step*a，则 a*b = N
+
+    # a,b 为正整数因子对
+    amin = 1 if min_side is None else math.ceil(min_side / step)
+    bmin = amin
+    amax = float('inf') if max_side is None else math.floor(max_side / step)
+    bmax = amax
+
+    best = None  # (ratio_dist, l1_dist_to_wh, max_side_len, new_w, new_h)
+
+    # 为了不漏解，枚举 a（对应 new_h），由 N%a==0 推出 b（对应 new_w）
+    # 注意：这是有序对 (new_w,new_h)，横纵比不同算不同解
+    a_low = max(1, amin)
+    a_high = min(N, amax) if amax != float('inf') else N
+    for a in range(a_low, a_high + 1):
+        if N % a != 0:
+            continue
+        b = N // a
+        if b < bmin or (bmax != float('inf') and b > bmax):
+            continue
+
+        new_h = step * a
+        new_w = step * b
+        if (min_side is not None and (new_w < min_side or new_h < min_side)) \
+           or (max_side is not None and (new_w > max_side or new_h > max_side)):
+            continue
+
+        # 比例距离（对数对称度量，避免偏向 >1 或 <1）
+        ratio = new_w / new_h
+        ratio_dist = abs(math.log(ratio / target_ratio))
+
+        # 次级打分：距离原尺寸的 L1
+        l1_dist = abs(new_w - w) + abs(new_h - h)
+
+        # 再次级：更小的最长边
+        max_len = max(new_w, new_h)
+
+        score = (ratio_dist, l1_dist, max_len, new_w, new_h)
+        if best is None or score < best:
+            best = score
+
+    if best is None:
+        return None
+    return best[3], best[4]
 
 
 class ImageProcessor:
@@ -23,21 +172,54 @@ class ImageProcessor:
             self.interpolation = interpolation_map.get(self.resize_mode.lower(), cv2.INTER_LINEAR)
         else:
             self.interpolation = self.resize_mode
+
         self.target_size = self.processor_config.target_size
+        self.target_pixels = self.processor_config.target_pixels
+        self.controls_pixels = self.processor_config.controls_pixels
+        self.controls_size = self.processor_config.controls_size
 
-        if self.processor_config.controls_size is None:
-            self.controls_size = [self.target_size]
-        else:
-            controls_size = self.processor_config.controls_size
-            if isinstance(controls_size, list) and isinstance(controls_size[0], (int, float)):
-                self.controls_size = [controls_size]
+        # 如果target_pixels 和 如果target_size 都为空的话，则表示生成的图片尺寸和第一个 control 图片的尺寸相同
+        if self.target_size is None and self.target_pixels is None:
+            if self.controls_size is not None:
+                self.target_size = self.controls_size[0]
+            elif self.controls_pixels is not None:
+                self.target_pixels = self.controls_pixels[0]
             else:
-                self.controls_size = controls_size
+                raise ValueError("target_size and target_pixels and controls_size and controls_pixels are all None")
 
-        self.target_size = self.make_divisible(self.target_size)
-        self.controls_size = [self.make_divisible(size) for size in self.controls_size]
+        # 如果controls_size 为空, 则使用 target size 或者 target_pixels
+        if self.controls_pixels is None and self.controls_size is None:
+            if self.target_size is not None:
+                self.controls_size = [self.target_size]
+            elif self.target_pixels is not None:
+                self.controls_pixels = [self.target_pixels]
+            else:
+                raise ValueError("target_size and target_pixels and controls_size and controls_pixels are all None")
+
+        if isinstance(self.controls_size, list) and isinstance(self.controls_size[0], (int, float)):
+            self.controls_size = [self.controls_size]
+        if isinstance(self.controls_pixels, int):
+            self.controls_pixels = [self.controls_pixels]
+
+        # make it devisible by 16 for shapes and pixels
+        if self.target_size is not None:
+            self.target_size = self.make_divisible(self.target_size)
+        if self.controls_size is not None:
+            self.controls_size = [self.make_divisible(size) for size in self.controls_size]
+        if self.target_pixels is not None:
+            self.target_pixels = best_area_near(self.target_pixels)['best_area']
+            logging.info(f"target_pixels after best_hw_given_area {self.target_pixels}")
+            # self.target_pixels = 32*32*(self.target_pixels//(32*32))
+        if self.controls_pixels is not None:
+            self.controls_pixels = [best_area_near(pixel)['best_area'] for pixel in self.controls_pixels]
+            # self.controls_pixels = [32*32*(size//(32*32)) for size in self.controls_pixels]
+            logging.info(f"controls_pixels after best_hw_given_area {self.controls_pixels}")
+
         logging.info(f"ImageProcessor initialized with target_size: {self.target_size}"
-                     f"controls_size: {self.controls_size}")
+                     f"controls_size: {self.controls_size}"
+                     f"target_pixels: {self.target_pixels}"
+                     f"controls_pixels: {self.controls_pixels}"
+                     )
 
     def make_divisible(self, target_size):
         h, w = target_size
@@ -68,20 +250,22 @@ class ImageProcessor:
         else:
             raise ValueError(f"Unsupported type: {type(any)}")
 
-    def preprocess(self, data, target_size=None, controls_size=None):
+    def preprocess(self, data, target_size=None, controls_size=None, target_pixels=None, controls_pixels=None):
         """处理图像、掩码和控制图像，支持多种处理模式：resize、center_crop和*_padding"""
         # 将图像转换为numpy数组
-        target_h, target_w = target_size if target_size is not None else self.target_size
+        target_size = target_size if target_size is not None else self.target_size
         controls_size = controls_size if controls_size is not None else self.controls_size
+        target_pixels = target_pixels if target_pixels is not None else self.target_pixels
+        controls_pixels = controls_pixels if controls_pixels is not None else self.controls_pixels
 
         if 'image' in data:
             image = self.any2numpy(data['image'])
-            processed_image = self._process_image(image, (target_h, target_w))
+            processed_image = self._process_image(image, target_size, target_pixels)
             data['image'] = self._to_tensor(processed_image)
 
         # 处理mask（如果存在）
         if 'mask' in data:
-            mask = self._process_image(data['mask'], (target_h, target_w))
+            mask = self._process_image(data['mask'], target_size, target_pixels)
             mask = mask / 255.0
             mask = torch.from_numpy(mask).to(torch.float32)
             data['mask'] = mask
@@ -89,17 +273,32 @@ class ImageProcessor:
         # 处理控制图像（如果存在）
         if 'control' in data:
             control = self.any2numpy(data['control'])
-            processed_control = self._process_image(control, controls_size[0])
+            if controls_size is not None:
+                controls_size_0 = controls_size[0]
+            else:
+                controls_size_0 = None
+            if controls_pixels is not None:
+                controls_pixels_0 = controls_pixels[0]
+            else:
+                controls_pixels_0 = None
+            processed_control = self._process_image(control, controls_size_0, controls_pixels_0)
             data['control'] = self._to_tensor(processed_control)
 
-        if 'controls' in data:  # extrol
+        if 'controls' in data:  # extra controls
             controls = [self.any2numpy(x) for x in data['controls']]
-            if len(self.controls_size) == 1:
-                controls = [self._process_image(control, controls_size[0]) for control in controls]
-            else:
-                assert len(controls_size) == len(controls)+1, "the number of controls_size should be same of controls" # NOQA
-                controls = [self._process_image(controls[i], controls_size[i+1]) for i in range(len(controls))]  # NOQA
-            data['controls'] = [self._to_tensor(control) for control in controls]
+            new_controls = []
+            for i in range(len(controls)):
+                if controls_size is not None:
+                    controls_size_i = controls_size[i+1]  # index starting from 1,
+                else:
+                    controls_size_i = None
+                if controls_pixels is not None:
+                    controls_pixels_i = controls_pixels[i+1]
+                else:
+                    controls_pixels_i = None
+                processed_control = self._process_image(controls[i], controls_size_i, controls_pixels_i)
+                new_controls.append(processed_control)
+            data['controls'] = [self._to_tensor(control) for control in new_controls]
         return data
 
     def _to_tensor(self, image):
@@ -107,12 +306,12 @@ class ImageProcessor:
         image = image.astype(np.float32) / 255.0
         return torch.from_numpy(image).permute(2, 0, 1)
 
-    def _process_image(self, image, target_size):
+    def _process_image(self, image, target_size, target_pixels):
         """根据处理类型处理图像"""
-        target_h, target_w = target_size
 
         if self.processor_config.process_type == 'resize':
             # 直接调整大小到目标尺寸
+            target_h, target_w = target_size
             return cv2.resize(image, (target_w, target_h), interpolation=self.interpolation)
 
         elif self.processor_config.process_type == 'center_crop':
@@ -120,6 +319,8 @@ class ImageProcessor:
 
         elif self.processor_config.process_type.endswith('_padding'):
             return self._padding(image, target_size)
+        elif self.processor_config.process_type == 'fixed_pixels':
+            return self._fixed_pixels(image, target_pixels)
 
         else:
             # 默认使用居中裁剪
@@ -172,3 +373,13 @@ class ImageProcessor:
         # 将调整大小后的图像放置在画布上
         result[start_y:start_y+new_h, start_x:start_x+new_w] = resized
         return result
+
+    def _fixed_pixels(self, image, target_pixels):
+        """根据固定像素调整图像大小"""
+        h, w = image.shape[:2]
+        target_pixels = int(target_pixels/(32*32))*(32*32)
+        print('original w,h', w,h)
+        new_w, new_h = best_hw_given_area(target_pixels, w, h)
+        print('new shape', new_w, new_h, 'target_pixels', target_pixels)
+        assert new_w * new_h == target_pixels, f"new_w * new_h {new_w * new_h} != target_pixels {target_pixels}"
+        return cv2.resize(image, (new_w, new_h), interpolation=self.interpolation)

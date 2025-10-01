@@ -6,7 +6,13 @@
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
-- **🔥 Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/architecture/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
+- **🔥 Dynamic Shape Support (v2.4.0)**: 针对 Qwen-Image-Edit-Plus 引入动态形状训练与预处理支持。通过像素约束方式指定尺寸：
+  - `data.init_args.processor.init_args.target_pixels: 512*512`
+  - `data.init_args.processor.init_args.controls_pixels: [512*512]`
+  - 支持整数或表达式（如 `512*512`），并在 `src/data/config.py` 中进行解析与校验。
+  - 示例配置：`tests/test_configs/test_example_qwen_image_edit_plus_fp4_dynamic_shapes.yaml`
+
+- **Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/architecture/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
   <div align="center">
     <table>
       <tr>
@@ -178,8 +184,8 @@ GPU recommended with the following settings:
 - gradient-checkpoint: True
 - Adam8bit
 - image shape
-  - character_composition: `[[384, 672], [512,512]]`
-  - face-segmentation: `[[832, 576]]`
+  - character_composition: `[[384, 672], [512,512]]` 或使用像素约束 `controls_pixels: [512*512]`
+  - face-segmentation: `[[832, 576]]` 或使用像素约束 `controls_pixels: [512*512]`
 
 
 **Usage Example:**

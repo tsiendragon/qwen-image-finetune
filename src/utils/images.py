@@ -56,6 +56,7 @@ def calculate_best_resolution(width: int, height: int, best_resolution: int = 10
     calculated_width, calculated_height, _ = calculate_dimensions(best_resolution, width / height)
     return calculated_width, calculated_height
 
+
 def image_adjust_best_resolution(image: Union[torch.Tensor, PIL.Image.Image, np.ndarray]):
     """Preprocess images for caching, suppose image is B,C,H,W
     tensor: B,C,H,W

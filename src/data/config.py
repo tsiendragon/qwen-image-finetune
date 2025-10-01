@@ -104,18 +104,69 @@ class ImageProcessorInitArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     process_type: str = "center_crop"  # resize, _padding, center_crop
     resize_mode: str = "bilinear"
-    target_size: List[int] = Field(default_factory=lambda: [576, 832])
+    target_size: Optional[List[int]] = None
     controls_size: Optional[Union[List[int], List[List[int]]]] = (
         None  # None -> use target_size
     )
+    controls_pixels: Optional[Union[int, List[int]]] = None
+    target_pixels: Optional[int] = None
 
     @field_validator("process_type")
     @classmethod
     def _check_process_type(cls, v: str) -> str:
-        allowed = {"resize", "center_padding", "right_padding", "center_crop"}
+        allowed = {"resize", "center_padding", "right_padding", "center_crop", "fixed_pixels"}
         if v not in allowed:
             raise ValueError(f"process_type must be one of {allowed}")
         return v
+
+    # 解析像素表达式，例如 "512*512" -> 262144
+    @staticmethod
+    def _eval_pixel_expr(expr: str) -> int:
+        s = str(expr).strip()
+        # 仅允许 非负整数 或 形如 a*b 的简单乘法表达式，避免执行任意代码
+        if re.fullmatch(r"\d+", s):
+            return int(s)
+        if re.fullmatch(r"\d+\s*\*\s*\d+", s):
+            a, b = re.split(r"\*", s)
+            return int(a.strip()) * int(b.strip())
+        raise ValueError(f"Invalid pixel expression: {expr}")
+
+    @field_validator("target_pixels", mode="before")
+    @classmethod
+    def _parse_target_pixels(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, (int,)):
+            return int(v)
+        if isinstance(v, str):
+            return cls._eval_pixel_expr(v)
+        raise ValueError(f"target_pixels must be int or string expression like '512*512', got {type(v)}")
+
+    @field_validator("controls_pixels", mode="before")
+    @classmethod
+    def _parse_controls_pixels(cls, v):
+        if v is None:
+            return v
+        # 允许单个整数/表达式，或列表形式
+        if isinstance(v, (int,)):
+            return int(v)
+        if isinstance(v, str):
+            return cls._eval_pixel_expr(v)
+        if isinstance(v, list):
+            parsed: List[int] = []
+            for item in v:
+                if isinstance(item, (int,)):
+                    parsed.append(int(item))
+                elif isinstance(item, str):
+                    parsed.append(cls._eval_pixel_expr(item))
+                else:
+                    raise ValueError(
+                        "controls_pixels list items must be int or string expression like '512*512'"
+                    )
+            return parsed
+        raise ValueError(
+            "controls_pixels must be int, string expression, or list of them"
+        )
 
 
 class ImageProcessorConfig(BaseModel):
@@ -619,7 +670,9 @@ def load_config_from_yaml(yaml_path: str) -> Config:
 
 
 if __name__ == "__main__":
-    config = load_config_from_yaml("configs/example_fluxkontext_fp16.yaml")
+    # config = load_config_from_yaml("configs/example_fluxkontext_fp16.yaml")
+    config_file = 'tests/test_configs/test_example_qwen_image_edit_plus_fp4_dynamic_shapes.yaml'
+    config = load_config_from_yaml(config_file)
     print(config)
     x = config.model_dump_json(indent=2, exclude_none=True)
     print("type of x", type(x))

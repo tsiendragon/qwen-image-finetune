@@ -8,13 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- To be added...
+- Dynamic shape training support for Qwen-Image-Edit-Plus via pixel-based resizing
+- New test config: `tests/test_configs/test_example_qwen_image_edit_plus_fp4_dynamic_shapes.yaml`
+- Config schema: `data.init_args.processor.init_args.{target_pixels, controls_pixels}` allow expressions like `512*512`
 
 ### Changed
-- To be added...
+- Documentation updated to describe dynamic shapes usage and configuration
 
 ### Fixed
-- To be added...
+- Minor docs fixes and typos
+
+---
+
+## [2.4.0] - 2025-10-01
+
+### Added
+- Dynamic shape support for Qwen-Image-Edit-Plus training and preprocessing
+  - Introduced pixel-based dynamic sizing: `target_pixels`, `controls_pixels`
+  - Accept integer or expression (e.g., `512*512`) with validation in `src/data/config.py`
+  - Example config at `tests/test_configs/test_example_qwen_image_edit_plus_fp4_dynamic_shapes.yaml`
+
+### Changed
+- Updated README with v2.4.0 notes and config examples
+- Refined configuration guide to include dynamic shape options
+
+### Fixed
+- Minor wording and formatting issues across docs
 
 ---
 
