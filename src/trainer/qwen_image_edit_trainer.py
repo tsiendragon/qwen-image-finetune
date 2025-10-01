@@ -595,10 +595,7 @@ class QwenImageEditTrainer(BaseTrainer):
         control_latents = embeddings["control_latents"].to(self.weight_dtype).to(device)
         prompt_embeds = embeddings["prompt_embeds"].to(self.weight_dtype).to(device)
         prompt_embeds_mask = embeddings["prompt_embeds_mask"].to(dtype=torch.int64).to(device)
-        if "img_shapes" in embeddings:
-            img_shapes = embeddings["img_shapes"]
-        else:
-            img_shapes = self._get_image_shapes(embeddings, image_latents.shape[0])
+        img_shapes = embeddings["img_shapes"]  # must from the cache embeddings
         batch_size = image_latents.shape[0]
         if "mask" in embeddings:
             edit_mask = embeddings["mask"]

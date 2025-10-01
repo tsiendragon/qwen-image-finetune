@@ -23,9 +23,10 @@
 - [x] Enhanced HuggingFace dataset upload for multi-control scenarios (v2.1.0)
 - [x] CSV数据格式支持 - 支持基于CSV元数据文件的数据集管理 (v2.2.0)
 - [x] Qwen-Image-Edit-Plus (2509) support - Complete support for enhanced model architecture (v2.3.0)
+- [x] Dynamic shape support with pixel-based resizing for Plus version (v2.4.0)
 
 ## Planned Features
-- [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
+ - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
 - [ ] Sampling for training monitoring with TensorBoard
 - [ ] Online quantization for training and inference
 - [ ] Release character-composition dataset on HuggingFace

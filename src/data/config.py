@@ -104,7 +104,7 @@ class ImageProcessorInitArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     process_type: str = "center_crop"  # resize, _padding, center_crop
     resize_mode: str = "bilinear"
-    target_size: List[int] = Field(default_factory=lambda: [576, 832])
+    target_size: Optional[List[int]] = None
     controls_size: Optional[Union[List[int], List[List[int]]]] = (
         None  # None -> use target_size
     )
