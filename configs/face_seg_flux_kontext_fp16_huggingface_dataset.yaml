@@ -1,6 +1,7 @@
+trainer: FluxKontext
+
 model:
   pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
-  rank: 16
   quantize: False
   lora:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
@@ -15,28 +16,25 @@ data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path:
-      - /raid/lilong/data/face_seg/test/  # change the path to your own dataset path
-      # - split: test
-        # repo_id: TsienDragon/face_segmentation_20
-    image_size: [864, 1048]  # face segmentation usually uses 512x512
+      - split: train
+        repo_id: TsienDragon/face_segmentation_20
     caption_dropout_rate: 0.05  # reduce caption dropout, because the task is relatively specialized
     prompt_image_dropout_rate: 0.05
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
     cache_drop_rate: 0.1  # 10% probability of using empty prompt for training
-    # crop configuration - use center crop instead of random crop
-    random_crop: false  # disable random crop
-    crop_size: 1024  # square size after cropping
-    crop_scale: [0.8, 1.0]  # crop scale range
-    center_crop: true  # enable center crop
-    center_crop_ratio: 1.0  # center crop ratio, 0.9 means crop to 90% of the area
+    processor:
+      class_path: "src.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [832, 576]
+        controls_size: [[832, 576]]
   batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 
 logging:
   output_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/"  # change the path to your own output path
-  logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "face_segmentation_lora"
 
@@ -53,7 +51,6 @@ lr_scheduler:
   power: 1.0
 
 train:
-  trainer: FluxKontext
   gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
   max_train_steps: 6000  # face segmentation data is small, reduce training steps
   num_epochs: 400  # increase epoch number
@@ -62,25 +59,22 @@ train:
   max_grad_norm: 1.0
   mixed_precision: "bf16"
   gradient_checkpointing: True  # enable gradient checkpointing to save memory
-  low_memory: True  # is used low_memory mode, then the model will be loaded on the specified devices
-  # otherwise, the model will be loaded on all the gpus
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:1
-  resume_from_checkpoint: null
+  low_memory: True
 
 cache:
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:1
-  text_encoder_2_device: cuda:1
+  devices:
+    vae: cuda:1
+    text_encoder: cuda:1
+    text_encoder_2: cuda:1
   cache_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16_hf/cache"
   use_cache: true
   prompt_empty_drop_keys:
-    - prompt_embed
-    - pooled_prompt_embed
+    - prompt_embeds
+    - pooled_prompt_embeds
 
 predict:
   devices:
     vae: cuda:1
     text_encoder: cuda:1 # CLIP
     text_encoder_2: cuda:1  # T5
-    transformer: cuda:1
+    dit: cuda:1
