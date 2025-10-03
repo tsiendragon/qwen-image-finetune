@@ -1,16 +1,15 @@
 # Image-Edit Fine-tuning Framework
 
-[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)  [![CUDA](https://img.shields.io/badge/CUDA-12.0%2B-green.svg)](https://developer.nvidia.com/cuda-downloads)  [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)  [![Framework](https://img.shields.io/badge/framework-PyTorch-orange.svg)](https://pytorch.org/)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)  [![CUDA](https://img.shields.io/badge/CUDA-12.0%2B-green.svg)](https://developer.nvidia.com/cuda-downloads)  [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)  [![Framework](https://img.shields.io/badge/framework-PyTorch-orange.svg)](https://pytorch.org/)
 
 ## Overview
 
-This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports both **Qwen-Image-Edit** and **FLUX Kontext** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
+This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**,**Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
-- **🔥 Dynamic Shape Support (v2.4.0)**: 针对 Qwen-Image-Edit-Plus 引入动态形状训练与预处理支持。通过像素约束方式指定尺寸：
+- **🔥 Dynamic Shape Support (v2.4.0)**: For Qwen-Image-Edit or Plus, we introduce the fixed number of pixels condition for batch process such that it support multiple shapes.
   - `data.init_args.processor.init_args.target_pixels: 512*512`
   - `data.init_args.processor.init_args.controls_pixels: [512*512]`
-  - 支持整数或表达式（如 `512*512`），并在 `src/data/config.py` 中进行解析与校验。
-  - 示例配置：`tests/test_configs/test_example_qwen_image_edit_plus_fp4_dynamic_shapes.yaml`
+But this still got limitations for the randomness of shapes used in training. Next we may add H/W buckets to support real dynamic shapes training.
 
 - **Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/architecture/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
   <div align="center">
@@ -83,7 +82,7 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 - **Multi Control**: Support Multiple Controls for Image-Edit model that can support images compositing tasks.
 
 ## Table of Contents
-
+- [Dataset](#dataset)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Documentation](#documentation)
@@ -114,18 +113,20 @@ sample = dd["train"][0]
 
 Dataset structure reference and upload/download instructions are in [`docs/huggingface-related.md`](docs/huggingface-related.md).
 
-**新增CSV数据格式支持 (v2.2.0)**: 现在支持基于CSV元数据文件的数据集管理，提供更灵活的数据集结构。对于使用CSV元数据文件的数据集，使用 `upload_editing_dataset_from_csv()` 函数，该函数支持混合图像格式和灵活的目录结构。CSV格式允许自定义列名映射，适应不同的数据集结构需求。
+Added CSV data format support (v2.2.0): Dataset management based on CSV metadata files is now supported, providing a more flexible dataset structure. For datasets that use a CSV metadata file, use the upload_editing_dataset_from_csv() function, which supports mixed image formats and flexible directory structures. The CSV format allows custom column name mappings to accommodate different dataset structure requirements.
 
-We will remove the dataset copies under this repository and rely on Hugging Face going forward.
+**⚠️ Important**: Before using this framework, you must prepare your dataset. See the [Data Preparation](docs/data-preparation.md) guide for step-by-step instructions.
 
 ## Quick Start
 
 ### Prerequisites
 - Python 3.12+
 - CUDA 12.0+ (for GPU training)
-- 16GB+ RAM, 8GB+ VRAM recommended
+- 18GB+ VRAM recommended
+Other environment may works as well but did not test yet.
 
 ### Requirement Installation
+
 ```bash
 # Clone repository
 git clone https://github.com/yourusername/qwen-image-finetune.git
@@ -137,22 +138,35 @@ cd qwen-image-finetune
 # Or with custom path and HF token
 ./setup.sh /your/path hf_your_token_here
 ```
-Refer [`docs/speed_optimization.md`](docs/speed_optimization.md) to install `flash-atten` to speed-up the training.
+Refer [`docs/speed_optimization.md`](docs/speed_optimization.md) to install `flash-attn` to accelerate training. It provides the greatest benefit with long prompts or large sequence lengths; for short prompts, the speedup may be limited.
 
 ### Train with Toy Dataset
-1. prepare the datasets or use Hugging Face dataset (**recommended**). Refer `configs/face_seg_flux_kontext_fp16_huggingface_dataset.yaml`
+1. prepare the datasets or use Hugging Face dataset (**recommended**). Refer `tests/test_configs/test_example_fluxkontext_fp16.yaml`
 
 2. prepare your config. Now suppose you have the config
 Chose your model, optimizer, etc.
-```bash
-configs/my_config.yaml
-```
 
 3. (Optional) build cache first to speed up training (**recommended**)
 It save the GPU memory since in the training, you dont need image encoder and prompt encoder anymore if you have the cache.
 ```bash
-CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cache
+python -m src.main --config configs/my_config.yaml --cache
 ```
+The GPU devices used in cache are specified in the config as well.
+For example
+```yaml
+cache:
+  devices:
+    vae: cuda:1
+    text_encoder: cuda:0
+    text_encoder_2: cuda:2
+  cache_dir: ${logging.output_dir}/${logging.tracker_project_name}/cache
+  use_cache: true
+  prompt_empty_drop_keys:
+    - prompt_embeds
+    - pooled_prompt_embeds
+```
+Here vae encoder and text encoders could use different GPU ids if your GPU memory is not enough.
+
 4. start training
 Prepaare a `accelerate_config` to specify single gpu training or multi-gpu training
 ```bash
@@ -160,11 +174,25 @@ Prepaare a `accelerate_config` to specify single gpu training or multi-gpu train
 CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
 ```
 
-5. resume training (add resume_from_checkpoint: to config)
-Add the checkpoint path in `train.resume_from_checkpoint` in the config and resume the training
+Or do not use `accelerate_config.yaml` and specify the accelerate parameters in the bash script directly
+Looks like
 ```
-CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+CUDA_VISIBLE_DEVICES=0,1 \
+accelerate launch \
+  --num_processes 2 \
+  --mixed_precision bf16 \
+  -m src.main --config $config_file
 ```
+
+5. resume training
+In the config file add the resumed checkpoint folder
+```
+...
+resume: <path_to_checkpoint_folder>
+...
+```
+
+Then run the script same as above
 
 ### Configuration Guide
 
@@ -193,6 +221,8 @@ GPU recommended with the following settings:
 # For FLUX Kontext FP4 training on RTX 4090
 CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
 ```
+See doc [docs/configuration.md](docs/configuration.md) for more details about the configs
+
 #### FSDP training
 - Setup
 In the [accelerate config](accelerate_config.yaml), choose proper distributed_type and choose proper num_processes (the number of gpus you want to use)
@@ -242,34 +272,7 @@ in the `accelerate_config.yaml`
 
 
 ### Validation Sampling During Training
-
-The framework now supports validation sampling during training to monitor progress and visualize results in TensorBoard. This feature helps debug training issues and track model improvement over time.
-
-Add the `sampling` section under `logging` in your YAML config:
-
-```yaml
-logging:
-  output_dir: "/path/to/output"
-  logging_dir: "logs"
-  report_to: "tensorboard"
-
-  # Sampling during training configuration
-  sampling:
-    enable: true              # Enable/disable sampling functionality
-    validation_steps: 200     # Run validation sampling every N training steps
-    num_samples: 4           # Number of samples to generate per validation
-    seed: 42                 # Seed for reproducible sampling
-
-    # Option 1: Use a validation dataset directory
-    validation_data: "/path/to/validation/dataset"
-
-    # Option 2: Use specific control-prompt pairs
-    # validation_data:
-    #   - control: "/path/to/control1.jpg"
-    #     prompt: "A person with glasses"
-    #   - control: "/path/to/control2.jpg"
-    #     prompt: "A landscape with mountains"
-```
+- [ ]  TO BE COMPLETED
 
 Launch TensorBoard to view the validation results:
 ```bash
@@ -494,6 +497,7 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
 - prodigy-optimizer: [parameter free optimizer](https://github.com/konstmish/prodigy) No need to tune `lr` any more
 - 4090: train on 4090 need to set `NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1`. Other setting are same
 
+Check this docs for more training guides docs/training.md
 ## Inference
 ### Single Control
 - Use trainer in this repo
@@ -603,3 +607,7 @@ We welcome contributions to improve this documentation:
 **📝 Note**: This documentation is continuously updated. Last updated: 2025/09/26
 
 **⭐ Tip**: Use the navigation links above to jump to specific topics, or browse sequentially for a complete understanding of the framework.
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

@@ -264,18 +264,20 @@ class ImageDataset(Dataset):
         samples = []
         for idx, row in df.iterrows():
             controls = [row[x] for x in control_keys]
-            mask_file = row["path_mask"]
             prompt = row["prompt"]
-            samples.append({
+            data = {
                 "image": row["path_target"],
                 "control": controls,
                 "caption": prompt,
-                "mask_file": mask_file,
                 "dataset_type": "local_csv",
                 "local_index": idx,
                 "global_index": start_idx + idx,
 
-            })
+            }
+            if 'path_mask' in row:
+                mask_file = row["path_mask"]
+                data['mask_file'] = mask_file
+            samples.append(data)
         return samples
 
     def _find_directories(self, dataset_path: str) -> List[str]:

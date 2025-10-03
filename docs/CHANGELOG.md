@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Documentation updated to describe dynamic shapes usage and configuration
+ - README license badge updated to MIT, added License section linking to LICENSE
+ - Data preparation guide updated: now documents Folder/Hugging Face/CSV dataset sources
+ - Data preparation guide language switched to English
 
 ### Fixed
 - Minor docs fixes and typos

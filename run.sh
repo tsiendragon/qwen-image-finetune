@@ -16,6 +16,7 @@ config_file='tests/test_configs/test_example_fluxkontext_fp4.yaml'
 config_file='configs/flux_kontext_ktp/ktp_flux_kontext_fp16.yaml'
 config_file='tests/test_configs/test_example_qwen_image_edit_fp16.yaml'
 config_file='configs/flux_kontext_ktp/ktp_flux_kontext_fp16_control2.yaml'
+config_file='configs/local_examples/face_gen_ktp.yaml'
 echo "Used config file: $config_file"
 
 # cache data (using GPU1)
@@ -32,4 +33,9 @@ echo "Used config file: $config_file"
 
 # python3 -m src.main --config $config_file --cache
 
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
+CUDA_VISIBLE_DEVICES=2 \
+accelerate launch \
+  --num_processes 1 \
+  --mixed_precision bf16 \
+  -m src.main --config $config_file
+# CUDA_VISIBLE_DEVICES=2 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file

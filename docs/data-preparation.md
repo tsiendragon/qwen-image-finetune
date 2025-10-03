@@ -18,37 +18,95 @@ This guide covers how to prepare and organize your dataset for training Qwen Ima
 - **Length**: 10-200 words recommended
 - **Content**: Descriptive editing instructions
 
-### Dataset Structure
+### Dataset Sources
 
-项目已提供了一个toy数据集示例在 `data/face_seg/` 目录下。数据集应该按照以下结构组织：
+This project supports three dataset sources: local folder, Hugging Face Hub, and CSV metadata files.
+
+#### 1) Folder (local directory)
+
+Directory structure example:
 
 ```
 dataset/
-├── control_images/         # 源/输入图像
-│   ├── 060002_4_028450_FEMALE_30.png
-│   ├── 060003_4_028451_FEMALE_65.png
-│   └── ...
-└── training_images/        # 目标图像和提示文本
-    ├── 060002_4_028450_FEMALE_30.png    # 目标图像
-    ├── 060002_4_028450_FEMALE_30.txt    # 编辑指令
-    ├── 060003_4_028451_FEMALE_65.png
-    ├── 060003_4_028451_FEMALE_65.txt
-    └── ...
+├── control_images/               # control/input images
+│   ├── sampleA.jpg
+│   ├── sampleA_control_1.jpg     # optional extra controls (_control_N)
+│   └── sampleA_mask.png          # optional mask named <base>_mask.*
+└── training_images/              # target images and prompt text
+    ├── sampleA.png               # target image (recommended for train)
+    └── sampleA.txt               # required prompt text
 ```
 
-**注意**:
-- `control_images/` 包含输入图像（通常为JPG格式）
-- `training_images/` 包含目标图像（PNG格式）和对应的文本文件
-- 文件名需要保持一致（除了扩展名）
+Key points:
+- Control image naming: `<base>.*` for main, plus `<base>_control_1.*`, `<base>_control_2.*`, ...
+- Mask naming: `<base>_mask.*`, located in either `control_images/` or `training_images/`.
+- Target image is optional for test/validation, but `<base>.txt` prompt is required.
 
-We also support to integrate with Huggingface Dataset
-
-Specify the dataset repo-id in the config as example in the following
+Config example (YAML):
 
 ```
-init_args:
+data:
+  class_path: src.data.dataset.ImageDataset
+  init_args:
+    dataset_path:
+      - /path/to/dataset1
+      - /path/to/dataset2
+    use_cache: true
+    cache_dir: /tmp/image_edit_lora/cache
+```
+
+#### 2) Hugging Face (Hub datasets)
+
+Use the unified Hub dataset interface with lazy loading:
+
+```
+data:
+  class_path: src.data.dataset.ImageDataset
+  init_args:
     dataset_path:
       - split: train
         repo_id: TsienDragon/face_segmentation_20
 ```
-Refer [`docs/huggingface-dataset.md`](huggingface-dataset.md) for the preparing dataset to hugggingface or use dataset in huggingface.
+
+Notes:
+- `repo_id` points to the Hub repo, e.g., `OrgOrUser/dataset-name`.
+- `split` optionally specifies `train`/`test`.
+- See `docs/huggingface-related.md` for schema: `control_images`, `control_mask`, `target_image`, `prompt`.
+
+#### 3) CSV (metadata file)
+
+When using CSV, `dataset_path` should point directly to the `.csv` file. The loader will parse target/control images and prompt from CSV rows.
+
+Minimal required columns:
+- `path_target`: target image (used for training; optional for test)
+- `path_control_*`: one or more control image columns, named `path_control`, `path_control_1`, `path_control_2`, ...
+- `prompt`: prompt text
+- Optional: `path_mask` mask path
+
+CSV example (train.csv):
+
+```csv
+path_target,path_control,path_control_1,prompt,path_mask
+train/target/sample1.png,train/control/sample1.png,train/control/sample1_control_1.webp,Add character to scene,train/target/sample1_mask.png
+```
+
+CSV example (test.csv, no target image):
+
+```csv
+path_control,path_control_1,prompt
+test/control/sample2.webp,test/control/sample2_control_1.png,Generate character composition
+```
+
+Config example (pointing to CSV file):
+
+```
+data:
+  class_path: src.data.dataset.ImageDataset
+  init_args:
+    dataset_path:
+      - /path/to/train.csv
+    use_cache: true
+    cache_dir: /tmp/image_edit_lora/cache
+```
+
+For detailed Hub/CSV organization and upload, see [`docs/huggingface-related.md`](huggingface-related.md).

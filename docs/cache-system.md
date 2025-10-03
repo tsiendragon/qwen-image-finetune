@@ -13,16 +13,17 @@ The cache system stores pre-computed embeddings to avoid repeated computation du
 
 ## Cache Types
 
-The system caches six types of embeddings:
+The system caches embeddings with the following keys:
 
 ```
 cache_dir/
-├── pixel_latent/           # VAE-encoded image latents
-├── control_latent/         # VAE-encoded control image latents
-├── prompt_embed/           # Text prompt embeddings
-├── prompt_embeds_mask/     # Text prompt attention masks
-├── empty_prompt_embed/     # Empty prompt embeddings (for CFG)
-└── empty_prompt_embeds_mask/ # Empty prompt attention masks
+├── image_latents/             # VAE-encoded target image latents
+├── control_latents/           # VAE-encoded control image latents (concat when multi-controls)
+├── prompt_embeds/             # Text prompt embeddings
+├── prompt_embeds_mask/        # Text prompt attention masks
+├── empty_prompt_embeds/       # Empty prompt embeddings (for CFG / dropout)
+├── empty_prompt_embeds_mask/  # Empty prompt attention masks
+└── img_shapes/                # Packed latent shapes metadata
 ```
 
 ## Configuration
@@ -32,14 +33,20 @@ cache_dir/
 ```yaml
 data:
   init_args:
-    cache_dir: "/path/to/cache"  # Cache directory
-    use_cache: true              # Enable cache
+    cache_dir: "/path/to/cache"   # Cache directory
+    use_cache: true                # Enable cache
 
 cache:
   use_cache: true
   cache_dir: "/path/to/cache"
-  vae_encoder_device: "cuda:0"   # Device for VAE encoding
-  text_encoder_device: "cuda:1"  # Device for text encoding
+  devices:
+    vae: "cuda:0"                 # Device for VAE encoding
+    text_encoder: "cuda:1"        # Device for text encoding
+    # text_encoder_2: "cuda:1"    # (FLUX) T5 encoder device
+  # When prompt is dropped empty, replace embeddings with cached empty-embeds
+  prompt_empty_drop_keys:
+    - empty_prompt_embeds
+    - empty_prompt_embeds_mask
 ```
 
 ### Cache Directory Structure
@@ -78,11 +85,10 @@ The trainer automatically detects cache availability:
 
 ```python
 def training_step(self, batch):
-    # Automatic cache detection
-    if 'prompt_embed' in batch and 'pixel_latent' in batch and 'control_latent' in batch:
+    # Automatic cache detection via dataset flag
+    if all(batch["cached"]):
         return self._training_step_cached(batch)
-    else:
-        return self._training_step_compute(batch)
+    return self._training_step_compute(batch)
 ```
 
 ## Cache Manager API
@@ -95,37 +101,74 @@ from src.data.cache_manager import EmbeddingCacheManager
 # Initialize cache manager
 cache_manager = EmbeddingCacheManager("/path/to/cache")
 
-# Save cache data
-cache_manager.save_cache("pixel_latent", file_hash, tensor_data)
+# Save multiple embeddings with metadata mapping
+cache_embeddings = {
+    "image_latents": image_latents[0],
+    "control_latents": control_latents[0],
+    "prompt_embeds": prompt_embeds[0],
+    "prompt_embeds_mask": prompt_embeds_mask[0],
+    "empty_prompt_embeds": empty_prompt_embeds[0],
+    "empty_prompt_embeds_mask": empty_prompt_embeds_mask[0],
+    "img_shapes": img_shapes,  # torch.int32 tensor
+}
+hash_maps = {
+    "image_latents": "image_hash",
+    "control_latents": "controls_sum_hash",
+    "prompt_embeds": "prompt_hash",
+    "prompt_embeds_mask": "prompt_hash",
+    "empty_prompt_embeds": "prompt_hash",
+    "empty_prompt_embeds_mask": "prompt_hash",
+    "img_shapes": "main_hash",
+}
+file_hashes = data["file_hashes"]  # prepared by dataset
+cache_manager.save_cache_embedding(cache_embeddings, hash_maps, file_hashes)
 
-# Load cache data
-cached_data = cache_manager.load_cache("pixel_latent", file_hash)
+# Load embeddings back into a data dict
+# If prompt is dropped empty, replace prompt_embeds* with empty_* from cache
+data = cache_manager.load_cache(
+    data,
+    replace_empty_embeddings=True,
+    prompt_empty_drop_keys=["empty_prompt_embeds", "empty_prompt_embeds_mask"],
+)
 
-# Check if cache exists
-exists = cache_manager.cache_exists("pixel_latent", file_hash)
-
-# Get cache statistics
-stats = cache_manager.get_cache_stats()
-print(stats)  # {'pixel_latent': 100, 'control_latent': 100, ...}
-
-# Clear cache
-cache_manager.clear_cache("pixel_latent")  # Clear specific type
-cache_manager.clear_cache()                # Clear all cache
+# Check cache availability for a dataset (metadata files exist)
+from src.data.cache_manager import EmbeddingCacheManager
+cache_available = EmbeddingCacheManager.exist("/path/to/cache")
 ```
 
 ### Hash Generation
 
-The system generates unique hashes based on:
-- File path
-- File modification time
-- Prompt content (for text embeddings)
+Dataset builds a comprehensive `file_hashes` map used by the cache manager:
 
-```python
-# Generate hash for images
-image_hash = cache_manager.get_file_hash_for_image("/path/to/image.jpg")
-
-# Generate hash for prompts
-prompt_hash = cache_manager.get_file_hash_for_prompt("/path/to/image.jpg", "edit prompt")
+```419:446:/mnt/nas/public2/lilong/repos/qwen-image-finetune/src/data/dataset.py
+def get_file_hashes(self, data):
+    file_hashes = {}
+    main_hash = ""
+    if 'image' in data:
+        file_hashes['image_hash'] = self.cache_manager.get_hash(data['image'])
+        main_hash += file_hashes['image_hash']
+    if 'control' in data:
+        file_hashes['control_hash'] = self.cache_manager.get_hash(data['control'])
+        main_hash += file_hashes['control_hash']
+    if 'prompt' in data:
+        file_hashes['prompt_hash'] = hash_string_md5(data['prompt'])
+        main_hash += file_hashes['prompt_hash']
+    if 'prompt' in data:
+        file_hashes['empty_prompt_hash'] = hash_string_md5("empty")
+    if 'control' in data and 'prompt' in data:
+        file_hashes['control_prompt_hash'] = self.cache_manager.get_hash(data['control'], data['prompt'])
+    if 'control' in data and 'prompt' in data:
+        file_hashes['control_empty_prompt_hash'] = self.cache_manager.get_hash(data['control'], "empty")
+    if 'controls' in data:
+        controls_sum_hash = file_hashes['control_hash']
+        for i in range(len(data['controls'])):
+            file_hashes[f"control_{i+1}_hash"] = self.cache_manager.get_hash(data['controls'][i])
+            controls_sum_hash += file_hashes[f"control_{i+1}_hash"]
+        file_hashes['controls_sum_hash'] = controls_sum_hash
+    elif 'control' in data:
+        file_hashes['controls_sum_hash'] = file_hashes['control_hash']
+    file_hashes['main_hash'] = main_hash
+    return file_hashes
 ```
 
 ## Performance Benefits
@@ -239,17 +282,17 @@ CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --ca
 During caching:
 ```python
 # Encoders on separate devices for parallel processing
-self.vae.to(config.cache.vae_encoder_device)
-self.text_encoder.to(config.cache.text_encoder_device)
-self.transformer.cpu()  # Not needed during caching
+self.vae = self.vae.to(config.cache.devices.vae, non_blocking=True)
+self.text_encoder = self.text_encoder.to(config.cache.devices.text_encoder, non_blocking=True)
+# (FLUX) self.text_encoder_2 = self.text_encoder_2.to(config.cache.devices.text_encoder_2)
+self.dit.cpu()  # Not needed during caching
 ```
 
 During cached training:
 ```python
 # Only transformer on GPU
-self.text_encoder.cpu()
-self.vae.cpu()
-self.transformer.to(accelerator.device)
+self.text_encoder.cpu(); self.vae.cpu()
+self.dit.to(self.accelerator.device).train()
 ```
 
 The cache system provides significant performance improvements for multi-epoch training with minimal setup overhead.
