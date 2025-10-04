@@ -11,8 +11,7 @@ Avery time when want to name a new version for the project. Do
 4. git commit the changes
 5. In the README.md update the new updates and cite relevent docs
 6. Push to remote
-7. git add version tag and push to origin
-8. git create merge request
+7. git create merge request
 
 ## Version Update
 Version format: <major>.<minor>.<patch>
