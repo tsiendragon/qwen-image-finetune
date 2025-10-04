@@ -77,8 +77,8 @@ cache:
   cache_dir: "/raid/lilong/data/experiment/flux-kontext-face_seg_lora_fp16/cache"
   use_cache: true
   prompt_empty_drop_keys:
-    - prompt_embeds
-    - pooled_prompt_embeds
+    - empty_prompt_embeds
+    - empty_pooled_prompt_embeds
 
 predict:
   devices:

@@ -6,6 +6,8 @@
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**,**Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
+- **📚 Documentation Improvements (v2.4.1)**: Comprehensive documentation updates including MIT license badge, enhanced data preparation guide (Folder/HuggingFace/CSV sources), and English language standardization. See [CHANGELOG](docs/CHANGELOG.md) for details.
+
 - **🔥 Dynamic Shape Support (v2.4.0)**: For Qwen-Image-Edit or Plus, we introduce the fixed number of pixels condition for batch process such that it support multiple shapes.
   - `data.init_args.processor.init_args.target_pixels: 512*512`
   - `data.init_args.processor.init_args.controls_pixels: [512*512]`
@@ -105,7 +107,7 @@ Here we provided two toy datasets in the huggingface that user can efficiently u
 Quick usage:
 
 ```python
-from src.utils.hugginface import load_editing_dataset
+from src.utils.huggingface import load_editing_dataset
 
 dd = load_editing_dataset("TsienDragon/face_segmentation_20")
 sample = dd["train"][0]
@@ -479,7 +481,7 @@ This project demonstrates fine-tuning the Qwen-VL model for face segmentation ta
 ## Speed
 
 |cache|Batch Size|Quantization|Gradient Checkpoint|Flash Attention|Device|GPU Used| Training Speed| Num of Process| config example|
-|---|---|---|---|---|---|---|---| --- |---|
+|---|---|---|---|---|---|---|---|---|---|
 |cache|2| bf16| True| False|A100|48.6 G | 18.3 s/it| 1|[QwenEdit-bf16](configs/face_seg_config.yaml)|
 |cache|2 | fp4| True| False|A100 |22.47 | 10.6 s/it| 1|[QwenEdit-fp4](configs/face_seg_fp4_config.yaml)|
 |cache| 2 | bf16| True | True | A100 | 50.2 G | 10.34 s/it| 1|[QwenEdit-bf16](configs/face_seg_config.yaml)|
@@ -503,18 +505,16 @@ Check this docs for more training guides docs/training.md
 - Use trainer in this repo
 ```python
 # Inference with trained LoRA model
-from src.qwen_image_edit_trainer import QwenImageEditTrainer
+from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
 from src.data.config import load_config_from_yaml
 from PIL import Image
 
 # Load configuration
 config = load_config_from_yaml("configs/face_seg_config.yaml")
+config.model.lora.pretrained_weight = "/path/to/your/lora/weights.safetensors"
 
-# Initialize trainer
+# Initialize trainer (LoRA will be loaded automatically in setup_predict)
 trainer = QwenImageEditTrainer(config)
-
-# Load trained LoRA weights
-trainer.load_lora("/path/to/your/lora/weights")
 
 # Setup for inference
 trainer.setup_predict()

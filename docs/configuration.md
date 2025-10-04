@@ -105,7 +105,8 @@ cache:
     dit: null
   use_cache: true
   cache_dir: "./cache"
-  prompt_empty_drop_keys: ["prompt_embed", "prompt_embeds_mask"]
+  # When using caption dropout to empty, recommend replacing with cached empty-embeds
+  prompt_empty_drop_keys: ["empty_prompt_embeds", "empty_prompt_embeds_mask"]
 
 # Predict Configuration
 predict:
