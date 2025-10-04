@@ -970,6 +970,7 @@ class QwenImageEditTrainer(BaseTrainer):
         # set to proper device
         prompt_embeds = prompt_embeds.to(device, dtype=self.weight_dtype)
         prompt_embeds_mask = prompt_embeds_mask.to(device, dtype=torch.int64)
+        control_latents = control_latents.to(device, dtype=self.weight_dtype)
 
         if do_true_cfg:
             negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device, dtype=torch.int64)
