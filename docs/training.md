@@ -78,24 +78,34 @@ Create a configuration file for your training setup:
 ```yaml
 # configs/my_training_config.yaml
 
+trainer: QwenImageEdit
+
 # Model configuration
 model:
-  pretrained_model_name_or_path: "Qwen/Qwen2-VL-7B-Instruct"
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
   quantize: false  # Set to true for quantized training
   lora:
     r: 16
     lora_alpha: 32
-    init_lora_weights: true
-    target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
 
 # Dataset configuration
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/face_seg"  # Path to your dataset
-    batch_size: 2
     caption_dropout_rate: 0.1
     prompt_image_dropout_rate: 0.1
+    processor:
+      class_path: "src.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [512, 512]
+        controls_size: [[512, 512]]
+  batch_size: 2
+  num_workers: 2
+  shuffle: true
 
 # Training parameters
 train:
@@ -126,13 +136,13 @@ lr_scheduler:
 cache:
   use_cache: true
   cache_dir: "cache/face_seg"
-  vae_encoder_device: "cuda:1"
-  text_encoder_device: "cuda:2"
+  devices:
+    vae: "cuda:1"
+    text_encoder: "cuda:2"
 
 # Logging configuration
 logging:
   output_dir: "output/face_seg_training"  # Base directory, versions created automatically
-  logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "qwen_image_finetune"
 ```
@@ -146,20 +156,19 @@ For memory-efficient training with minimal quality loss:
 ```yaml
 # configs/fp8_training_config.yaml
 model:
-  pretrained_model_name_or_path: "Qwen/Qwen2-VL-7B-Instruct"
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
   quantize: true  # Enable runtime FP8 quantization
   lora:
     r: 16
     lora_alpha: 32
-    target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
 
 train:
   gradient_checkpointing: true  # Recommended with quantization
   mixed_precision: "bf16"
 
 data:
-  init_args:
-    batch_size: 4  # Can use larger batch size with quantization
+  batch_size: 4  # Can use larger batch size with quantization
 ```
 
 #### Pre-quantized FP4 Model
@@ -174,7 +183,7 @@ model:
   lora:
     r: 32  # Higher rank recommended for quantized models
     lora_alpha: 64
-    target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
 
 train:
   gradient_checkpointing: true
@@ -182,8 +191,7 @@ train:
   gradient_accumulation_steps: 8  # May need larger accumulation for stability
 
 data:
-  init_args:
-    batch_size: 6  # Can use even larger batch size with pre-quantized models
+  batch_size: 6  # Can use even larger batch size with pre-quantized models
 ```
 
 ### Multi-GPU Configuration
@@ -193,17 +201,19 @@ For distributed training across multiple GPUs:
 ```yaml
 # configs/multi_gpu_config.yaml
 cache:
-  vae_encoder_device: "cuda:1"
-  text_encoder_device: "cuda:2"
+  devices:
+    vae: "cuda:1"
+    text_encoder: "cuda:2"
 
 predict:
   devices:
     vae: "cuda:0"
     text_encoder: "cuda:1"
-    transformer: "cuda:2"
+    dit: "cuda:2"
 
 train:
   gradient_accumulation_steps: 2  # Adjust based on GPU count
+  low_memory: true
 ```
 
 ## Training Execution
@@ -322,9 +332,9 @@ The FLUX Kontext implementation supports three precision configurations, each op
 **Configuration**: `configs/face_seg_flux_kontext_fp16.yaml`
 
 ```yaml
+trainer: FluxKontext
 model:
   pretrained_model_name_or_path: "black-forest-labs/FLUX.1-Kontext-dev"
-  rank: 16
   quantize: false
   lora:
     r: 16
@@ -334,17 +344,15 @@ model:
     adapter_name: "lora_edit"
 
 train:
-  trainer: FluxKontext  # Specify FLUX Kontext trainer
   mixed_precision: "bf16"
   gradient_checkpointing: true
   low_memory: true
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:1
 
 cache:
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:1
-  text_encoder_2_device: cuda:1  # T5 text encoder
+  devices:
+    vae: cuda:1
+    text_encoder: cuda:1
+    text_encoder_2: cuda:1  # T5 text encoder
 ```
 
 **Features:**
@@ -359,9 +367,9 @@ cache:
 **Configuration**: `configs/face_seg_flux_kontext_fp8.yaml`
 
 ```yaml
+trainer: FluxKontext
 model:
   pretrained_model_name_or_path: camenduru/flux1-kontext-dev_fp8_e4m3fn_diffusers
-  rank: 16
   quantize: false  # Pre-quantized model, no runtime quantization needed
   lora:
     r: 16
@@ -371,7 +379,6 @@ model:
     adapter_name: "lora_edit"
 
 train:
-  trainer: FluxKontext
   mixed_precision: "bf16"
   gradient_checkpointing: true
   low_memory: true
@@ -389,9 +396,9 @@ train:
 **Configuration**: `configs/face_seg_flux_kontext_fp4.yaml`
 
 ```yaml
+trainer: FluxKontext
 model:
   pretrained_model_name_or_path: eramth/flux-kontext-4bit-fp4
-  rank: 16
   quantize: false  # Pre-quantized model
   lora:
     r: 16  # Consider higher rank (32) for quantized models
@@ -401,7 +408,6 @@ model:
     adapter_name: "lora_edit"
 
 train:
-  trainer: FluxKontext
   mixed_precision: "bf16"
   gradient_checkpointing: true
   low_memory: true
@@ -454,11 +460,16 @@ data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/your_flux_dataset"
-    image_size: [1024, 1024]  # FLUX typical size, can be [832, 576] for aspect ratio training
     caption_dropout_rate: 0.05
     prompt_image_dropout_rate: 0.05
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
+    processor:
+      class_path: "src.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [1024, 1024]
+        controls_size: [[1024, 1024]]
   batch_size: 1  # FLUX models typically need smaller batches
 ```
 
@@ -470,14 +481,13 @@ FLUX Kontext uses multiple encoders that benefit from device distribution:
 # Training device allocation
 train:
   low_memory: true
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:1
 
 # Cache device allocation
 cache:
-  vae_encoder_device: cuda:1
-  text_encoder_device: cuda:1    # CLIP encoder
-  text_encoder_2_device: cuda:1  # T5 encoder
+  devices:
+    vae: cuda:1
+    text_encoder: cuda:1    # CLIP encoder
+    text_encoder_2: cuda:1  # T5 encoder
 
 # Inference device allocation
 predict:
@@ -485,7 +495,7 @@ predict:
     vae: cuda:1
     text_encoder: cuda:1     # CLIP
     text_encoder_2: cuda:1   # T5
-    transformer: cuda:1
+    dit: cuda:1
 ```
 
 #### Memory Optimization for FLUX
@@ -517,20 +527,18 @@ optimizer:
 
 ```python
 # Inference with trained FLUX Kontext LoRA model
-from src.flux_kontext_trainer import FluxKontextLoraTrainer
+from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
 from src.data.config import load_config_from_yaml
 from PIL import Image
 
 # Load configuration
 config = load_config_from_yaml("configs/face_seg_flux_kontext_fp16.yaml")
+config.model.lora.pretrained_weight = "/path/to/your/flux_lora/weights.safetensors"
 
 # Initialize FLUX Kontext trainer
 trainer = FluxKontextLoraTrainer(config)
 
-# Load trained LoRA weights
-trainer.load_lora("/path/to/your/flux_lora/weights")
-
-# Setup for inference
+# Setup for inference (auto-loads LoRA from config)
 trainer.setup_predict()
 
 # Load input image
@@ -653,18 +661,17 @@ Resume training from saved checkpoints to continue interrupted sessions or exten
 
 ### Configuration
 
-Add `resume_from_checkpoint` to your config:
+Add `resume` to your config (or pass via CLI `--resume`):
 
 ```yaml
-train:
-  resume_from_checkpoint: "/path/to/checkpoint-5-500"  # Specific checkpoint
+resume: "/path/to/checkpoint-5-500"  # Path to a specific checkpoint folder
 ```
 
 ### Usage
 
 ```bash
-# Resume from latest checkpoint
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+# Resume from a specific checkpoint directory
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml --resume "/path/to/checkpoint-5-500"
 ```
 
 The framework automatically restores LoRA weights, optimizer state, scheduler state, and training progress (epoch/step count).
@@ -677,17 +684,18 @@ You can initialize training with pretrained LoRA weights by specifying the `pret
 
 ```yaml
 model:
-  pretrained_model_name_or_path: "Qwen/Qwen2-VL-7B-Instruct"
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
   lora:
     r: 16
     lora_alpha: 32
-    target_modules: ["to_q", "to_v", "to_k", "to_out.0"]
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
     pretrained_weight: "/path/to/pytorch_lora_weights.safetensors"
 
 data:
+  class_path: "src.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/your_dataset"
-    batch_size: 2
+  batch_size: 2
 
 train:
   num_epochs: 5
@@ -707,19 +715,14 @@ The framework will automatically load the specified LoRA weights before starting
 ### Data Loading Optimization
 ```yaml
 data:
-  init_args:
-    num_workers: 4           # Parallel data loading
-    prefetch_factor: 2       # Prefetch batches
-    persistent_workers: true # Keep workers alive
+  num_workers: 4           # Parallel data loading
 ```
 
 ### Batch Size Optimization
 Start with small batch size and increase gradually:
 ```yaml
 data:
-  init_args:
-    batch_size: 1           # Start small
-    # Increase to 2, 4, 8 based on memory availability
+  batch_size: 1           # Start small; increase to 2, 4, 8 based on memory
 ```
 
 ### Cache Configuration
@@ -727,8 +730,9 @@ data:
 cache:
   use_cache: true
   cache_dir: "/fast/ssd/cache"  # Use fast storage
-  vae_encoder_device: "cuda:1"
-  text_encoder_device: "cuda:2"
+  devices:
+    vae: "cuda:1"
+    text_encoder: "cuda:2"
 ```
 
 ## Optimizer Selection

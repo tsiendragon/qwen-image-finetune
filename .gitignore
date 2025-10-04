@@ -8,12 +8,14 @@ __pycache__/
 sub_modules/
 test_ic*
 test_*.yaml
+configs/fade/*
 # Distribution / packaging
 tests/outputs/
 configs/local_examples/
 .Python
-run_local.sh
+run_local*.sh
 build/
+
 develop-eggs/
 dist/
 downloads/

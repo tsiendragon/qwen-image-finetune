@@ -24,6 +24,7 @@
 - [x] CSV数据格式支持 - 支持基于CSV元数据文件的数据集管理 (v2.2.0)
 - [x] Qwen-Image-Edit-Plus (2509) support - Complete support for enhanced model architecture (v2.3.0)
 - [x] Dynamic shape support with pixel-based resizing for Plus version (v2.4.0)
+- [x] Comprehensive documentation improvements and guide updates (v2.4.1)
 
 ## Planned Features
  - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility

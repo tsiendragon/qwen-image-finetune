@@ -1,7 +1,8 @@
+trainer: QwenImageEdit
+
 model:
   # pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit"
   pretrained_model_name_or_path: "ovedrive/qwen-image-edit-4bit"  # 4bit version
-  rank: 16
   quantize: False
   lora:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
@@ -13,26 +14,26 @@ model:
 data:
   class_path: "src.data.dataset.ImageDataset"
   init_args:
-    dataset_path: "/raid/lilong/data/face_seg/"  # change the path to your own dataset path
-    image_size: [864, 1048]  # face segmentation usually uses 512x512
+    dataset_path:
+      - split: train
+        repo_id: TsienDragon/face_segmentation_20
     caption_dropout_rate: 0.05  # reduce caption dropout, because the task is relatively specialized
     prompt_image_dropout_rate: 0.05
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
     cache_drop_rate: 0.1  # 10% probability of using empty prompt for training
-    # crop configuration - use center crop instead of random crop
-    random_crop: false  # disable random crop
-    crop_size: 1024  # square size after cropping
-    crop_scale: [0.8, 1.0]  # crop scale range
-    center_crop: true  # enable center crop
-    center_crop_ratio: 1.0  # center crop ratio, 0.9 means crop to 90% of the area
+    processor:
+      class_path: "src.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [832, 576]
+        controls_size: [[832, 576]]
   batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 
 logging:
   output_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4-4090/"  # change the path to your own output path
-  logging_dir: "logs"
   report_to: "tensorboard"
   tracker_project_name: "face_segmentation_lora"
 
@@ -66,8 +67,9 @@ train:
   gradient_checkpointing: True  # enable gradient checkpointing to save memory
 
 cache:
-  vae_encoder_device: cuda:0
-  text_encoder_device: cuda:1  # if there is only one card, put them on cuda:0
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:1
   cache_dir: "/raid/lilong/data/experiment/qwen-edit-face_seg_lora_fp4_4090/cache"
   use_cache: true
 
@@ -75,10 +77,10 @@ predict:
   devices:
     vae: cuda:0
     text_encoder: cuda:0
-    transformer: cuda:0
+    dit: cuda:0
 
 # training resume setting
-resume_from_checkpoint: "latest"
+resume: null
 
 # validation setting (optional)
 validation:

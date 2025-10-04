@@ -163,7 +163,7 @@ class QwenImageEditTrainer(BaseTrainer):
         elif tensor_info["layout"] == "BHWC":
             image = image.permute(0, 3, 1, 2).unsqueeze(2)
         else:
-            raise ValueError(f"Invalid image layout: {tensor_info['layout']}")
+            raise ValueError(f"Invalid image layout: {tensor_info['layout']},{image.shape}")
 
 
         if tensor_info["range"] == "0-255":
@@ -174,7 +174,7 @@ class QwenImageEditTrainer(BaseTrainer):
         elif tensor_info["range"] == "-1-1":
             pass
         else:
-            raise ValueError(f"Invalid image range: {tensor_info['range']}")
+            raise ValueError(f"Invalid image range: {tensor_info['range']}, {image.min()}, {image.max()}")
 
         return image
 
@@ -207,9 +207,7 @@ class QwenImageEditTrainer(BaseTrainer):
             raise ValueError(f"Invalid image range: {tensor_info['range']}")
         if best_resolution is not None:
             new_width, new_height = calculate_best_resolution(image.shape[3], image.shape[2], best_resolution)
-            print('new_width, new_height', new_width, new_height)
             image = F.interpolate(image, size=(new_height, new_width), mode="bilinear")
-            print('image shape after interpolate', image.shape)
         return image
 
     def prepare_latents(

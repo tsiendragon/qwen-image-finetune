@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Dynamic shape training support for Qwen-Image-Edit-Plus via pixel-based resizing
-- New test config: `tests/test_configs/test_example_qwen_image_edit_plus_fp4_dynamic_shapes.yaml`
-- Config schema: `data.init_args.processor.init_args.{target_pixels, controls_pixels}` allow expressions like `512*512`
+---
+
+## [2.4.1] - 2025-10-04
 
 ### Changed
-- Documentation updated to describe dynamic shapes usage and configuration
+- Documentation improvements and clarifications
+  - README license badge updated to MIT, added License section linking to LICENSE
+  - Data preparation guide updated: now documents Folder/Hugging Face/CSV dataset sources
+  - Data preparation guide language switched to English
+  - Updated dynamic shapes usage and configuration descriptions
 
 ### Fixed
 - Minor docs fixes and typos
