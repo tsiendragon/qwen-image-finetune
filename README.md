@@ -574,7 +574,9 @@ We welcome contributions to improve this documentation:
 - Add troubleshooting sections
 - Keep content up to date
 
-<iframe style="width:100%;height:auto;min-width:600px;min-height:400px;" src="https://www.star-history.com/embed?secret=#tsiendragon/qwen-image-finetune&Date" frameBorder="0"></iframe>
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=tsiendragon/qwen-image-finetune&type=Date)](https://www.star-history.com/#tsiendragon/qwen-image-finetune&Date)
 
 ## Getting Help
 
