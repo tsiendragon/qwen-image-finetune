@@ -13,10 +13,7 @@ config_file='configs/face_seg_flux_kontext_fp16_huggingface_dataset.yaml'
 config_file='tests/test_configs/test_example_fluxkontext_fp4.yaml'
 config_file='tests/test_configs/test_example_fluxkontext_fp16.yaml'
 config_file='tests/test_configs/test_example_fluxkontext_fp4.yaml'
-config_file='configs/flux_kontext_ktp/ktp_flux_kontext_fp16.yaml'
 config_file='tests/test_configs/test_example_qwen_image_edit_fp16.yaml'
-config_file='configs/flux_kontext_ktp/ktp_flux_kontext_fp16_control2.yaml'
-config_file='configs/local_examples/face_gen_ktp.yaml'
 echo "Used config file: $config_file"
 
 # cache data (using GPU1)
