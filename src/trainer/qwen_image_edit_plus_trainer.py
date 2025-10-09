@@ -10,6 +10,7 @@ from src.utils.images import make_image_devisible, make_image_shape_devisible, r
 from src.models.load_model import load_vae, load_qwenvl
 from src.models.load_model import load_transformer
 
+
 class QwenImageEditPlusTrainer(QwenImageEditTrainer):
     """Trainer class based on QwenImageEditPlusTrainer
     Inherits from QwenImageEditTrainer
@@ -43,8 +44,6 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
         logging.info(f"excution device: {pipe._execution_device}")
 
         # Separate individual components
-
-
 
         self.vae = load_vae("Qwen/Qwen-Image-Edit-2509", weight_dtype=self.weight_dtype)  # use original one
         # same to model constructed from vae self.vae = pipe.vae
@@ -128,7 +127,9 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
         condition_images = []
         if "control" in batch:
             control_image = batch["control"]
-            prompt_control = self.preprocess_image_for_text_encoder(control_image, best_resolution=384 * 384)  # [B,C,H,W], uint8, range [0,255]
+            prompt_control = self.preprocess_image_for_text_encoder(
+                control_image, best_resolution=384 * 384
+            )  # [B,C,H,W], uint8, range [0,255]
             condition_images.append(prompt_control[0])  # remove batch dim
             batch["control"] = self.preprocess_image_for_vae_encoder(
                 batch["control"]
@@ -146,7 +147,9 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
             if additional_control_key in batch:
                 # condition_images =
                 additional_control_image = batch[additional_control_key]
-                prompt_control = self.preprocess_image_for_text_encoder(additional_control_image, best_resolution=384 * 384)  # [B,C,H,W], uint8, range [0,255]
+                prompt_control = self.preprocess_image_for_text_encoder(
+                    additional_control_image, best_resolution=384 * 384
+                )  # [B,C,H,W], uint8, range [0,255]
                 condition_images.append(prompt_control[0])  # remove batch dim
                 batch[additional_control_key] = self.preprocess_image_for_vae_encoder(batch[additional_control_key])
                 batch[f"width_control_{i+1}"] = batch[additional_control_key].shape[4]
@@ -166,7 +169,7 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
             batch["empty_prompt_embeds_mask"] = empty_prompt_embeds_mask
             batch["empty_prompt_embeds"] = empty_prompt_embeds
 
-        if "negative_prompt" in batch and batch['true_cfg_scale'] > 1:
+        if "negative_prompt" in batch and batch["true_cfg_scale"] > 1:
             # only for predict stage
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
                 prompt=batch["negative_prompt"],
@@ -261,7 +264,7 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
             # when remove this, got relative error 0.49% in prompt embeds
             new_images = []
             for i in range(len(image)):
-                img = image[i].permute(1, 2, 0).cpu().numpy().astype('uint8')
+                img = image[i].permute(1, 2, 0).cpu().numpy().astype("uint8")
                 img = PIL.Image.fromarray(img)
                 new_images.append(img)
             image = new_images
@@ -381,10 +384,10 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
                 controls_size.extend([[control.size[1], control.size[0]] for control in additional_controls[0]])
 
         if best_resolution_size:
-            controls_size = [calculate_best_resolution(c_size[0], c_size[1], 1024*1024) for c_size in controls_size]
-            logging.info(f'controls_size after best resolution  {controls_size}')
+            controls_size = [calculate_best_resolution(c_size[0], c_size[1], 1024 * 1024) for c_size in controls_size]
+            logging.info(f"controls_size after best resolution  {controls_size}")
 
-        logging.info(f'controls_size for processing {controls_size}')
+        logging.info(f"controls_size for processing {controls_size}")
         for img in prompt_image:
             # for each image, need to make one copy for text_encoder, another for image_encoder
             # convert to [C,H,W] in range [0,1]
@@ -401,7 +404,7 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
         else:
             width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
 
-        logging.info(f'target shape for generation {width}, {height}')
+        logging.info(f"target shape for generation {width}, {height}")
 
         if additional_controls:
             n_controls = len(additional_controls[0])
@@ -418,7 +421,7 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
                 data[f"control_{i+1}"] = control_stack
             data["n_controls"] = n_controls
         else:
-            data['n_controls'] = 0
+            data["n_controls"] = 0
 
         if negative_prompt is not None:
             if isinstance(negative_prompt, str):

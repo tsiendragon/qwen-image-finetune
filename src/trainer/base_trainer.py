@@ -11,7 +11,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy  # transformer_auto_wrap_policy
-from torch.distributed.fsdp import ShardingStrategy, BackwardPrefetch
+from torch.distributed.fsdp import ShardingStrategy  # BackwardPrefetch
 import os
 import shutil
 import glob
@@ -745,7 +745,6 @@ class BaseTrainer(ABC):
                 except Exception as e:
                     logging.warning(f"Failed to download lora from {pretrained_weight}: {e}")
                     pass
-
 
             sha256 = calculate_sha256_file(pretrained_weight)
             logging.info(f"sha256 for pretrained_weight: {sha256}")

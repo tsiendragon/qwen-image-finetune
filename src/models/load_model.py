@@ -3,6 +3,7 @@ from diffusers import AutoencoderKLQwenImage, QwenImageEditPipeline
 from src.models.transformer_qwenimage import QwenImageTransformer2DModel
 import logging
 
+
 def load_vae(pretrained_model_name_or_path, weight_dtype):
     vae = AutoencoderKLQwenImage.from_pretrained(
         pretrained_model_name_or_path,
@@ -20,7 +21,7 @@ def load_qwenvl(pretrained_model_name_or_path, weight_dtype):
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         "Qwen/Qwen2.5-VL-7B-Instruct",
-        torch_dtype=weight_dtype,            # CPU 用 fp32
+        torch_dtype=weight_dtype,  # CPU 用 fp32
         use_safetensors=True,
         attn_implementation="flash_attention_2",
     )  # 默认就在 CPU；稳妥可再
@@ -30,6 +31,7 @@ def load_qwenvl(pretrained_model_name_or_path, weight_dtype):
 
 def load_transformer(pretrained_model_name_or_path, weight_dtype, device_map="cuda:1"):
     import logging
+
     logging.info(f"load model {pretrained_model_name_or_path}")
     flux_transformer = QwenImageTransformer2DModel.from_pretrained(
         pretrained_model_name_or_path,
@@ -49,12 +51,10 @@ if __name__ == "__main__":
     #         self.config.model.pretrained_model_name_or_path,
     #         torch_dtype=self.weight_dtype
     #     )
-    import torch
-
     pipe = QwenImageEditPipeline.from_pretrained(
-            "Qwen/Qwen-Image-Edit",
-            torch_dtype=torch.bfloat16,
-        )
+        "Qwen/Qwen-Image-Edit",
+        torch_dtype=torch.bfloat16,
+    )
 
     # Separate individual components
 
@@ -87,7 +87,7 @@ if __name__ == "__main__":
         keys1 = set(state_dict1.keys())
         keys2 = set(state_dict2.keys())
 
-        print(f"📊 Parameter Statistics:")
+        print("📊 Parameter Statistics:")
         print(f"  {model1_name}: {len(keys1)} parameters")
         print(f"  {model2_name}: {len(keys2)} parameters")
 
@@ -153,19 +153,19 @@ if __name__ == "__main__":
                 print(f"❌ {key}: Error comparing values - {e}")
 
         # Summary
-        print(f"\n📋 COMPARISON SUMMARY:")
+        print("\n📋 COMPARISON SUMMARY:")
         print(f"  Total common parameters: {len(common_keys)}")
         print(f"  Identical parameters: {identical_params}")
         print(f"  Shape mismatches: {len(shape_mismatches)}")
         print(f"  Value differences: {len(value_differences)}")
 
         if shape_mismatches:
-            print(f"\n❌ SHAPE MISMATCHES:")
+            print("\n❌ SHAPE MISMATCHES:")
             for key, shape1, shape2 in shape_mismatches:
                 print(f"  {key}: {shape1} vs {shape2}")
 
         if value_differences:
-            print(f"\n⚠️  LARGEST VALUE DIFFERENCES:")
+            print("\n⚠️  LARGEST VALUE DIFFERENCES:")
             # Sort by max difference and show top 10
             value_differences.sort(key=lambda x: x[1], reverse=True)
             for i, (key, max_diff, mean_diff) in enumerate(value_differences[:10]):
@@ -174,31 +174,28 @@ if __name__ == "__main__":
                 print(f"  ... and {len(value_differences) - 10} more")
 
         # Final verdict
-        models_identical = (len(shape_mismatches) == 0 and len(value_differences) == 0)
+        models_identical = len(shape_mismatches) == 0 and len(value_differences) == 0
         print(f"\n🎯 FINAL VERDICT: {'IDENTICAL' if models_identical else 'DIFFERENT'}")
 
         return models_identical
 
     # Compare text_encoder and qwen_vl
     are_identical = compare_models(
-        text_encoder, qwen_vl,
-        "text_encoder (from pipe)", "qwen_vl (loaded separately)",
-        tolerance=1e-6
+        text_encoder, qwen_vl, "text_encoder (from pipe)", "qwen_vl (loaded separately)", tolerance=1e-6
     )
 
     # Also compare their text_encoder components specifically
-    if hasattr(qwen_vl, 'text_encoder'):
+    if hasattr(qwen_vl, "text_encoder"):
         print("\n" + "=" * 80)
         print("ADDITIONAL COMPARISON: text_encoder vs qwen_vl.text_encoder")
         print("=" * 80)
 
         are_text_encoders_identical = compare_models(
-            text_encoder, qwen_vl.text_encoder,
-            "text_encoder (from pipe)", "qwen_vl.text_encoder",
-            tolerance=1e-6
+            text_encoder, qwen_vl.text_encoder, "text_encoder (from pipe)", "qwen_vl.text_encoder", tolerance=1e-6
         )
 
     import torch
+
     transformer = load_transformer("Qwen/Qwen-Image-Edit", torch.bfloat16)
 
     vae = load_vae("Qwen/Qwen-Image-Edit", torch.bfloat16)
@@ -213,7 +210,7 @@ if __name__ == "__main__":
         r=16,
         lora_alpha=16,
         init_lora_weights=True,
-        target_modules= ["to_k", "to_q", "to_v", "to_out.0"],
+        target_modules=["to_k", "to_q", "to_v", "to_out.0"],
     )
 
     transformer2.add_adapter(lora_config)
@@ -254,17 +251,23 @@ if __name__ == "__main__":
     print("number of trainable parameters:", sum(p.numel() for p in transformer2.parameters() if p.requires_grad))
 
     from peft import LoraConfig, get_peft_model
+
     suffixes = [
-        "attn.to_q", "attn.to_k", "attn.to_v",
-        "attn.to_out.0",              # 只打到 Linear，不是整个 to_out
+        "attn.to_q",
+        "attn.to_k",
+        "attn.to_v",
+        "attn.to_out.0",  # 只打到 Linear，不是整个 to_out
         # "attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj",
         # "attn.to_add_out",          # 仅当它是 Linear 时再放开（见下方自检）
     ]
 
     peft_cfg = LoraConfig(
-        r=16, lora_alpha=16, lora_dropout=0.0,
-        target_modules=suffixes, bias="none",
-        task_type="FEATURE_EXTRACTION",   # 或 CAUSAL_LM，均可
+        r=16,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        target_modules=suffixes,
+        bias="none",
+        task_type="FEATURE_EXTRACTION",  # 或 CAUSAL_LM，均可
     )
     # transformer2.add_adapter(lora_config)
     transformer2 = get_peft_model(transformer2, peft_cfg)
@@ -275,10 +278,3 @@ if __name__ == "__main__":
         if "lora_" in n:
             p.requires_grad_(True)
     print("number of trainable parameters:", sum(p.numel() for p in transformer2.parameters() if p.requires_grad))
-
-    # # compare the keys of transformer and transformer2
-    # print("transformer keys not in transformer2:", set(transformer.state_dict().keys()) - set(transformer2.state_dict().keys()))
-    # print("transformer2 keys not in transformer:", set(transformer2.state_dict().keys()) - set(transformer.state_dict().keys()))
-
-
-

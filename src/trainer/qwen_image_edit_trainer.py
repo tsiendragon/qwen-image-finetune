@@ -13,15 +13,15 @@ from diffusers.training_utils import (
 )
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
     QwenImageEditPipeline,
-    calculate_dimensions,
     retrieve_latents,
     randn_tensor,
 )
-
+# calculate_dimensions,
 from src.loss.edit_mask_loss import map_mask_to_latent
 from src.trainer.base_trainer import BaseTrainer
 from src.utils.tools import infer_image_tensor
-from src.utils.images import make_image_devisible, make_image_shape_devisible, resize_bhw, calculate_best_resolution, image_adjust_best_resolution
+from src.utils.images import make_image_devisible, make_image_shape_devisible, resize_bhw, calculate_best_resolution
+# image_adjust_best_resolution
 
 
 class QwenImageEditTrainer(BaseTrainer):
@@ -164,7 +164,6 @@ class QwenImageEditTrainer(BaseTrainer):
             image = image.permute(0, 3, 1, 2).unsqueeze(2)
         else:
             raise ValueError(f"Invalid image layout: {tensor_info['layout']},{image.shape}")
-
 
         if tensor_info["range"] == "0-255":
             image = image / 255.0
