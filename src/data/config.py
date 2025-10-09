@@ -110,6 +110,10 @@ class ImageProcessorInitArgs(BaseModel):
     )
     controls_pixels: Optional[Union[int, List[int]]] = None
     target_pixels: Optional[int] = None
+    # Multi-resolution training: list of target pixel candidates
+    # If present, enables multi-resolution mode automatically
+    multi_resolutions: Optional[Union[List[int], List[str]]] = None
+    max_aspect_ratio: Optional[float] = 3.0  # Maximum aspect ratio limit
 
     @field_validator("process_type")
     @classmethod
@@ -167,6 +171,43 @@ class ImageProcessorInitArgs(BaseModel):
         raise ValueError(
             "controls_pixels must be int, string expression, or list of them"
         )
+
+    @field_validator("multi_resolutions", mode="before")
+    @classmethod
+    def _parse_multi_resolutions(cls, v):
+        """Parse multi_resolutions from various formats into list of integers"""
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("multi_resolutions must be a list")
+
+        parsed: List[int] = []
+        for item in v:
+            if isinstance(item, (int,)):
+                parsed.append(int(item))
+            elif isinstance(item, str):
+                parsed.append(cls._eval_pixel_expr(item))
+            else:
+                raise ValueError(
+                    "multi_resolutions items must be int or string expression like '512*512'"
+                )
+
+        if len(parsed) == 0:
+            raise ValueError("multi_resolutions must not be empty")
+
+        # Validate all values are positive
+        for p in parsed:
+            if p <= 0:
+                raise ValueError(f"multi_resolutions values must be positive, got {p}")
+
+        return parsed
+
+    @field_validator("max_aspect_ratio")
+    @classmethod
+    def _check_max_aspect_ratio(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError("max_aspect_ratio must be positive")
+        return v
 
 
 class ImageProcessorConfig(BaseModel):
