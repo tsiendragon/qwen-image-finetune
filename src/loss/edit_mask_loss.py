@@ -43,14 +43,20 @@ class MaskEditLoss(nn.Module):
         self.forground_weight = forground_weight
         self.background_weight = background_weight
 
-    def forward(self, mask, model_pred, target, weighting=None):
+    def forward(self, mask, model_pred, target, weighting=None, reduction='mean'):
         """
         计算mask加权的loss
+
         Args:
             mask: [B, seq_len] - 二进制掩码，1表示修改区域，0表示背景区域
             model_pred: [B, seq_len, channels] - 模型预测结果
             target: [B, seq_len, channels] - 目标值
             weighting: [B, seq_len, 1] - 可选的时间步权重
+            reduction: str - 'none', 'mean', or 'sum'
+                'none': 返回 [B, seq_len, channels]
+                'mean': 返回标量，按所有元素求均值
+                'sum': 返回标量，按所有元素求和
+
         Returns:
             torch.Tensor - 加权后的loss值
         """
@@ -69,9 +75,17 @@ class MaskEditLoss(nn.Module):
         # 应用mask权重
         weighted_loss = element_loss * weight_mask
 
-        # 聚合loss：先按序列维度求均值，再按batch维度求均值
-        loss = torch.mean(weighted_loss.reshape(target.shape[0], -1), 1).mean()
-        return loss
+        # 根据 reduction 参数返回不同结果
+        if reduction == 'none':
+            return weighted_loss  # [B, seq_len, channels]
+        elif reduction == 'sum':
+            return weighted_loss.sum()
+        elif reduction == 'mean':
+            # 聚合loss：先按序列维度求均值，再按batch维度求均值
+            loss = torch.mean(weighted_loss.reshape(target.shape[0], -1), 1).mean()
+            return loss
+        else:
+            raise ValueError(f"Invalid reduction mode: {reduction}. Must be 'none', 'mean', or 'sum'.")
 
 
 if __name__ == "__main__":
