@@ -41,3 +41,4 @@ Version format: <major>.<minor>.<patch>
 1. do note create examples/ script or other script for example usage. Make the code/project concise and clean
 2. Do not use relative import in code. For exmaple, do not use `from ..models.base_network import BaseNetwork`, but use `from src.models.base_network import BaseNetwork`
 3. use english in docs
+4. For existing codes, do not modify the code for lint/formatter improvement unless you are told to do so.
