@@ -114,6 +114,8 @@ class ImageProcessorInitArgs(BaseModel):
     # If present, enables multi-resolution mode automatically
     multi_resolutions: Optional[Union[List[int], List[str]]] = None
     max_aspect_ratio: Optional[float] = 3.0  # Maximum aspect ratio limit
+    # If true, resize control and mask to match image size before further processing
+    resize_controls_mask_to_image: bool = False
 
     @field_validator("process_type")
     @classmethod

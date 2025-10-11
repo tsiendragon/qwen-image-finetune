@@ -4,7 +4,6 @@ import PIL
 import torch
 import logging
 from src.data.config import ImageProcessorInitArgs
-from src.utils.images import calculate_best_resolution
 
 import math
 
@@ -69,7 +68,7 @@ def best_area_near(
                 # 先比组合数，再比与A的相对误差，再比面积大小
                 if (item[0] > best[0] or
                     (item[0] == best[0] and (item[1] < best[1] or
-                      (item[1] == best[1] and item[2] < best[2])))):
+                                             (item[1] == best[1] and item[2] < best[2])))):
                     best = item
         area += base
 
@@ -177,9 +176,14 @@ class ImageProcessor:
         self.target_pixels = self.processor_config.target_pixels
         self.controls_pixels = self.processor_config.controls_pixels
         self.controls_size = self.processor_config.controls_size
+        # Multi-resolution support
+        self.multi_resolutions = self.processor_config.multi_resolutions
+        self.max_aspect_ratio = self.processor_config.max_aspect_ratio
+        # Resize controls and mask to image size before processing
+        self.resize_controls_mask_to_image = self.processor_config.resize_controls_mask_to_image
 
         # 如果target_pixels 和 如果target_size 都为空的话，则表示生成的图片尺寸和第一个 control 图片的尺寸相同
-        if self.target_size is None and self.target_pixels is None:
+        if self.target_size is None and self.target_pixels is None and self.multi_resolutions is None:
             if self.controls_size is not None:
                 self.target_size = self.controls_size[0]
             elif self.controls_pixels is not None:
@@ -193,13 +197,16 @@ class ImageProcessor:
                 self.controls_size = [self.target_size]
             elif self.target_pixels is not None:
                 self.controls_pixels = [self.target_pixels]
-            else:
+            elif self.multi_resolutions is None:
+                # Only raise error if multi_resolutions is also not configured
                 raise ValueError("target_size and target_pixels and controls_size and controls_pixels are all None")
 
-        if isinstance(self.controls_size, list) and isinstance(self.controls_size[0], (int, float)):
-            self.controls_size = [self.controls_size]
-        if isinstance(self.controls_pixels, int):
-            self.controls_pixels = [self.controls_pixels]
+        if self.controls_size is not None:
+            if isinstance(self.controls_size, list) and isinstance(self.controls_size[0], (int, float)):
+                self.controls_size = [self.controls_size]
+        if self.controls_pixels is not None:
+            if isinstance(self.controls_pixels, int):
+                self.controls_pixels = [self.controls_pixels]
 
         # make it devisible by 16 for shapes and pixels
         if self.target_size is not None:
@@ -226,6 +233,39 @@ class ImageProcessor:
         h = h // self.devisible_by * self.devisible_by
         w = w // self.devisible_by * self.devisible_by
         return h, w
+
+    def _select_pixels_candidate(self, orig_w: int, orig_h: int) -> int:
+        """Select best resolution from multi_resolutions candidates
+
+        Args:
+            orig_w: Original image width
+            orig_h: Original image height
+
+        Returns:
+            Best pixel count from candidates
+        """
+        if self.multi_resolutions is None or len(self.multi_resolutions) == 0:
+            raise ValueError("multi_resolutions is not configured")
+
+        orig_area = orig_w * orig_h
+        orig_ratio = orig_w / orig_h
+
+        # Check aspect ratio limit
+        if self.max_aspect_ratio is not None:
+            if orig_ratio > self.max_aspect_ratio or orig_ratio < 1.0 / self.max_aspect_ratio:
+                logging.warning(
+                    f"Image aspect ratio {orig_ratio:.2f} exceeds max_aspect_ratio "
+                    f"{self.max_aspect_ratio:.2f}"
+                )
+                raise ValueError(
+                    f"Image aspect ratio {orig_ratio:.2f} exceeds "
+                    f"max_aspect_ratio {self.max_aspect_ratio:.2f}"
+                )
+
+        best_candidate = None
+        relative_error = [abs(candidate_pixels - orig_area) / orig_area for candidate_pixels in self.multi_resolutions]
+        best_candidate = self.multi_resolutions[np.argmin(relative_error)]
+        return best_candidate
 
     def read_image(self, image_path):
         img = cv2.imread(image_path)
@@ -257,6 +297,25 @@ class ImageProcessor:
         controls_size = controls_size if controls_size is not None else self.controls_size
         target_pixels = target_pixels if target_pixels is not None else self.target_pixels
         controls_pixels = controls_pixels if controls_pixels is not None else self.controls_pixels
+
+        # If resize_controls_mask_to_image is enabled, resize control and mask to match image size first
+        if self.resize_controls_mask_to_image and 'image' in data:
+            image = self.any2numpy(data['image'])
+            image_h, image_w = image.shape[:2]
+
+            # Resize mask to image size
+            if 'mask' in data:
+                mask = self.any2numpy(data['mask'])
+                if mask.shape[:2] != (image_h, image_w):
+                    mask = cv2.resize(mask, (image_w, image_h), interpolation=self.interpolation)
+                data['mask'] = mask
+
+            # Resize control to image size
+            if 'control' in data:
+                control = self.any2numpy(data['control'])
+                if control.shape[:2] != (image_h, image_w):
+                    control = cv2.resize(control, (image_w, image_h), interpolation=self.interpolation)
+                data['control'] = control
 
         if 'image' in data:
             image = self.any2numpy(data['image'])
@@ -308,6 +367,14 @@ class ImageProcessor:
 
     def _process_image(self, image, target_size, target_pixels):
         """根据处理类型处理图像"""
+
+        # Multi-resolution mode: select best candidate
+        if self.multi_resolutions is not None:
+            from src.utils.images import calculate_best_resolution
+            h, w = image.shape[:2]
+            best_pixels = self._select_pixels_candidate(w, h)
+            new_w, new_h = calculate_best_resolution(w, h, best_pixels)
+            return cv2.resize(image, (new_w, new_h), interpolation=self.interpolation)
 
         if self.processor_config.process_type == 'resize':
             # 直接调整大小到目标尺寸
@@ -378,7 +445,7 @@ class ImageProcessor:
         """根据固定像素调整图像大小"""
         h, w = image.shape[:2]
         target_pixels = int(target_pixels/(32*32))*(32*32)
-        print('original w,h', w,h)
+        print('original w, h', w, h)
         new_w, new_h = best_hw_given_area(target_pixels, w, h)
         print('new shape', new_w, new_h, 'target_pixels', target_pixels)
         assert new_w * new_h == target_pixels, f"new_w * new_h {new_w * new_h} != target_pixels {target_pixels}"

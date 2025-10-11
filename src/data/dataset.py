@@ -531,6 +531,7 @@ class ImageDataset(Dataset):
         ```
         """
         data = self.load_data(idx)
+
         data = self.preprocessor.preprocess(data)
         data['cached'] = False
 
