@@ -43,12 +43,11 @@ class MaskEditLoss(nn.Module):
         self.forground_weight = forground_weight
         self.background_weight = background_weight
 
-    def forward(self, mask, model_pred, target, weighting=None, reduction='mean'):
+    def forward(self, model_pred, target,  weighting=None, edit_mask=None, reduction='mean', **kwargs):
         """
         计算mask加权的loss
-
         Args:
-            mask: [B, seq_len] - 二进制掩码，1表示修改区域，0表示背景区域
+            edit_mask: [B, seq_len] - 二进制掩码，1表示修改区域，0表示背景区域
             model_pred: [B, seq_len, channels] - 模型预测结果
             target: [B, seq_len, channels] - 目标值
             weighting: [B, seq_len, 1] - 可选的时间步权重
@@ -56,6 +55,7 @@ class MaskEditLoss(nn.Module):
                 'none': 返回 [B, seq_len, channels]
                 'mean': 返回标量，按所有元素求均值
                 'sum': 返回标量，按所有元素求和
+            **kwargs: Additional arguments (ignored for compatibility with other loss functions)
 
         Returns:
             torch.Tensor - 加权后的loss值
@@ -64,12 +64,15 @@ class MaskEditLoss(nn.Module):
         element_loss = (model_pred.float() - target.float()) ** 2
 
         # 如果有weighting，应用到element_loss
+        B, T, C = model_pred.shape
         if weighting is not None:
             element_loss = weighting.float() * element_loss
+        if edit_mask is None:
+            edit_mask = torch.ones((B, T), dtype=torch.float32, device=model_pred.device)
 
         # 创建权重掩码：文本区域权重更高
-        # mask: [B, seq_len] -> weight_mask: [B, seq_len, 1]
-        weight_mask = (mask * self.forground_weight + (1 - mask) * self.background_weight)
+        # edit_mask: [B, seq_len] -> weight_mask: [B, seq_len, 1]
+        weight_mask = (edit_mask.float() * self.forground_weight + (1 - edit_mask.float()) * self.background_weight)
         weight_mask = weight_mask.unsqueeze(-1)  # [B, seq_len, 1]
 
         # 应用mask权重

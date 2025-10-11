@@ -578,15 +578,27 @@ class TrainConfig(BaseModel):
 
 class LossConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    # Legacy fields for backward compatibility
     mask_loss: bool = False
     forground_weight: float = 2.0
     background_weight: float = 1.0
+
+    # New flexible configuration (optional)
+    class_path: Optional[str] = None
+    init_args: Optional[Dict[str, Any]] = None
 
     @field_validator("forground_weight", "background_weight")
     @classmethod
     def _non_negative(cls, v: float) -> float:
         if v < 0:
             raise ValueError("weight must be >= 0")
+        return v
+
+    @field_validator("class_path")
+    @classmethod
+    def _check_class_path(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v:
+            raise ValueError("class_path must be non-empty if provided")
         return v
 
 
@@ -602,7 +614,7 @@ class TrMode(str, Enum):
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     trainer: TrainerKind = TrainerKind.QwenImageEdit
-    resume: str | None = None
+    resume: Optional[str] = None
     mode: TrMode = TrMode.predict
     model: ModelConfig = Field(default_factory=ModelConfig)
     data: DataConfig = Field(default_factory=DataConfig)

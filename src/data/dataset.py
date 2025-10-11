@@ -16,6 +16,7 @@ from src.data.cache_manager import EmbeddingCacheManager
 from src.utils.huggingface import load_editing_dataset, is_huggingface_repo
 from src.utils.tools import hash_string_md5
 from src.data.config import DatasetInitArgs
+from src.losses.edit_mask_loss import map_mask_to_latent
 import re
 from pathlib import Path
 
@@ -679,6 +680,24 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     keys = list(batch[0].keys())
     # flattten
     batch_dict = {key: [item[key] for item in batch] for key in keys}
+
+    # Special handling for mask: convert each sample to latent space BEFORE padding
+    # because each sample may have different dimensions
+    edit_mask_list = None
+    if 'mask' in batch_dict:
+        mask_list = batch_dict['mask']  # List of masks, each may have different shape
+        edit_mask_list = []
+        for mask in mask_list:
+            # Convert to tensor if needed
+            if isinstance(mask, np.ndarray):
+                mask = torch.from_numpy(mask)
+            # Add batch dimension if needed: [H, W] -> [1, H, W]
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)
+            # Convert this individual mask to latent space
+            edit_mask = map_mask_to_latent(mask)  # [1, seq_len]
+            edit_mask_list.append(edit_mask.squeeze(0))  # [seq_len]
+
     # if torch tensor, padding to maximal length
     for key in batch_dict:
         if isinstance(batch_dict[key][0], np.ndarray):
@@ -691,6 +710,12 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             batch_dict[key] = batch_list
             # [ {d:1,g:2}, {e:3,g:4}] -> {d: [1,3], g: [2,4]}
             # [{a:1,b:2, c:{d:1,g:2}},{a:3,b:4, c:{d:3,g:4}}] -> {a: [1,3], b: [2,4], c:{d: [1,3], g: [2,4]}}
+
+    # Pad edit_mask_list and add to batch_dict
+    if edit_mask_list is not None:
+        # Pad edit masks to same length
+        batch_dict['edit_mask'] = pad_to_max_shape(edit_mask_list)  # [B, max_seq_len]
+
     return batch_dict
 
 
@@ -752,7 +777,6 @@ def loader(
 
 
 if __name__ == "__main__":
-    import logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
@@ -787,4 +811,3 @@ if __name__ == "__main__":
     print(batch['prompt'])
     print(batch['control_1'].shape)
     print(batch['img_shapes'])
-

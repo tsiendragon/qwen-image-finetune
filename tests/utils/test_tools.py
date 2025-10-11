@@ -14,6 +14,7 @@ from src.utils.tools import (
     infer_image_tensor,
     extract_batch_field,
     calculate_sha256_file,
+    pad_latents_for_multi_res,
 )
 
 
@@ -238,3 +239,199 @@ class TestExtractBatchField:
         """Test extracting single element tensor"""
         embeddings = {"scale": torch.tensor(2.0)}
         assert extract_batch_field(embeddings, "scale", 0) == 2.0
+
+
+class TestPadLatentsForMultiRes:
+    """Test suite for pad_latents_for_multi_res function"""
+
+    def test_basic_padding(self):
+        """Test basic padding with varying sequence lengths"""
+        latents = [
+            torch.randn(100, 64),
+            torch.randn(150, 64),
+            torch.randn(120, 64)
+        ]
+        max_seq_len = 150
+
+        padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+        # Check output shapes
+        assert padded.shape == (3, 150, 64), f"Expected shape (3, 150, 64), got {padded.shape}"
+        assert mask.shape == (3, 150), f"Expected mask shape (3, 150), got {mask.shape}"
+
+        # Check mask correctness
+        assert mask[0].sum() == 100, "First mask should have 100 True values"
+        assert mask[1].sum() == 150, "Second mask should have 150 True values"
+        assert mask[2].sum() == 120, "Third mask should have 120 True values"
+
+        # Check that valid data is preserved
+        assert torch.allclose(padded[0, :100], latents[0], atol=1e-6)
+        assert torch.allclose(padded[1, :150], latents[1], atol=1e-6)
+        assert torch.allclose(padded[2, :120], latents[2], atol=1e-6)
+
+        # Check that padded regions are zero
+        assert torch.all(padded[0, 100:] == 0)
+        assert torch.all(padded[2, 120:] == 0)
+
+    def test_single_latent(self):
+        """Test with single latent tensor"""
+        latents = [torch.randn(50, 32)]
+        max_seq_len = 100
+
+        padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+        assert padded.shape == (1, 100, 32)
+        assert mask.shape == (1, 100)
+        assert mask[0].sum() == 50
+        assert torch.all(padded[0, 50:] == 0)
+
+    def test_all_same_length(self):
+        """Test when all latents have the same length"""
+        latents = [
+            torch.randn(100, 64),
+            torch.randn(100, 64),
+            torch.randn(100, 64)
+        ]
+        max_seq_len = 100
+
+        padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+        assert padded.shape == (3, 100, 64)
+        assert torch.all(mask)  # All should be True
+
+    def test_device_dtype_preservation(self):
+        """Test that device and dtype are preserved from first latent"""
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+
+        latents = [
+            torch.randn(50, 32, device=device, dtype=torch.float32),
+            torch.randn(60, 32, device=device, dtype=torch.float32),
+        ]
+        max_seq_len = 80
+
+        padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+        assert padded.device.type == device.type
+        assert padded.dtype == torch.float32
+        assert mask.device.type == device.type
+        assert mask.dtype == torch.bool
+
+    def test_mixed_device_handling(self):
+        """Test that latents on different devices are moved to first latent's device"""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
+
+        latents = [
+            torch.randn(50, 32, device="cuda"),
+            torch.randn(60, 32, device="cpu"),
+        ]
+        max_seq_len = 80
+
+        padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+        assert padded.device.type == "cuda"
+        assert torch.allclose(padded[1, :60].cpu(), latents[1], atol=1e-6)
+
+    def test_empty_list_error(self):
+        """Test error when passing empty list"""
+        with pytest.raises(ValueError, match="Cannot pad empty latent list"):
+            pad_latents_for_multi_res([], 100)
+
+    def test_wrong_dimension_error(self):
+        """Test error when latent is not 2D"""
+        latents = [
+            torch.randn(50, 32),
+            torch.randn(60, 32, 16),  # 3D tensor
+        ]
+        with pytest.raises(ValueError, match="Expected 2D latent tensor"):
+            pad_latents_for_multi_res(latents, 100)
+
+    def test_channel_mismatch_error(self):
+        """Test error when channel dimensions don't match"""
+        latents = [
+            torch.randn(50, 32),
+            torch.randn(60, 64),  # Different channel size
+        ]
+        with pytest.raises(ValueError, match="Channel mismatch"):
+            pad_latents_for_multi_res(latents, 100)
+
+    def test_exceeds_max_seq_len_error(self):
+        """Test error when latent sequence exceeds max_seq_len"""
+        latents = [
+            torch.randn(50, 32),
+            torch.randn(150, 32),  # Exceeds max_seq_len
+        ]
+        with pytest.raises(ValueError, match="exceeds max_seq_len"):
+            pad_latents_for_multi_res(latents, 100)
+
+    def test_mask_can_be_used_for_loss(self):
+        """Test that mask can be used for masked loss computation"""
+        latents = [
+            torch.randn(100, 64),
+            torch.randn(150, 64),
+            torch.randn(120, 64)
+        ]
+        max_seq_len = 150
+
+        padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+        # Simulate model prediction and target
+        pred = torch.randn_like(padded)
+        target = torch.randn_like(padded)
+
+        # Compute masked loss
+        valid_pred = pred[mask]
+        valid_target = target[mask]
+
+        assert valid_pred.shape[0] == (100 + 150 + 120), "Should have correct number of valid elements"
+        assert valid_pred.shape[1] == 64, "Should preserve channel dimension"
+        assert valid_target.shape == valid_pred.shape, "Target and pred should have same shape"
+
+    def test_various_dtypes(self):
+        """Test with different data types"""
+        for dtype in [torch.float16, torch.float32, torch.float64]:
+            latents = [
+                torch.randn(50, 32, dtype=dtype),
+                torch.randn(60, 32, dtype=dtype),
+            ]
+            max_seq_len = 80
+
+            padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+            assert padded.dtype == dtype
+            assert mask.dtype == torch.bool
+
+    def test_large_batch(self):
+        """Test with large batch size"""
+        batch_size = 32
+        latents = [torch.randn(50 + i * 5, 64) for i in range(batch_size)]
+        # Max length will be 50 + 31*5 = 205, so set max_seq_len to 210
+        max_seq_len = 210
+
+        padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+        assert padded.shape == (batch_size, 210, 64)
+        assert mask.shape == (batch_size, 210)
+
+        # Verify each sample's mask
+        for i in range(batch_size):
+            expected_len = 50 + i * 5
+            assert mask[i].sum() == expected_len
+
+    def test_edge_case_max_seq_equals_longest(self):
+        """Test when max_seq_len equals the longest sequence"""
+        latents = [
+            torch.randn(100, 64),
+            torch.randn(150, 64),
+            torch.randn(120, 64)
+        ]
+        max_seq_len = 150  # Equals longest
+
+        padded, mask = pad_latents_for_multi_res(latents, max_seq_len)
+
+        assert padded.shape == (3, 150, 64)
+        assert mask[1].all()  # Second item should have all True
+        assert mask[1].sum() == 150
