@@ -254,5 +254,53 @@ def calculate_sha256_file(filepath):
     return sha256_hash.hexdigest()
 
 
+def extract_batch_field(embeddings: dict, key: str, batch_idx: int):
+    """Extract a field value for a specific batch index from embeddings
+
+    This helper function handles different data types (list, tensor, scalar)
+    uniformly, making it easy to extract per-sample values from batch data.
+    It's commonly used in multi-resolution training to handle variable-sized
+    batches where different samples may have different dimensions.
+
+    Args:
+        embeddings: Dictionary containing batch data
+        key: Field name to extract
+        batch_idx: Index of the sample in the batch (0-based)
+
+    Returns:
+        The value for the specified sample. Type depends on the field:
+        - For list/tuple: returns embeddings[key][batch_idx]
+        - For multi-element tensor: returns embeddings[key][batch_idx].item()
+        - For scalar: returns embeddings[key] (same for all samples)
+
+    Examples:
+        >>> # List: different values per sample
+        >>> embeddings = {"height": [512, 640, 768], "width": 512}
+        >>> extract_batch_field(embeddings, "height", 0)  # 512
+        >>> extract_batch_field(embeddings, "height", 1)  # 640
+        >>> extract_batch_field(embeddings, "height", 2)  # 768
+
+        >>> # Scalar: same value for all samples
+        >>> extract_batch_field(embeddings, "width", 0)   # 512
+        >>> extract_batch_field(embeddings, "width", 1)   # 512
+
+        >>> # Tensor: extract specific index
+        >>> embeddings = {"height": torch.tensor([512, 640, 768])}
+        >>> extract_batch_field(embeddings, "height", 1)  # 640
+
+    Note:
+        This function is particularly useful in multi-resolution training
+        where batch samples may have different resolutions, and we need
+        to extract per-sample metadata (height, width, n_controls, etc.).
+    """
+    value = embeddings[key]
+    if isinstance(value, (list, tuple)):
+        return value[batch_idx]
+    elif isinstance(value, torch.Tensor) and value.numel() > 1:
+        return value[batch_idx].item()
+    else:
+        return value  # Scalar - same for all samples
+
+
 if __name__ == "__main__":
     print(get_git_info())
