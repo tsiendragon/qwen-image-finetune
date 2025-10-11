@@ -6,7 +6,7 @@ Defines the core interface that all trainers must implement.
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 import torch
 import torch.nn as nn
@@ -19,6 +19,7 @@ import json
 from functools import partial
 import numpy as np
 from src.utils.sampling import calculate_shift, retrieve_timesteps
+# from src.utils.tools import extract_batch_field
 from tqdm import tqdm
 from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
@@ -30,7 +31,7 @@ import importlib
 
 import safetensors.torch
 from src.models.quantize import quantize_model_to_fp8
-from src.utils.tools import calculate_sha256_file
+from src.utils.tools import calculate_sha256_file, pad_latents_for_multi_res
 from src.data.config import Config
 from src.utils.model_summary import print_model_summary_table
 from src.utils.lora_utils import FpsLogger
@@ -314,6 +315,32 @@ class BaseTrainer(ABC):
 
         return False
 
+    def _pad_latents_for_multi_res(
+        self,
+        latents: List[torch.Tensor],
+        max_seq_len: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Pad latents to uniform sequence length for multi-resolution training
+
+        This is a wrapper around the utility function pad_latents_for_multi_res
+        from src.utils.tools. See that function for full documentation.
+
+        Args:
+            latents: List of latent tensors, each with shape [seq_i, C] where seq_i varies
+            max_seq_len: Maximum sequence length to pad to
+
+        Returns:
+            padded_latents: Padded latents tensor [B, max_seq, C]
+            attention_mask: Binary mask [B, max_seq] where True=valid, False=padded
+
+        Example:
+            >>> latents = [torch.randn(100, 64), torch.randn(150, 64), torch.randn(120, 64)]
+            >>> padded, mask = self._pad_latents_for_multi_res(latents, 150)
+            >>> padded.shape  # [3, 150, 64]
+            >>> mask.shape    # [3, 150]
+        """
+        return pad_latents_for_multi_res(latents, max_seq_len)
+
     def accelerator_prepare(self, train_dataloader):
         """Prepare accelerator"""
         # from diffusers.loaders import AttnProcsLayers
@@ -458,20 +485,35 @@ class BaseTrainer(ABC):
         """Compute loss. returned the flow matching loss tensor"""
         pass
 
-    def forward_loss(self, model_pred, target, weighting=None, edit_mask=None):
-        if edit_mask is None:
-            if weighting is None:
-                loss = torch.nn.functional.mse_loss(model_pred, target, reduction="mean")
-            else:
-                loss = torch.mean(
-                    (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
-                    1,
-                )
-                loss = loss.mean()
-        else:
-            # shape torch.Size([4, 864, 1216]) torch.Size([4, 4104, 64]) torch.Size([4, 4104, 64]) torch.Size([4, 1, 1])
-            loss = self.criterion(edit_mask, model_pred, target, weighting)
-        return loss
+    def forward_loss(self, model_pred, target, weighting=None, edit_mask=None, attention_mask=None):
+        """
+        Forward loss computation with automatic parameter detection.
+
+        Automatically detects which parameters the loss function needs and passes them accordingly.
+        All loss functions should accept **kwargs for compatibility.
+
+        Supports multiple loss function signatures:
+        - MseLoss: (model_pred, target, weighting, **kwargs)
+        - MaskEditLoss: (edit_mask, model_pred, target, weighting, **kwargs)
+        - AttentionMaskMseLoss: (model_pred, target, attention_mask, edit_mask, weighting, **kwargs)
+
+        Args:
+            model_pred: Model predictions [B, T, C]
+            target: Target values [B, T, C]
+            weighting: Optional element-wise weights
+            edit_mask: Optional edit mask [B, T] (for edit-based losses)
+            attention_mask: Optional attention mask [B, T] (for multi-resolution losses)
+
+        Returns:
+            Loss tensor (scalar)
+        """
+        return self.criterion(
+            model_pred=model_pred,
+            target=target,
+            attention_mask=attention_mask,
+            edit_mask=edit_mask,
+            weighting=weighting
+        )
 
     def train_epoch(self, epoch, train_dataloader):
         for _, batch in enumerate(train_dataloader):
@@ -601,16 +643,34 @@ class BaseTrainer(ABC):
         self.accelerator.end_training()
 
     def setup_criterion(self):
-        if self.config.loss.mask_loss:
-            from src.loss.edit_mask_loss import MaskEditLoss
+        """
+        Setup loss criterion from config.
 
-            self.criterion = MaskEditLoss(
-                forground_weight=self.config.loss.forground_weight,
-                background_weight=self.config.loss.background_weight,
-            )
+        Supports two modes:
+        1. New flexible mode: Use config.loss.class_path and config.loss.init_args
+        2. Legacy mode: Use config.loss.mask_loss flag (for backward compatibility)
+        """
+        if self.config.loss.class_path is not None:
+            # New flexible mode: instantiate from class_path
+            logger.info(f"Initializing loss from class_path: {self.config.loss.class_path}")
+            init_args = self.config.loss.init_args or {}
+            self.criterion = instantiate_class(self.config.loss.class_path, init_args)
         else:
-            self.criterion = nn.MSELoss()
+            # Legacy mode: backward compatibility
+            if self.config.loss.mask_loss:
+                from src.losses.edit_mask_loss import MaskEditLoss
+                logger.info("Using legacy MaskEditLoss configuration")
+                self.criterion = MaskEditLoss(
+                    forground_weight=self.config.loss.forground_weight,
+                    background_weight=self.config.loss.background_weight,
+                )
+            else:
+                from src.losses import MseLoss
+                logger.info("Using legacy MseLoss configuration")
+                self.criterion = MseLoss(reduction='mean')
+
         self.criterion.to(self.accelerator.device)
+        logger.info(f"Loss criterion initialized: {self.criterion.__class__.__name__}")
 
     def setup_predict(
         self,
@@ -727,6 +787,50 @@ class BaseTrainer(ABC):
 
         logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
+    def is_fsdp_enabled(self):
+        plug = self.accelerator.state.fsdp_plugin if hasattr(self.accelerator.state, "fsdp_plugin") else None
+        return plug is not None
+
+    def save_lora_fsdp(self, save_folder, adapter_name=None):
+        """Save LoRA weights under FSDP with CPU offload & rank0-only. """
+        import logging
+        import torch.distributed as dist
+        from peft import get_peft_model_state_dict
+        from diffusers.utils import convert_state_dict_to_diffusers
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType
+        from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
+        # unwrap
+        unwrapped = self.accelerator.unwrap_model(self.dit) if self.accelerator is not None else self.dit
+        if is_compiled_module(unwrapped):
+            unwrapped = unwrapped._orig_mod
+
+        adapter_name = self.adapter_name if adapter_name is None else adapter_name
+        if save_folder.endswith(".safetensors"):
+            print(f"Warning: save_folder {save_folder} should be a folder")
+
+        # 降峰值
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
+        # FSDP：在 CPU 上聚合 FULL state_dict，且仅 rank0 拿到字典
+        ctx = FSDP.state_dict_type(
+            unwrapped,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+        )
+
+        with torch.no_grad(), ctx:
+            is_rank0 = (not dist.is_initialized()) or dist.get_rank() == 0
+            if not is_rank0:
+                return  # 其它 rank 不保存
+
+            lora_sd = get_peft_model_state_dict(unwrapped, adapter_name=adapter_name)
+            lora_sd = convert_state_dict_to_diffusers(lora_sd)
+
+            os.makedirs(save_folder, exist_ok=True)
+            self.pipeline_class.save_lora_weights(save_folder, lora_sd, safe_serialization=True)
+            logging.info(f"[FSDP] Saved LoRA weights to {save_folder}")
+
     def save_checkpoint(self, epoch, global_step, is_last=False):
         """Save checkpoint"""
         self.fps_logger.pause()
@@ -740,17 +844,21 @@ class BaseTrainer(ABC):
                 save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last")
             os.makedirs(save_path, exist_ok=True)
 
-            self.save_lora(save_path, adapter_name=self.adapter_name)
+            if self.is_fsdp_enabled():
+                self.save_lora_fsdp(save_path, adapter_name=self.adapter_name)
+            else:
+                self.save_lora(save_path, adapter_name=self.adapter_name)
 
             state_info = {"global_step": global_step, "epoch": epoch, "is_last": is_last}
             if is_last:
-                plug = self.accelerator.state.fsdp_plugin if hasattr(self.accelerator.state, "fsdp_plugin") else None
-                if plug is None:
+                if not self.is_fsdp_enabled():
                     self.accelerator.save_state(save_path)  # when save in fsdp, will cause problem
                 git_info = get_git_info()
                 state_info.update(git_info)
             with open(os.path.join(save_path, "state.json"), "w") as f:
                 json.dump(state_info, f)
+        if self.accelerator is not None:
+            self.accelerator.wait_for_everyone()
         self.fps_logger.resume()
 
     def save_lora(self, save_folder, adapter_name=None):
