@@ -120,11 +120,14 @@ def get_git_info():
     }
 
 
-def instantiate_class(class_path, init_args):
+def instantiate_class(class_path: str, init_args):
     """load processor"""
     module_path, module_name = class_path.rsplit('.', 1)
     module = importlib.import_module(module_path)
-    instance = getattr(module, module_name)(init_args)
+    if isinstance(init_args, dict):
+        instance = getattr(module, module_name)(**init_args)
+    else:
+        instance = getattr(module, module_name)(init_args)
     return instance
 
 
@@ -304,7 +307,7 @@ def extract_batch_field(embeddings: dict, key: str, batch_idx: int):
 
 def pad_latents_for_multi_res(
     latents: list[torch.Tensor],
-    max_seq_len: int,
+    max_seq_len: int = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Pad latents to uniform sequence length for multi-resolution training
 
@@ -352,6 +355,8 @@ def pad_latents_for_multi_res(
     batch_size = len(latents)
     if batch_size == 0:
         raise ValueError("Cannot pad empty latent list")
+    if max_seq_len is None:
+        max_seq_len = max(lat.shape[0] for lat in latents)
 
     # Infer device and dtype from first latent
     device = latents[0].device

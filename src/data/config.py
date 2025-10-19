@@ -112,7 +112,14 @@ class ImageProcessorInitArgs(BaseModel):
     target_pixels: Optional[int] = None
     # Multi-resolution training: list of target pixel candidates
     # If present, enables multi-resolution mode automatically
-    multi_resolutions: Optional[Union[List[int], List[str]]] = None
+    # Format 1 (simple): List of pixels - applies to all images
+    #   multi_resolutions: ["1024*1024", "512*512"]
+    # Format 2 (advanced): Dict with separate configs for each image type
+    #   multi_resolutions:
+    #     target: ["1024*1024", "512*512"]
+    #     controls: [["512*512", "256*256"], ["256*256"], ["512*512"]]
+    #   where controls[0] is the first control, controls[1:] are additional controls
+    multi_resolutions: Optional[Union[List[Union[int, str]], Dict[str, Any]]] = None
     max_aspect_ratio: Optional[float] = 3.0  # Maximum aspect ratio limit
     # If true, resize control and mask to match image size before further processing
     resize_controls_mask_to_image: bool = False
@@ -177,32 +184,103 @@ class ImageProcessorInitArgs(BaseModel):
     @field_validator("multi_resolutions", mode="before")
     @classmethod
     def _parse_multi_resolutions(cls, v):
-        """Parse multi_resolutions from various formats into list of integers"""
+        """Parse multi_resolutions from various formats
+
+        Supports two formats:
+        1. Simple list: ["1024*1024", "512*512"] -> applies to all images
+        2. Advanced dict: {target: [...], controls: [[...], [...], [...]]}
+           where controls[0] is first control, controls[1:] are additional controls
+        """
         if v is None:
             return v
-        if not isinstance(v, list):
-            raise ValueError("multi_resolutions must be a list")
 
-        parsed: List[int] = []
-        for item in v:
-            if isinstance(item, (int,)):
-                parsed.append(int(item))
-            elif isinstance(item, str):
-                parsed.append(cls._eval_pixel_expr(item))
-            else:
+        # Format 1: Simple list (backward compatible)
+        if isinstance(v, list):
+            parsed: List[int] = []
+            for item in v:
+                if isinstance(item, (int,)):
+                    parsed.append(int(item))
+                elif isinstance(item, str):
+                    parsed.append(cls._eval_pixel_expr(item))
+                else:
+                    raise ValueError(
+                        "multi_resolutions items must be int or string expression like '512*512'"
+                    )
+
+            if len(parsed) == 0:
+                raise ValueError("multi_resolutions must not be empty")
+
+            # Validate all values are positive
+            for p in parsed:
+                if p <= 0:
+                    raise ValueError(f"multi_resolutions values must be positive, got {p}")
+
+            return parsed
+
+        # Format 2: Advanced dict with per-image-type configs
+        if isinstance(v, dict):
+            parsed_dict = {}
+
+            # Parse 'target' key
+            if 'target' in v:
+                target_list = []
+                for item in v['target']:
+                    if isinstance(item, (int,)):
+                        target_list.append(int(item))
+                    elif isinstance(item, str):
+                        target_list.append(cls._eval_pixel_expr(item))
+                    else:
+                        raise ValueError("target resolutions must be int or string")
+                parsed_dict['target'] = target_list
+
+            # Parse 'controls' key - list of lists where controls[0] is first control
+            if 'controls' in v:
+                controls_lists = []
+                for control_idx, control_res in enumerate(v['controls']):
+                    if not isinstance(control_res, list):
+                        raise ValueError(
+                            f"controls[{control_idx}] must be a list of resolutions"
+                        )
+                    control_list = []
+                    for item in control_res:
+                        if isinstance(item, (int,)):
+                            control_list.append(int(item))
+                        elif isinstance(item, str):
+                            control_list.append(cls._eval_pixel_expr(item))
+                        else:
+                            raise ValueError(
+                                f"controls[{control_idx}] items must be int or string"
+                            )
+                    controls_lists.append(control_list)
+                parsed_dict['controls'] = controls_lists
+
+            # Validate at least one key is present
+            if len(parsed_dict) == 0:
                 raise ValueError(
-                    "multi_resolutions items must be int or string expression like '512*512'"
+                    "multi_resolutions dict must contain at least one of: 'target', 'controls'"
                 )
 
-        if len(parsed) == 0:
-            raise ValueError("multi_resolutions must not be empty")
+            # Validate all values are positive
+            for key, values in parsed_dict.items():
+                if key == 'controls':
+                    for idx, control_vals in enumerate(values):
+                        for p in control_vals:
+                            if p <= 0:
+                                raise ValueError(
+                                    f"controls[{idx}] values must be positive, got {p}"
+                                )
+                else:
+                    for p in values:
+                        if p <= 0:
+                            raise ValueError(
+                                f"{key} values must be positive, got {p}"
+                            )
 
-        # Validate all values are positive
-        for p in parsed:
-            if p <= 0:
-                raise ValueError(f"multi_resolutions values must be positive, got {p}")
+            return parsed_dict
 
-        return parsed
+        raise ValueError(
+            "multi_resolutions must be a list or dict, got " + str(type(v))
+        )
 
     @field_validator("max_aspect_ratio")
     @classmethod

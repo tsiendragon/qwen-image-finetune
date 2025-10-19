@@ -154,6 +154,7 @@ class ImageDataset(Dataset):
             os.makedirs(self.cache_dir, exist_ok=True)
             self.cache_manager = EmbeddingCacheManager(self.cache_dir)
             print(f"缓存已启用，缓存目录: {self.cache_dir}")
+            print(f"use_cache: {self.use_cache}")
         else:
             self.cache_manager = None
             print("缓存未启用")
