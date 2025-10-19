@@ -8,12 +8,7 @@ from src.utils.tools import extract_file_hash, hash_string_md5
 
 
 class EmbeddingCacheManager:
-    """嵌入缓存管理器，用于保存和加载预计算的嵌入
-
-    Version History:
-    - v1.0: Original format without version field and img_shapes
-    - v2.0: Added version field and img_shapes for multi-resolution support
-    """
+    """嵌入缓存管理器，用于保存和加载预计算的嵌入"""
     CACHE_VERSION = "2.0"
 
     def __init__(self, cache_root: str):
@@ -97,19 +92,11 @@ class EmbeddingCacheManager:
             json.dump(metadata, f, indent=2)
 
     def load_cache(self, data, replace_empty_embeddings: bool = False, prompt_empty_drop_keys: List[str] = None):
-        """Load cache with version compatibility
-
-        Supports:
-        - v1.0: Legacy format without version field
-        - v2.0: New format with version and img_shapes
-        """
+        """Load cache embeddings and img_shapes"""
         main_hash = data["file_hashes"]["main_hash"]
         metadata_path = self.get_metadata_path(self.cache_root, main_hash)
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
-
-        # Get cache version (default to "1.0" for legacy caches)
-        cache_version = metadata.get("version", "1.0")
 
         # Load embeddings
         for embedding_key, hash_value in metadata.items():
@@ -123,14 +110,9 @@ class EmbeddingCacheManager:
             embedding = torch.load(cache_path, map_location="cpu", weights_only=False)
             data[embedding_key] = embedding
 
-        # Handle img_shapes based on version
-        if cache_version == "2.0" and "img_shapes" in metadata:
-            # v2.0: Load img_shapes from metadata
+        # Load img_shapes
+        if "img_shapes" in metadata:
             data["img_shapes"] = torch.tensor(metadata["img_shapes"])
-        elif cache_version == "1.0":
-            # v1.0: Reconstruct img_shapes from image dimensions if available
-            # This will be handled in the trainer's prepare_cached_embeddings
-            pass
 
         if replace_empty_embeddings:
             for key in prompt_empty_drop_keys:
