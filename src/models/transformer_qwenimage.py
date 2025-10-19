@@ -198,6 +198,7 @@ class QwenEmbedRope(nn.Module):
         Args: video_fhw: [frame, height, width] a list of 3 integers representing the shape of the video Args:
         txt_length: [bs] a list of 1 integers representing the length of the text
         """
+        print("video_fhw in rope forward", video_fhw)
         if self.pos_freqs.device != device:
             self.pos_freqs = self.pos_freqs.to(device)
             self.neg_freqs = self.neg_freqs.to(device)
@@ -353,6 +354,26 @@ class QwenDoubleStreamAttnProcessor2_0:
         return img_attn_output, txt_attn_output
 
 
+def print_shape(x, prefix=""):
+    if isinstance(x, torch.Tensor):
+        print(prefix, "[tensor]:", x.shape)
+    elif isinstance(x, str):
+        print(prefix, "[str]:", len(x))
+    elif isinstance(x, dict):
+        print(prefix, "[dict]:", len(x))
+        for k, v in x.items():
+            print(prefix, "\t[dict key]:", k)
+            print_shape(v, prefix=prefix+"\t\t")
+    elif isinstance(x, (list, tuple)):
+        print(prefix, "[list]:", len(x))
+        for xi in x:
+            print_shape(xi, prefix + f"\t[{type(x)}]")
+    elif isinstance(x, (int, float, bool)):
+        print(prefix, "[scalar]:", x)
+    else:
+        print(prefix, "[unknown]:", type(x))
+
+
 @maybe_allow_in_graph
 class QwenImageTransformerBlock(nn.Module):
     def __init__(
@@ -411,6 +432,11 @@ class QwenImageTransformerBlock(nn.Module):
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Get modulation parameters for both streams
+        print('hidden states shape', hidden_states.shape)
+        print('encoder hidden states shape', encoder_hidden_states.shape)
+        if encoder_hidden_states_mask is not None:
+            print('encoder hidden states mask', encoder_hidden_states_mask)
+        print('temb shape', temb.shape)
         img_mod_params = self.img_mod(temb)  # [B, 6*dim]
         txt_mod_params = self.txt_mod(temb)  # [B, 6*dim]
 
@@ -433,6 +459,7 @@ class QwenImageTransformerBlock(nn.Module):
         # 3. Concatenates and runs joint attention
         # 4. Splits results back to separate streams
         joint_attention_kwargs = joint_attention_kwargs or {}
+        # return img_modulated, img_modulated
         attn_output = self.attn(
             hidden_states=img_modulated,  # Image stream (will be processed as "sample")
             encoder_hidden_states=txt_modulated,  # Text stream (will be processed as "context")
@@ -443,7 +470,10 @@ class QwenImageTransformerBlock(nn.Module):
 
         # QwenAttnProcessor2_0 returns (img_output, txt_output) when encoder_hidden_states is provided
         img_attn_output, txt_attn_output = attn_output
-
+        # image_rotary_emb [(tensor[64],tensor[64]), ...,...,...]
+        # print_shape(image_rotary_emb)
+        # return image_rotary_emb[0][0], image_rotary_emb[0][0].unsqueeze(1).unsqueeze(1)
+        # return txt_attn_output, txt_attn_output
         # Apply attention gates and add residual (like in Megatron)
         hidden_states = hidden_states + img_gate1 * img_attn_output
         encoder_hidden_states = encoder_hidden_states + txt_gate1 * txt_attn_output
@@ -630,6 +660,7 @@ class QwenImageTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, Fro
                     image_rotary_emb=image_rotary_emb,
                     joint_attention_kwargs=attention_kwargs,
                 )
+            # return Transformer2DModelOutput(sample=hidden_states)
 
         # Use only the image part (hidden_states) from the dual-stream blocks
         hidden_states = self.norm_out(hidden_states, temb)

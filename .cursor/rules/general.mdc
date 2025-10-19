@@ -11,8 +11,7 @@ Avery time when want to name a new version for the project. Do
 4. git commit the changes
 5. In the README.md update the new updates and cite relevent docs
 6. Push to remote
-7. git add version tag and push to origin
-8. git create merge request
+7. git create merge request
 
 ## Version Update
 Version format: <major>.<minor>.<patch>
@@ -42,3 +41,7 @@ Version format: <major>.<minor>.<patch>
 1. do note create examples/ script or other script for example usage. Make the code/project concise and clean
 2. Do not use relative import in code. For exmaple, do not use `from ..models.base_network import BaseNetwork`, but use `from src.models.base_network import BaseNetwork`
 3. use english in docs
+4. For existing codes, do not modify the code for lint/formatter improvement unless you are told to do so.
+5. Use as less try-except. It is not friendly to debug
+6. Do not create addition markdown documentation for explaning of the code unless you are told so
+7. When creating bash script to run something, just keep the bash file as simple as enough

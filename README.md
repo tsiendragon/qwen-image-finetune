@@ -6,6 +6,11 @@
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**,**Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
+- **🎯 Multi-Resolution Mixed Training (v3.0.0)**: Revolutionary multi-resolution training support that allows training with multiple resolution candidates in a single session. The system intelligently selects the optimal resolution based on each image's aspect ratio, supporting both simple shared-resolution mode and advanced per-image-type configuration. Compatible with all model architectures and training modes. See [CHANGELOG](docs/CHANGELOG.md) for complete details.
+  - Simple mode: `multi_resolutions: [320*320, 512*512, 640*640]`
+  - Advanced mode with per-type control: `multi_resolutions: {target: [...], controls: [[...], [...]]}`
+  - Example config: `tests/test_configs/test_example_fluxkontext_multiresolution.yaml`
+
 - **📚 Documentation Improvements (v2.4.1)**: Comprehensive documentation updates including MIT license badge, enhanced data preparation guide (Folder/HuggingFace/CSV sources), and English language standardization. See [CHANGELOG](docs/CHANGELOG.md) for details.
 
 - **🔥 Dynamic Shape Support (v2.4.0)**: For Qwen-Image-Edit or Plus, we introduce the fixed number of pixels condition for batch process such that it support multiple shapes.
@@ -68,6 +73,7 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 ## Key Features
 
 - **Dual Model Support**: Complete support for both Qwen-Image-Edit and FLUX Kontext model architectures
+- **Multi-Resolution Mixed Training**: Train with multiple resolution candidates (e.g., 320x320, 512x512, 640x640) in a single session with intelligent aspect-ratio-aware selection
 - **Multi-Precision Training**: FP16, FP8, and FP4 quantization levels for different hardware requirements
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
 - [**Edit Mask Loss** feature documentation in `docs/image_edit_mask_loss.md`](docs/image_edit_mask_loss.md) Advanced mask-weighted loss function for focused training on edit regions
@@ -573,6 +579,10 @@ We welcome contributions to improve this documentation:
 - Provide complete code snippets
 - Add troubleshooting sections
 - Keep content up to date
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=tsiendragon/qwen-image-finetune&type=Date)](https://www.star-history.com/#tsiendragon/qwen-image-finetune&Date)
 
 ## Getting Help
 

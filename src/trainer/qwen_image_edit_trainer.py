@@ -13,15 +13,15 @@ from diffusers.training_utils import (
 )
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
     QwenImageEditPipeline,
-    calculate_dimensions,
     retrieve_latents,
     randn_tensor,
 )
-
-from src.loss.edit_mask_loss import map_mask_to_latent
+# calculate_dimensions,
+# from src.loss.edit_mask_loss import map_mask_to_latent
 from src.trainer.base_trainer import BaseTrainer
-from src.utils.tools import infer_image_tensor
-from src.utils.images import make_image_devisible, make_image_shape_devisible, resize_bhw, calculate_best_resolution, image_adjust_best_resolution
+from src.utils.tools import infer_image_tensor, extract_batch_field
+from src.utils.images import make_image_devisible, make_image_shape_devisible, resize_bhw, calculate_best_resolution
+# image_adjust_best_resolution
 
 
 class QwenImageEditTrainer(BaseTrainer):
@@ -164,7 +164,6 @@ class QwenImageEditTrainer(BaseTrainer):
             image = image.permute(0, 3, 1, 2).unsqueeze(2)
         else:
             raise ValueError(f"Invalid image layout: {tensor_info['layout']},{image.shape}")
-
 
         if tensor_info["range"] == "0-255":
             image = image / 255.0
@@ -401,16 +400,12 @@ class QwenImageEditTrainer(BaseTrainer):
                 batch[f"width_control_{i+1}"] = batch[additional_control_key].shape[4]
                 batch[f"height_control_{i+1}"] = batch[additional_control_key].shape[3]
 
-        logging.info(f'batch["prompt"] {batch["prompt"]}')
         prompt_embeds, prompt_embeds_mask = self.encode_prompt(
             prompt=batch["prompt"],
             image=batch["prompt_control"],
         )
         batch["prompt_embeds_mask"] = prompt_embeds_mask
         batch["prompt_embeds"] = prompt_embeds
-        print('prompt_embeds_mask shape', prompt_embeds_mask.shape)
-        print('prompt_embeds shape', prompt_embeds.shape)
-        print('batch["prompt_control"]', batch["prompt_control"].shape)
 
         if stage == "cache":
             empty_prompt_embeds, empty_prompt_embeds_mask = self.encode_prompt(
@@ -422,8 +417,6 @@ class QwenImageEditTrainer(BaseTrainer):
 
         if "negative_prompt" in batch and batch['true_cfg_scale'] > 1:
             # only for predict stage
-            print('batch["negative_prompt"]', batch["negative_prompt"])
-            print('batch["prompt_control"]', batch["prompt_control"].shape)
             negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
                 prompt=batch["negative_prompt"],
                 image=batch["prompt_control"],
@@ -478,11 +471,16 @@ class QwenImageEditTrainer(BaseTrainer):
         if "control_latents" in batch:
             batch["control_latents"] = torch.cat(batch["control_latents"], dim=1)
 
-        if self.config.loss.mask_loss and "mask" in batch:
-            mask = batch["mask"]
-            height_image, width_image = batch["height"], batch["width"]
-            batch["mask"] = resize_bhw(mask, height_image, width_image)
-            batch["mask"] = map_mask_to_latent(batch["mask"])
+        # if self.config.loss.mask_loss and "mask" in batch:
+        #     mask = batch["mask"]
+        #     height_image, width_image = batch["height"], batch["width"]
+        #     batch["mask"] = resize_bhw(mask, height_image, width_image)
+        #     batch["mask"] = map_mask_to_latent(batch["mask"])
+        # need to convert img_shapes from pixel space to latent shapce
+
+        img_shapes = batch["img_shapes"]
+        img_shapes = self.convert_img_shapes_to_latent_space(img_shapes)
+        batch["img_shapes"] = img_shapes
         return batch
 
     def cache_step(
@@ -501,7 +499,8 @@ class QwenImageEditTrainer(BaseTrainer):
         prompt_embeds_mask = data["prompt_embeds_mask"].detach().cpu()[0]
         empty_prompt_embeds = data["empty_prompt_embeds"].detach().cpu()[0]
         empty_prompt_embeds_mask = data["empty_prompt_embeds_mask"].detach().cpu()[0]
-        img_shapes = torch.tensor(self._get_image_shapes(data, 1)[0]).to(torch.int32)
+        # img_shapes = torch.tensor(self._get_image_shapes(data, 1)[0]).to(torch.int32)
+        # img_shapes now is calculated in dataset, do not need any more
         cache_embeddings = {
             "image_latents": image_latents,
             "control_latents": control_latents,
@@ -509,7 +508,7 @@ class QwenImageEditTrainer(BaseTrainer):
             "prompt_embeds": prompt_embeds,
             "empty_prompt_embeds_mask": empty_prompt_embeds_mask,
             "empty_prompt_embeds": empty_prompt_embeds,
-            "img_shapes": img_shapes,
+            # "img_shapes": img_shapes,
         }
         map_keys = {
             "image_latents": "image_hash",
@@ -518,21 +517,25 @@ class QwenImageEditTrainer(BaseTrainer):
             "prompt_embeds": "prompt_hash",
             "empty_prompt_embeds_mask": "prompt_hash",
             "empty_prompt_embeds": "prompt_hash",
-            "img_shapes": "main_hash",
+            # "img_shapes": "main_hash",
         }
         self.cache_manager.save_cache_embedding(cache_embeddings, map_keys, data["file_hashes"])
 
     def prepare_cached_embeddings(self, batch):
-        """batch data from dataloader"""
-        if self.config.loss.mask_loss and "mask" in batch:
-            image_height, image_width = batch["image"].shape[2:]
-            mask = batch["mask"]
-            batch["mask"] = resize_bhw(mask, image_height, image_width)
-            batch["mask"] = map_mask_to_latent(batch["mask"])
-        # convert img_shapes from tensor to list
-        img_shapes = batch["img_shapes"]  # [B, N, 3]
-        img_shapes = img_shapes.to(torch.int32).tolist()
-        batch["img_shapes"] = img_shapes
+        """
+        Prepare cached embeddings from dataloader batch.
+        Expects v2.0 cache format with img_shapes field.
+        """
+        # Handle edit mask preprocessing
+        # if self.config.loss.mask_loss and "mask" in batch:
+        #     image_height, image_width = batch["image"].shape[2:]
+        #     mask = batch["mask"]
+        #     batch["mask"] = resize_bhw(mask, image_height, image_width)
+        #     batch["mask"] = map_mask_to_latent(batch["mask"])
+
+        # now dataset will have the img_shapes output, no need worry about this
+        if "img_shapes" not in batch:
+            raise ValueError("Cache format error: img_shapes field is missing. Please regenerate cache.")
         return batch
 
     def _postprocess_image(self, image_tensor: torch.Tensor) -> np.ndarray:
@@ -544,48 +547,264 @@ class QwenImageEditTrainer(BaseTrainer):
         image = (image * 255).astype(np.uint8)
         return image
 
-    def _get_image_shapes(self, embeddings: dict, batch_size: int) -> List[List[Tuple[int, int, int]]]:
-        """
-        embeddings comes from prepare_embeddings.
-        The image shapes is made of, the first one is the target image shape, second is control, and additional controls
-        ```python
+    # def _get_image_shapes(self, embeddings: dict, batch_size: int) -> List[List[Tuple[int, int, int]]]:
+    #     """
+    #     embeddings comes from prepare_embeddings.
+    #     The image shapes is made of, the first one is the target image shape, second is control, and additional controls
+    #     ```python
+    #     img_shapes = [
+    #             [
+    #                 (1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2),
+    #                 (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2),
+    #                 (1, height_control_1 // self.vae_scale_factor // 2, width_control_1 // self.vae_scale_factor // 2),
+    #             ]
+    #         ]
+    #     ```
+    #     hiehgt_image, width_image, height_control, width_control, height_control_1, width_control_1
+    #     """
+    #     assert "height" in embeddings and "width" in embeddings, "height_image and width_image must be in embeddings"
+    #     img_shapes = []
+    #     height_image = embeddings["height"]
+    #     width_image = embeddings["width"]
+    #     img_shapes.append((1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2))
+    #     if "height_control" in embeddings and "width_control" in embeddings:
+    #         height_control = embeddings["height_control"]
+    #         width_control = embeddings["width_control"]
+    #         img_shapes.append(
+    #             (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2)
+    #         )
+    #         num_additional_controls = (
+    #             embeddings["n_controls"] if isinstance(embeddings["n_controls"], int) else embeddings["n_controls"][0]
+    #         )
+    #         for i in range(num_additional_controls):
+    #             additional_control_key = f"control_{i+1}"
+    #             if additional_control_key in embeddings:
+    #                 height_control_i = embeddings[f"height_control_{i+1}"]
+    #                 width_control_i = embeddings[f"width_control_{i+1}"]
+    #                 img_shapes.append(
+    #                     (
+    #                         1,
+    #                         height_control_i // self.vae_scale_factor // 2,
+    #                         width_control_i // self.vae_scale_factor // 2,
+    #                     )
+    #                 )
+    #     return [img_shapes] * batch_size
+
+    def convert_img_shapes_to_latent_space(self, img_shapes: List[List[Tuple[int, int, int]]]) -> List[List[Tuple[int, int, int]]]:
+        """Convert image shapes from pixel space to latent space
         img_shapes = [
                 [
                     (1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2),
                     (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2),
                     (1, height_control_1 // self.vae_scale_factor // 2, width_control_1 // self.vae_scale_factor // 2),
                 ]
-            ]
-        ```
-        hiehgt_image, width_image, height_control, width_control, height_control_1, width_control_1
+        ]
         """
-        assert "height" in embeddings and "width" in embeddings, "height_image and width_image must be in embeddings"
-        img_shapes = []
-        height_image = embeddings["height"]
-        width_image = embeddings["width"]
-        img_shapes.append((1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2))
-        if "height_control" in embeddings and "width_control" in embeddings:
-            height_control = embeddings["height_control"]
-            width_control = embeddings["width_control"]
-            img_shapes.append(
-                (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2)
-            )
-            num_additional_controls = (
-                embeddings["n_controls"] if isinstance(embeddings["n_controls"], int) else embeddings["n_controls"][0]
-            )
-            for i in range(num_additional_controls):
-                additional_control_key = f"control_{i+1}"
-                if additional_control_key in embeddings:
-                    height_control_i = embeddings[f"height_control_{i+1}"]
-                    width_control_i = embeddings[f"width_control_{i+1}"]
-                    img_shapes.append(
-                        (
+        new_shapes = []
+        for shape_per_batch in img_shapes:
+            new_shape_per_batch = []
+            for shape in shape_per_batch:
+                new_shape_per_batch.append(
+                    (1, shape[1] // self.vae_scale_factor // 2, shape[2] // self.vae_scale_factor // 2)
+                )
+            new_shapes.append(new_shape_per_batch)
+        return new_shapes
+
+    def _get_image_shapes_multi_resolution(
+        self, embeddings: dict, batch_size: int
+    ) -> List[List[Tuple[int, int, int]]]:
+        """Get image shapes for multi-resolution mode (per-sample shapes)
+
+        This method extends _get_image_shapes to support per-sample different
+        resolutions, which is required for multi-resolution training.
+
+        Args:
+            embeddings: Batch embeddings containing shape information
+            batch_size: Number of samples in the batch
+
+        Returns:
+            List[List[Tuple]] where:
+            - Outer list: batch dimension (length = batch_size)
+            - Inner list: images in this sample [target, control, control_1, ...]
+            - Tuple: (1, H_latent, W_latent) for each image
+
+        Example:
+            >>> embeddings = {
+            ...     "img_shapes": [
+            ...         [(1, 32, 64), (1, 32, 64)],  # Sample 0: target + control
+            ...         [(1, 48, 48), (1, 48, 48)],  # Sample 1: different size
+            ...     ]
+            ... }
+            >>> shapes = trainer._get_image_shapes_multi_resolution(embeddings, 2)
+            >>> shapes  # [[(1, 32, 64), (1, 32, 64)], [(1, 48, 48), (1, 48, 48)]]
+        """
+        # Priority 1: Use img_shapes from collate/cache
+        if "img_shapes" in embeddings:
+            # Format: List[List[(1, H', W')]]
+            img_shapes = embeddings["img_shapes"]
+
+            # Handle different formats (list, tensor, etc.)
+            if isinstance(img_shapes, torch.Tensor):
+                # Convert tensor to nested list
+                # Assume shape: [batch_size, num_images, 3]
+                img_shapes = img_shapes.tolist()
+                # Restructure to nested list format
+                result = []
+                for b in range(batch_size):
+                    sample_shapes = [tuple(img_shapes[b][i]) for i in range(len(img_shapes[b]))]
+                    result.append(sample_shapes)
+                return result
+
+            # Already in correct format: List[List[Tuple]]
+            if len(img_shapes) == batch_size:
+                return img_shapes
+
+            # Fallback: single shape, replicate for all samples
+            if len(img_shapes) == 1:
+                return img_shapes * batch_size
+
+        # Priority 2: Reconstruct from height/width fields (runtime, non-cache mode)
+        result = []
+        for b in range(batch_size):
+            img_shapes_sample = []
+
+            # Target image
+            height = extract_batch_field(embeddings, "height", b)
+            width = extract_batch_field(embeddings, "width", b)
+            img_shapes_sample.append((
+                1,
+                height // self.vae_scale_factor // 2,
+                width // self.vae_scale_factor // 2,
+            ))
+
+            # Control images (if exist)
+            if "height_control" in embeddings and "width_control" in embeddings:
+                height_ctrl = extract_batch_field(embeddings, "height_control", b)
+                width_ctrl = extract_batch_field(embeddings, "width_control", b)
+                img_shapes_sample.append((
+                    1,
+                    height_ctrl // self.vae_scale_factor // 2,
+                    width_ctrl // self.vae_scale_factor // 2,
+                ))
+
+                # Additional control images
+                num_controls = extract_batch_field(embeddings, "n_controls", b) if "n_controls" in embeddings else 0
+                for i in range(num_controls):
+                    h_key = f"height_control_{i+1}"
+                    w_key = f"width_control_{i+1}"
+                    if h_key in embeddings and w_key in embeddings:
+                        h_i = extract_batch_field(embeddings, h_key, b)
+                        w_i = extract_batch_field(embeddings, w_key, b)
+                        img_shapes_sample.append((
                             1,
-                            height_control_i // self.vae_scale_factor // 2,
-                            width_control_i // self.vae_scale_factor // 2,
-                        )
-                    )
-        return [img_shapes] * batch_size
+                            h_i // self.vae_scale_factor // 2,
+                            w_i // self.vae_scale_factor // 2,
+                        ))
+
+            result.append(img_shapes_sample)
+
+        return result
+
+    def _forward_qwen_multi_resolution(
+        self,
+        packed_input: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        prompt_embeds_mask: torch.Tensor,
+        timesteps: torch.Tensor,
+        img_shapes: list,
+        txt_seq_lens: list,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass for Qwen model in multi-resolution mode.
+
+        This method handles variable-resolution images by:
+        1. Padding latents to uniform length
+        2. Generating per-sample RoPE frequencies
+        3. Creating attention mask to ignore padding
+        4. Calling model with pre-computed RoPE
+
+        Args:
+            packed_input: Noisy input + control latents [B, seq_i, C] (may be variable length)
+            prompt_embeds: Text embeddings [B, txt_len, D]
+            prompt_embeds_mask: Text attention mask [B, txt_len]
+            timesteps: Timesteps for diffusion [B]
+            img_shapes: Per-sample image shapes List[List[Tuple]]
+            txt_seq_lens: Text sequence lengths [B]
+
+        Returns:
+            model_pred: Model predictions [B, max_seq, C]
+            img_attention_mask: Image attention mask [B, max_seq] (True=valid, False=padded)
+        """
+        device = packed_input.device
+        dtype = packed_input.dtype
+        batch_size = packed_input.shape[0]
+
+        # Calculate sequence lengths for each sample
+        seq_lens = [shapes[0][1] * shapes[0][2] * 2 for shapes in img_shapes]  # *2 for target+control
+        max_seq = max(seq_lens)
+
+        # Pad packed_input if needed
+        if packed_input.shape[1] < max_seq:
+            # Convert to list for padding
+            packed_list = [packed_input[i, :seq_lens[i]] for i in range(batch_size)]
+            padded_packed, img_attention_mask = self._pad_latents_for_multi_res(packed_list, max_seq)
+        else:
+            padded_packed = packed_input
+            # Create attention mask
+            img_attention_mask = torch.zeros(batch_size, max_seq, device=device, dtype=torch.bool)
+            for i in range(batch_size):
+                img_attention_mask[i, :seq_lens[i]] = True
+
+        # Generate per-sample RoPE frequencies
+        img_freqs_list = []
+        txt_freqs = None
+
+        for b in range(batch_size):
+            # Generate RoPE for this sample
+            img_freqs_b, txt_freqs_b = self.dit.pos_embed(
+                [img_shapes[b]], [txt_seq_lens[b]], device=device
+            )
+
+            # Pad img_freqs to max_seq
+            rope_dim = img_freqs_b.shape[-1]
+            img_freqs_padded = torch.zeros(max_seq, rope_dim, device=device, dtype=img_freqs_b.dtype)
+            img_freqs_padded[:img_freqs_b.shape[0]] = img_freqs_b
+            img_freqs_list.append(img_freqs_padded)
+
+            # txt_freqs is the same for all samples (if txt_seq_lens are the same)
+            if txt_freqs is None:
+                txt_freqs = txt_freqs_b
+
+        # Stack per-sample RoPE into 3D tensor (B, max_seq, rope_dim)
+        img_freqs_batched = torch.stack(img_freqs_list, dim=0)
+        image_rotary_emb = (img_freqs_batched, txt_freqs)
+
+        # Create 4D attention mask for scaled_dot_product_attention
+        # Shape: (B, 1, 1, txt_len + max_seq)
+        txt_len = prompt_embeds.shape[1]
+        joint_seq = txt_len + max_seq
+        attention_mask = torch.zeros(batch_size, joint_seq, device=device, dtype=torch.bool)
+
+        for i in range(batch_size):
+            attention_mask[i, :txt_seq_lens[i]] = True  # text tokens
+            attention_mask[i, txt_len:txt_len + seq_lens[i]] = True  # valid image tokens
+
+        # Convert to 4D: (B, 1, 1, joint_seq)
+        attention_mask_4d = attention_mask.view(batch_size, 1, 1, joint_seq)
+
+        # Forward through model with pre-computed RoPE
+        model_pred = self.dit(
+            hidden_states=padded_packed,
+            timestep=timesteps / 1000,
+            guidance=None,
+            encoder_hidden_states=prompt_embeds,
+            encoder_hidden_states_mask=prompt_embeds_mask,
+            image_rotary_emb=image_rotary_emb,  # Pre-computed per-sample RoPE
+            attention_kwargs={'attention_mask': attention_mask_4d},
+            return_dict=False,
+        )[0]
+
+        return model_pred, img_attention_mask
 
     def _compute_loss(self, embeddings: dict) -> torch.Tensor:
         device = self.accelerator.device
@@ -595,10 +814,13 @@ class QwenImageEditTrainer(BaseTrainer):
         prompt_embeds_mask = embeddings["prompt_embeds_mask"].to(dtype=torch.int64).to(device)
         img_shapes = embeddings["img_shapes"]  # must from the cache embeddings
         batch_size = image_latents.shape[0]
-        if "mask" in embeddings:
-            edit_mask = embeddings["mask"]
+        if "edit_mask" in embeddings:  # already has edit_mask in collate function
+            edit_mask = embeddings["edit_mask"]
         else:
             edit_mask = None
+
+        # ✅ Use BaseTrainer's multi-resolution detection
+        is_multi_res = self.should_use_multi_resolution_mode(embeddings)
 
         with torch.no_grad():
             noise = torch.randn_like(image_latents, device=device, dtype=self.weight_dtype)
@@ -619,21 +841,48 @@ class QwenImageEditTrainer(BaseTrainer):
             packed_input = torch.cat([noisy_model_input, control_latents], dim=1)
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
 
-        model_pred = self.dit(
-            hidden_states=packed_input,
-            timestep=timesteps / 1000,
-            guidance=None,
-            encoder_hidden_states_mask=prompt_embeds_mask,
-            encoder_hidden_states=prompt_embeds,
-            img_shapes=img_shapes,
-            txt_seq_lens=txt_seq_lens,
-            return_dict=False,
-        )[0]
+        # ✅ Multi-resolution mode: use padding + per-sample RoPE
+        if is_multi_res:
+            model_pred, img_attention_mask = self._forward_qwen_multi_resolution(
+                packed_input=packed_input,
+                prompt_embeds=prompt_embeds,
+                prompt_embeds_mask=prompt_embeds_mask,
+                timesteps=timesteps,
+                img_shapes=img_shapes,
+                txt_seq_lens=txt_seq_lens,
+            )
+        else:
+            # Original concatenation mode
+            model_pred = self.dit(
+                hidden_states=packed_input,
+                timestep=timesteps / 1000,
+                guidance=None,
+                encoder_hidden_states_mask=prompt_embeds_mask,
+                encoder_hidden_states=prompt_embeds,
+                img_shapes=img_shapes,
+                txt_seq_lens=txt_seq_lens,
+                return_dict=False,
+            )[0]
+            img_attention_mask = None
+
         model_pred = model_pred[:, : image_latents.size(1)]
         weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
         target = noise - image_latents
-        # pred shape [2, 4104, 64], target shape [2, 4104, 64]
-        loss = self.forward_loss(model_pred, target, weighting, edit_mask)
+
+        # ✅ Use BaseTrainer's loss computation for multi-resolution
+        if is_multi_res and img_attention_mask is not None:
+            # Normalize loss by valid tokens only
+            loss = self._compute_loss_multi_resolution(
+                model_pred=model_pred,
+                target=target,
+                attention_mask=img_attention_mask,
+                edit_mask=edit_mask,
+                weighting=weighting,
+            )
+        else:
+            # pred shape [B, seq, C], target shape [B, seq, C]
+            loss = self.forward_loss(model_pred, target, weighting, edit_mask)
+
         return loss
 
     def _get_sigmas(self, timesteps, n_dim=4, dtype=torch.float32):
@@ -818,6 +1067,8 @@ class QwenImageEditTrainer(BaseTrainer):
 
         data = {}
         control = []
+        img_shapes = []
+
         if use_native_size:
             controls_size = [[prompt_image[0].size[1], prompt_image[0].size[0]]]
             if additional_controls:
@@ -833,20 +1084,23 @@ class QwenImageEditTrainer(BaseTrainer):
             # convert to [C,H,W] in range [0,1]
             img = self.preprocessor.preprocess({"control": img}, controls_size=controls_size)["control"]
             control.append(img)
-        control = torch.stack(control, dim=0)
+        control = torch.stack(control, dim=0)  # B,C,H,W
         print('control shape', control.shape)
         data["control"] = control
         data["prompt"] = prompt
         data["height"] = height
         data["width"] = width
+        img_shapes.append((3, height, width))
+        img_shapes.append((3, control.shape[2], control.shape[3]))
         print('width height', width, height)
 
         if height is None or width is None:
-            width, height = control.shape[2], control.shape[1]
+            width, height = control.shape[3], control.shape[2]
         else:
             width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
 
         logging.info(f'target shape for generation {width}, {height}')
+
 
         if additional_controls:
             n_controls = len(additional_controls[0])
@@ -857,6 +1111,7 @@ class QwenImageEditTrainer(BaseTrainer):
                 controls = self.preprocessor.preprocess({"controls": controls}, controls_size=controls_size)["controls"]
                 for i, control in enumerate(controls):
                     new_controls[f"control_{i+1}"].append(control)
+                    img_shapes.append((3, control.shape[1], control.shape[2]))
             for k, v in new_controls.items():
                 print(k, type(v), type(v[0]), type(v[0][0]))
             for i in range(n_controls):
@@ -877,6 +1132,7 @@ class QwenImageEditTrainer(BaseTrainer):
         data["num_inference_steps"] = num_inference_steps
         data["true_cfg_scale"] = true_cfg_scale
         data["guidance"] = guidance_scale
+        data['img_shapes'] = [img_shapes] * control.shape[0]  # batch_dim=1
         print("data keys", data.keys())
         for k, v in data.items():
             print(k, type(v))
@@ -892,7 +1148,8 @@ class QwenImageEditTrainer(BaseTrainer):
         prompt_embeds = embeddings["prompt_embeds"]
         prompt_embeds_mask = embeddings["prompt_embeds_mask"]
         batch_size = embeddings["control_latents"].shape[0]
-        img_shapes = self._get_image_shapes(embeddings, batch_size)
+        # img_shapes = self._get_image_shapes(embeddings, batch_size)
+        img_shapes = embeddings["img_shapes"]
         height_image = embeddings["height"]
         width_image = embeddings["width"]
 
@@ -970,6 +1227,7 @@ class QwenImageEditTrainer(BaseTrainer):
         # set to proper device
         prompt_embeds = prompt_embeds.to(device, dtype=self.weight_dtype)
         prompt_embeds_mask = prompt_embeds_mask.to(device, dtype=torch.int64)
+        control_latents = control_latents.to(device, dtype=self.weight_dtype)
 
         if do_true_cfg:
             negative_prompt_embeds_mask = negative_prompt_embeds_mask.to(device, dtype=torch.int64)

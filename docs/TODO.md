@@ -25,6 +25,7 @@
 - [x] Qwen-Image-Edit-Plus (2509) support - Complete support for enhanced model architecture (v2.3.0)
 - [x] Dynamic shape support with pixel-based resizing for Plus version (v2.4.0)
 - [x] Comprehensive documentation improvements and guide updates (v2.4.1)
+- [x] Multi-resolution mixed training - Train with multiple resolution candidates in a single session (v3.0.0)
 
 ## Planned Features
  - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility

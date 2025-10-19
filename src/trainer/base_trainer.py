@@ -6,12 +6,12 @@ Defines the core interface that all trainers must implement.
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 import torch
 import torch.nn as nn
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy  # transformer_auto_wrap_policy
-from torch.distributed.fsdp import ShardingStrategy, BackwardPrefetch
+from torch.distributed.fsdp import ShardingStrategy  # BackwardPrefetch
 import os
 import shutil
 import glob
@@ -19,6 +19,7 @@ import json
 from functools import partial
 import numpy as np
 from src.utils.sampling import calculate_shift, retrieve_timesteps
+# from src.utils.tools import extract_batch_field
 from tqdm import tqdm
 from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
@@ -30,7 +31,7 @@ import importlib
 
 import safetensors.torch
 from src.models.quantize import quantize_model_to_fp8
-from src.utils.tools import calculate_sha256_file
+from src.utils.tools import calculate_sha256_file, pad_latents_for_multi_res
 from src.data.config import Config
 from src.utils.model_summary import print_model_summary_table
 from src.utils.lora_utils import FpsLogger
@@ -186,6 +187,141 @@ class BaseTrainer(ABC):
         checkpoints = glob.glob(f"{version_path}/*/*.safetensors")
         return len(checkpoints) > 0
 
+    @classmethod
+    def convert_img_shapes_to_latent(
+        cls, img_shapes_original: list, vae_scale_factor: int = 8, packing_factor: int = 2
+    ) -> list:
+        """Convert original image shapes to latent space shapes for single sample
+
+        This method transforms image shapes from pixel space to latent space,
+        accounting for VAE downsampling and packing operations.\n
+        `img_shapes single example`:
+        ```python
+        [(3, 512, 512), (3, 512, 512), (3, 640, 640)]
+        ```
+        `img_shapes batch example`:
+        ```python
+        [
+            [(3, 512, 512), (3, 512, 512), (3, 640, 640)],
+            [(3, 128, 512), (3, 128, 512), (3, 128, 640)]
+        ]
+        ```
+        Args:
+            img_shapes_original: List of tuples [(C, H, W), ...] in original pixel space
+                                where C is usually 3 (RGB) or 1 (grayscale)
+            vae_scale_factor: VAE downsampling factor (default: 8)
+            packing_factor: Additional packing factor (default: 2)
+
+        Returns:
+            List of tuples [(1, H_latent, W_latent), ...] in latent space where:
+                - C is always 1 in latent space
+                - H_latent = H_original // vae_scale_factor // packing_factor
+                - W_latent = W_original // vae_scale_factor // packing_factor
+
+        Example:
+            >>> original = [(3, 512, 512), (3, 640, 640)]
+            >>> latent = cls.convert_img_shapes_to_latent(original, vae_scale_factor=8, packing_factor=2)
+            >>> latent  # [(1, 32, 32), (1, 40, 40)]
+
+        Note:
+            - For Flux/Qwen models: vae_scale_factor=8, packing_factor=2
+            - Total downsampling: original_dim // 16 = original_dim // (8 * 2)
+        """
+        if not img_shapes_original:
+            return []
+        total_scale = vae_scale_factor * packing_factor
+        img_shapes_latent = []
+        for shape in img_shapes_original:
+            if len(shape) != 3:
+                raise ValueError(f"Expected shape tuple (C, H, W), got {shape}")
+            c_orig, h_orig, w_orig = shape
+            # Convert to latent space dimensions
+            # Channel becomes 1 in latent space
+            # Height and width are downsampled by total_scale
+            h_latent = h_orig // total_scale
+            w_latent = w_orig // total_scale
+            if h_latent == 0 or w_latent == 0:
+                logging.warning(
+                    f"Latent dimension became 0: original shape {shape}, "
+                    f"total_scale {total_scale}, latent shape ({h_latent}, {w_latent}). "
+                    f"Original image may be too small."
+                )
+            img_shapes_latent.append((1, h_latent, w_latent))
+        return img_shapes_latent
+
+    @classmethod
+    def validate_img_shapes(cls, img_shapes: list) -> bool:
+        """Validate img_shapes format"""
+        assert isinstance(img_shapes, list), "img_shapes must be a list"
+        if not img_shapes:
+            return False
+        assert isinstance(img_shapes[0], list), "img_shapes must be a list of lists"
+        assert isinstance(img_shapes[0][0], tuple), "img_shapes must be a list of lists of tuples"
+        assert len(img_shapes[0][0]) == 3, "img_shapes must be a list of lists of tuples with 3 elements"
+        assert img_shapes[0][0][0] in [1, 3], "img_shapes must be a list of lists of tuples with 3 elements"
+        assert img_shapes[0][0][1] > 0, "img_shapes must be a list of lists of tuples with 3 elements"
+        assert img_shapes[0][0][2] > 0, "img_shapes must be a list of lists of tuples with 3 elements"
+        return True
+
+    @classmethod
+    def should_use_multi_resolution_mode(cls, batch: dict) -> bool:
+        """Determine if multi-resolution mode should be used for this batch
+
+        This is a generic method that can be used by all trainers supporting
+        multi-resolution training. It checks both the configuration and batch
+        structure to determine if padding and masking should be applied.
+
+        Returns False when:
+        1. multi_resolutions not configured in processor config (MOST IMPORTANT)
+        2. batch_size == 1 (single sample uses original logic)
+        3. All samples have identical dimensions (no padding needed)
+
+        Returns True when:
+        1. multi_resolutions IS configured in processor config AND
+        2. batch_size > 1 AND
+        3. Batch contains samples with different dimensions
+
+        Args:
+            batch: Training batch dictionary containing embeddings and metadata
+
+        Returns:
+            bool: True if multi-resolution mode should be used, False otherwise
+        """
+        cls.validate_img_shapes(batch['img_shapes'])
+        batch_size = len(batch['img_shapes'])
+        if batch_size == 1:
+            logging.debug("Single sample, using shared mode")
+            return False
+
+        shapes = batch["img_shapes"]  # [[(C,H,W), ...], [(C,H,W), ...], ...]
+        if isinstance(shapes, torch.Tensor):
+            shapes = shapes.tolist()
+        # Extract spatial dimensions (H, W) for all images in each sample
+        # Compare the complete resolution profile of each sample
+        sample_resolution_profiles = []
+        for sample_shapes in shapes:
+            if isinstance(sample_shapes, (list, tuple)):
+                # Extract (H, W) from each image in this sample, ignoring channel (C)
+                resolution_profile = []
+                for img_shape in sample_shapes:
+                    if isinstance(img_shape, (list, tuple)) and len(img_shape) >= 3:
+                        # Extract (H, W), ignoring C
+                        resolution_profile.append((img_shape[1], img_shape[2]))
+                    else:
+                        # Fallback: use the whole shape
+                        resolution_profile.append(tuple(img_shape))
+                sample_resolution_profiles.append(tuple(resolution_profile))
+            else:
+                # Fallback for unexpected format
+                sample_resolution_profiles.append(tuple(sample_shapes))
+
+        # Check if all samples have identical resolution profiles
+        # Using set to find unique resolution profiles
+        unique_profiles = len(set(sample_resolution_profiles))
+        if unique_profiles == 1:
+            return False
+        return True
+
     def accelerator_prepare(self, train_dataloader):
         """Prepare accelerator"""
         # from diffusers.loaders import AttnProcsLayers
@@ -330,20 +466,35 @@ class BaseTrainer(ABC):
         """Compute loss. returned the flow matching loss tensor"""
         pass
 
-    def forward_loss(self, model_pred, target, weighting=None, edit_mask=None):
-        if edit_mask is None:
-            if weighting is None:
-                loss = torch.nn.functional.mse_loss(model_pred, target, reduction="mean")
-            else:
-                loss = torch.mean(
-                    (weighting.float() * (model_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
-                    1,
-                )
-                loss = loss.mean()
-        else:
-            # shape torch.Size([4, 864, 1216]) torch.Size([4, 4104, 64]) torch.Size([4, 4104, 64]) torch.Size([4, 1, 1])
-            loss = self.criterion(edit_mask, model_pred, target, weighting)
-        return loss
+    def forward_loss(self, model_pred, target, weighting=None, edit_mask=None, attention_mask=None):
+        """
+        Forward loss computation with automatic parameter detection.
+
+        Automatically detects which parameters the loss function needs and passes them accordingly.
+        All loss functions should accept **kwargs for compatibility.
+
+        Supports multiple loss function signatures:
+        - MseLoss: (model_pred, target, weighting, **kwargs)
+        - MaskEditLoss: (edit_mask, model_pred, target, weighting, **kwargs)
+        - AttentionMaskMseLoss: (model_pred, target, attention_mask, edit_mask, weighting, **kwargs)
+
+        Args:
+            model_pred: Model predictions [B, T, C]
+            target: Target values [B, T, C]
+            weighting: Optional element-wise weights
+            edit_mask: Optional edit mask [B, T] (for edit-based losses)
+            attention_mask: Optional attention mask [B, T] (for multi-resolution losses)
+
+        Returns:
+            Loss tensor (scalar)
+        """
+        return self.criterion(
+            model_pred=model_pred,
+            target=target,
+            attention_mask=attention_mask,
+            edit_mask=edit_mask,
+            weighting=weighting
+        )
 
     def train_epoch(self, epoch, train_dataloader):
         for _, batch in enumerate(train_dataloader):
@@ -473,16 +624,34 @@ class BaseTrainer(ABC):
         self.accelerator.end_training()
 
     def setup_criterion(self):
-        if self.config.loss.mask_loss:
-            from src.loss.edit_mask_loss import MaskEditLoss
+        """
+        Setup loss criterion from config.
 
-            self.criterion = MaskEditLoss(
-                forground_weight=self.config.loss.forground_weight,
-                background_weight=self.config.loss.background_weight,
-            )
+        Supports two modes:
+        1. New flexible mode: Use config.loss.class_path and config.loss.init_args
+        2. Legacy mode: Use config.loss.mask_loss flag (for backward compatibility)
+        """
+        if self.config.loss.class_path is not None:
+            # New flexible mode: instantiate from class_path
+            logger.info(f"Initializing loss from class_path: {self.config.loss.class_path}")
+            init_args = self.config.loss.init_args or {}
+            self.criterion = instantiate_class(self.config.loss.class_path, init_args)
         else:
-            self.criterion = nn.MSELoss()
+            # Legacy mode: backward compatibility
+            if self.config.loss.mask_loss:
+                from src.losses.edit_mask_loss import MaskEditLoss
+                logger.info("Using legacy MaskEditLoss configuration")
+                self.criterion = MaskEditLoss(
+                    forground_weight=self.config.loss.forground_weight,
+                    background_weight=self.config.loss.background_weight,
+                )
+            else:
+                from src.losses import MseLoss
+                logger.info("Using legacy MseLoss configuration")
+                self.criterion = MseLoss(reduction='mean')
+
         self.criterion.to(self.accelerator.device)
+        logger.info(f"Loss criterion initialized: {self.criterion.__class__.__name__}")
 
     def setup_predict(
         self,
@@ -599,6 +768,50 @@ class BaseTrainer(ABC):
 
         logging.info(f"Mixed precision: {self.accelerator.mixed_precision}")
 
+    def is_fsdp_enabled(self):
+        plug = self.accelerator.state.fsdp_plugin if hasattr(self.accelerator.state, "fsdp_plugin") else None
+        return plug is not None
+
+    def save_lora_fsdp(self, save_folder, adapter_name=None):
+        """Save LoRA weights under FSDP with CPU offload & rank0-only. """
+        import logging
+        import torch.distributed as dist
+        from peft import get_peft_model_state_dict
+        from diffusers.utils import convert_state_dict_to_diffusers
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType
+        from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
+        # unwrap
+        unwrapped = self.accelerator.unwrap_model(self.dit) if self.accelerator is not None else self.dit
+        if is_compiled_module(unwrapped):
+            unwrapped = unwrapped._orig_mod
+
+        adapter_name = self.adapter_name if adapter_name is None else adapter_name
+        if save_folder.endswith(".safetensors"):
+            print(f"Warning: save_folder {save_folder} should be a folder")
+
+        # 降峰值
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
+        # FSDP：在 CPU 上聚合 FULL state_dict，且仅 rank0 拿到字典
+        ctx = FSDP.state_dict_type(
+            unwrapped,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+        )
+
+        with torch.no_grad(), ctx:
+            is_rank0 = (not dist.is_initialized()) or dist.get_rank() == 0
+            if not is_rank0:
+                return  # 其它 rank 不保存
+
+            lora_sd = get_peft_model_state_dict(unwrapped, adapter_name=adapter_name)
+            lora_sd = convert_state_dict_to_diffusers(lora_sd)
+
+            os.makedirs(save_folder, exist_ok=True)
+            self.pipeline_class.save_lora_weights(save_folder, lora_sd, safe_serialization=True)
+            logging.info(f"[FSDP] Saved LoRA weights to {save_folder}")
+
     def save_checkpoint(self, epoch, global_step, is_last=False):
         """Save checkpoint"""
         self.fps_logger.pause()
@@ -612,17 +825,21 @@ class BaseTrainer(ABC):
                 save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last")
             os.makedirs(save_path, exist_ok=True)
 
-            self.save_lora(save_path, adapter_name=self.adapter_name)
+            if self.is_fsdp_enabled():
+                self.save_lora_fsdp(save_path, adapter_name=self.adapter_name)
+            else:
+                self.save_lora(save_path, adapter_name=self.adapter_name)
 
             state_info = {"global_step": global_step, "epoch": epoch, "is_last": is_last}
             if is_last:
-                plug = self.accelerator.state.fsdp_plugin if hasattr(self.accelerator.state, "fsdp_plugin") else None
-                if plug is None:
+                if not self.is_fsdp_enabled():
                     self.accelerator.save_state(save_path)  # when save in fsdp, will cause problem
                 git_info = get_git_info()
                 state_info.update(git_info)
             with open(os.path.join(save_path, "state.json"), "w") as f:
                 json.dump(state_info, f)
+        if self.accelerator is not None:
+            self.accelerator.wait_for_everyone()
         self.fps_logger.resume()
 
     def save_lora(self, save_folder, adapter_name=None):
@@ -745,7 +962,6 @@ class BaseTrainer(ABC):
                 except Exception as e:
                     logging.warning(f"Failed to download lora from {pretrained_weight}: {e}")
                     pass
-
 
             sha256 = calculate_sha256_file(pretrained_weight)
             logging.info(f"sha256 for pretrained_weight: {sha256}")

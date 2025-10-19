@@ -155,3 +155,66 @@ We also find that the `T5` encode in fp4 `eramth/flux-kontext-4bit-fp4` has big 
 
 9. Mix use of fp4 and fp16 models. Load the lora trained in fp16 dit,  and inference used in fp4 dit, fp16 image encoder, fp16 text encoder. Found that got Checkerboard pattern
 ![alt text](images/image-17.png)
+
+
+10. Multi-Resolution branch training is not good enough
+Trained with 3683 steps
+![alt text](images/060005_4_023834_FEMALE_33_generate.png)
+![alt text](images/060028_4_022580_NONE_25_generate.png)
+
+**Testings**:
+- [x] Use old code to train the faceseg dataset, performance good
+- [x] Add unittest for sampling steps
+- [ ] Add unittest for loss calculation
+  - have little differences in loss calculated 0.66 vs 0.64. While using old flux_transformer, the loss is almost zero
+
+Use old code, use two different shape to construct two set of
+- image latent, control latents, prompt embedding, loss
+Then we
+- test the loss with prediction of dit model for each sample without multi-resolution mode
+- test the loss with prediction of dit model for each sample with multi-resolution mode.
+The loss should be same for each samples in each mode
+
+**Conclusion**:
+- Verified sampling step is 100\% correct
+- Fixed resolution Traninig is correct in the new code
+
+**test step by step to check which step got the differences**
+- hidden_states input is same
+- norm_hidden_states got difference after the norm layer
+- found that temb has difference, one possible reason maybe the model weight differences
+Next to check
+```python
+
+class CombinedTimestepGuidanceTextProjEmbeddings(nn.Module):
+    def __init__(self, embedding_dim, pooled_projection_dim):
+        super().__init__()
+
+        self.time_proj = Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=0)
+        self.timestep_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=embedding_dim)
+        self.guidance_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=embedding_dim)
+        self.text_embedder = PixArtAlphaTextProjection(pooled_projection_dim, embedding_dim, act_fn="silu")
+
+    def forward(self, timestep, guidance, pooled_projection):
+        timesteps_proj = self.time_proj(timestep)
+        return timesteps_proj
+        timesteps_emb = self.timestep_embedder(timesteps_proj.to(dtype=pooled_projection.dtype))  # (N, D)
+
+        guidance_proj = self.time_proj(guidance)
+        guidance_emb = self.guidance_embedder(guidance_proj.to(dtype=pooled_projection.dtype))  # (N, D)
+
+        time_guidance_emb = timesteps_emb + guidance_emb
+
+        pooled_projections = self.text_embedder(pooled_projection)
+        conditioning = time_guidance_emb + pooled_projections
+
+        return conditioning
+```
+which introduced differences.
+First check if the inputs got differences including timestep, guidance, pooled_projections
+
+Input got no Difference
+- Next check timesteps_proj, has not difference
+- Next check timesteps_emb, got error, check sample
+- Check TimestepEmbedding.
+  In TimestepEmbedding, the input is same, condition is all None. Linaer_1 leads to difference, this is caused by the bf16. change to float32, no difference

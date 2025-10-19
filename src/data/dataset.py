@@ -16,13 +16,14 @@ from src.data.cache_manager import EmbeddingCacheManager
 from src.utils.huggingface import load_editing_dataset, is_huggingface_repo
 from src.utils.tools import hash_string_md5
 from src.data.config import DatasetInitArgs
+from src.losses.edit_mask_loss import map_mask_to_latent
 import re
 from pathlib import Path
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
-_pat_end = re.compile(r'control_(\d+)\.(?:png|jpe?g|webp)$', re.IGNORECASE)
+_pat_end = re.compile(r"control_(\d+)\.(?:png|jpe?g|webp)$", re.IGNORECASE)
 
 
 def is_control_image(path: str):
@@ -43,7 +44,7 @@ def _first_existing(base_dir: str, stem: str, exts=IMG_EXTS) -> Optional[str]:
 def get_number_of_controls(control_dir: str, stem: str) -> int:
     for ext in IMG_EXTS:
         control_paths = glob.glob(os.path.join(control_dir, f"{stem}_control_[0-99]*{ext}"))
-        print('control_paths', control_paths, 'stem', stem)
+        print("control_paths", control_paths, "stem", stem)
         if len(control_paths) > 0:
             return len(control_paths)
     return 0
@@ -99,6 +100,7 @@ class ImageDataset(Dataset):
     batch = next(iter(loader))
     ```
     """
+
     def __init__(self, data_config: DatasetInitArgs):
         """
         初始化数据集。
@@ -152,6 +154,7 @@ class ImageDataset(Dataset):
             os.makedirs(self.cache_dir, exist_ok=True)
             self.cache_manager = EmbeddingCacheManager(self.cache_dir)
             print(f"缓存已启用，缓存目录: {self.cache_dir}")
+            print(f"use_cache: {self.use_cache}")
         else:
             self.cache_manager = None
             print("缓存未启用")
@@ -164,6 +167,7 @@ class ImageDataset(Dataset):
     def load_processor(self):
         """load processor"""
         from src.utils.tools import instantiate_class
+
         class_path = self.data_config.processor.class_path
         init_args = self.data_config.processor.init_args
         self.preprocessor = instantiate_class(class_path, init_args)
@@ -178,12 +182,12 @@ class ImageDataset(Dataset):
         for dataset_path in self.dataset_paths:
             split = None
             if isinstance(dataset_path, dict):
-                repo_id = dataset_path['repo_id']
-                split = dataset_path['split']
+                repo_id = dataset_path["repo_id"]
+                split = dataset_path["split"]
                 dataset_path = repo_id
             if is_huggingface_repo(dataset_path):
                 samples = self._load_huggingface_dataset(dataset_path, split=split)
-            elif isinstance(dataset_path, str) and dataset_path.endswith('.csv'):
+            elif isinstance(dataset_path, str) and dataset_path.endswith(".csv"):
                 samples = self._load_csv_dataset(dataset_path)
             else:
                 samples = self._load_local_dataset(dataset_path)
@@ -208,11 +212,11 @@ class ImageDataset(Dataset):
         dataset = load_editing_dataset(repo_id, split=split)
         # Store HF dataset reference
         dataset_info = {
-            'type': 'huggingface',
-            'repo_id': repo_id,
-            'dataset': dataset,
-            'length': len(dataset),  # This is typically cached by HF datasets
-            'start_idx': len(self.all_samples)  # Track where this dataset starts
+            "type": "huggingface",
+            "repo_id": repo_id,
+            "dataset": dataset,
+            "length": len(dataset),  # This is typically cached by HF datasets
+            "start_idx": len(self.all_samples),  # Track where this dataset starts
         }
         logging.info(f"Loaded Hugging Face dataset: {repo_id}, {dataset_info}")
 
@@ -221,12 +225,12 @@ class ImageDataset(Dataset):
         # Add entries for each sample without iterating
         # We'll create lightweight placeholders
         samples = []
-        for idx in range(dataset_info['length']):
+        for idx in range(dataset_info["length"]):
             sample_ref = {
-                'dataset_type': 'huggingface',
-                'repo_id': repo_id,
-                'local_index': idx,
-                'global_index': dataset_info['start_idx'] + idx
+                "dataset_type": "huggingface",
+                "repo_id": repo_id,
+                "local_index": idx,
+                "global_index": dataset_info["start_idx"] + idx,
             }
             samples.append(sample_ref)
         return samples
@@ -259,7 +263,7 @@ class ImageDataset(Dataset):
         start_idx = len(self.all_samples)
         # calculate contrl numbers
         columns = df.columns
-        columns = [x for x in columns if 'path_control' in x]
+        columns = [x for x in columns if "path_control" in x]
         control_keys = sorted(columns)
         samples = []
         for idx, row in df.iterrows():
@@ -272,11 +276,10 @@ class ImageDataset(Dataset):
                 "dataset_type": "local_csv",
                 "local_index": idx,
                 "global_index": start_idx + idx,
-
             }
-            if 'path_mask' in row:
+            if "path_mask" in row:
                 mask_file = row["path_mask"]
-                data['mask_file'] = mask_file
+                data["mask_file"] = mask_file
             samples.append(data)
         return samples
 
@@ -291,8 +294,8 @@ class ImageDataset(Dataset):
             images_dirs, control_dirs
         """
 
-        image_possible_names = ['training_images', 'images', 'target_images', 'target', 'targets']
-        control_possible_names = ['control_images', 'control', 'condition_images', 'controls']
+        image_possible_names = ["training_images", "images", "target_images", "target", "targets"]
+        control_possible_names = ["control_images", "control", "condition_images", "controls"]
 
         # 查找图像目录
         images_dir = None
@@ -336,10 +339,10 @@ class ImageDataset(Dataset):
         # first looking for prompt text
 
         # first search target images
-        target_images = glob.glob(os.path.join(images_dir, '*.*'))
+        target_images = glob.glob(os.path.join(images_dir, "*.*"))
         target_images = [img for img in target_images if img.endswith(IMG_EXTS)]
         # exclude mask images
-        target_images = [img for img in target_images if not img.endswith('_mask.png')]
+        target_images = [img for img in target_images if not img.endswith("_mask.png")]
         target_images = [img for img in target_images if not is_control_image(img)]
         # exclude control images
 
@@ -353,7 +356,7 @@ class ImageDataset(Dataset):
         # filter these stems that dont have correspoding images
         stems = [s for s in stems if _first_existing(images_dir, s) is not None]
 
-        logging.info('found %d prompts', len(stems))
+        logging.info("found %d prompts", len(stems))
 
         # 2) 对每个 stem 按需拼装样本
         n = 0
@@ -361,14 +364,14 @@ class ImageDataset(Dataset):
 
         num_controls = get_number_of_controls(control_dir, stems[0])
 
-        print('num_controls', num_controls)
-        logging.info('found %d controls', num_controls)
-        logging.info(f'found with stem {control_dir}/{stems[0]}')
-        for stem in tqdm(stems, desc='matching prompts'):
+        print("num_controls", num_controls)
+        logging.info("found %d controls", num_controls)
+        logging.info(f"found with stem {control_dir}/{stems[0]}")
+        for stem in tqdm(stems, desc="matching prompts"):
             # source image（必须在 images_dir）
             image_path = _first_existing(images_dir, stem)
             if image_path is None:
-                logging.info(f'skipping {stem} because no image found')
+                logging.info(f"skipping {stem} because no image found")
                 continue
 
             # control image（必须在 control_dir）
@@ -526,11 +529,18 @@ class ImageDataset(Dataset):
         image = item['image']     # (C,H,W) numpy
         control = item['control'] # (C,H,W) numpy
         prompt = item['prompt']   # str
+        img_shapes = item['img_shapes']  # [(C,H,W), ...] original image shapes
         ```
         """
         data = self.load_data(idx)
+
         data = self.preprocessor.preprocess(data)
         data['cached'] = False
+
+        # Generate img_shapes with original dimensions (before VAE encoding)
+        img_shapes = self._generate_img_shapes(data)
+        data['img_shapes'] = img_shapes
+
         if self.use_cache and self.cache_exists:
             if random.random() < self.data_config.caption_dropout_rate:
                 replace_empty_embeddings = True
@@ -548,6 +558,79 @@ class ImageDataset(Dataset):
         else:
             data['n_controls'] = 0
         return data
+
+    def _generate_img_shapes(self, data: dict) -> List[tuple]:
+        """Generate img_shapes list with original image dimensions
+
+        This method collects the original dimensions (C, H, W) of all images
+        in the sample, including target image, control, and additional controls.
+
+        The dimensions are in original pixel space, before any VAE encoding
+        or packing. The trainer will handle the conversion to latent space.
+
+        Args:
+            data: Dictionary containing preprocessed images
+
+        Returns:
+            List of tuples: [(C, H, W), ...] where:
+                - First tuple: target image shape
+                - Second tuple: control image shape
+                - Remaining tuples: additional control images (control_1, control_2, ...)
+
+        Example:
+            >>> data = {
+            ...     'image': np.array with shape (3, 512, 512),
+            ...     'control': np.array with shape (3, 512, 512),
+            ...     'controls': [np.array with shape (3, 640, 640)]
+            ... }
+            >>> shapes = self._generate_img_shapes(data)
+            >>> shapes  # [(3, 512, 512), (3, 512, 512), (3, 640, 640)]
+        """
+        img_shapes = []
+
+        # Target image shape
+        if "image" in data:
+            image = data["image"]
+            if isinstance(image, torch.Tensor):
+                C, H, W = image.shape
+            elif isinstance(image, np.ndarray):
+                if image.ndim == 3:
+                    C, H, W = image.shape
+                else:
+                    raise ValueError(f"Expected 3D image array, got shape {image.shape}")
+            else:
+                raise TypeError(f"Unsupported image type: {type(image)}")
+            img_shapes.append((C, H, W))
+
+        # Control image shape
+        if "control" in data:
+            control = data["control"]
+            if isinstance(control, torch.Tensor):
+                C, H, W = control.shape
+            elif isinstance(control, np.ndarray):
+                if control.ndim == 3:
+                    C, H, W = control.shape
+                else:
+                    raise ValueError(f"Expected 3D control array, got shape {control.shape}")
+            else:
+                raise TypeError(f"Unsupported control type: {type(control)}")
+            img_shapes.append((C, H, W))
+
+        # Additional control images
+        if "controls" in data:
+            for i, control_i in enumerate(data["controls"]):
+                if isinstance(control_i, torch.Tensor):
+                    C, H, W = control_i.shape
+                elif isinstance(control_i, np.ndarray):
+                    if control_i.ndim == 3:
+                        C, H, W = control_i.shape
+                    else:
+                        raise ValueError(f"Expected 3D control_{i} array, got shape {control_i.shape}")
+                else:
+                    raise TypeError(f"Unsupported control_{i} type: {type(control_i)}")
+                img_shapes.append((C, H, W))
+
+        return img_shapes
 
 
 def pad_to_max_shape(tensors, padding_value=0):
@@ -598,6 +681,24 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     keys = list(batch[0].keys())
     # flattten
     batch_dict = {key: [item[key] for item in batch] for key in keys}
+
+    # Special handling for mask: convert each sample to latent space BEFORE padding
+    # because each sample may have different dimensions
+    edit_mask_list = None
+    if 'mask' in batch_dict:
+        mask_list = batch_dict['mask']  # List of masks, each may have different shape
+        edit_mask_list = []
+        for mask in mask_list:
+            # Convert to tensor if needed
+            if isinstance(mask, np.ndarray):
+                mask = torch.from_numpy(mask)
+            # Add batch dimension if needed: [H, W] -> [1, H, W]
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)
+            # Convert this individual mask to latent space
+            edit_mask = map_mask_to_latent(mask)  # [1, seq_len]
+            edit_mask_list.append(edit_mask.squeeze(0))  # [seq_len]
+
     # if torch tensor, padding to maximal length
     for key in batch_dict:
         if isinstance(batch_dict[key][0], np.ndarray):
@@ -610,6 +711,12 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             batch_dict[key] = batch_list
             # [ {d:1,g:2}, {e:3,g:4}] -> {d: [1,3], g: [2,4]}
             # [{a:1,b:2, c:{d:1,g:2}},{a:3,b:4, c:{d:3,g:4}}] -> {a: [1,3], b: [2,4], c:{d: [1,3], g: [2,4]}}
+
+    # Pad edit_mask_list and add to batch_dict
+    if edit_mask_list is not None:
+        # Pad edit masks to same length
+        batch_dict['edit_mask'] = pad_to_max_shape(edit_mask_list)  # [B, max_seq_len]
+
     return batch_dict
 
 
@@ -671,7 +778,6 @@ def loader(
 
 
 if __name__ == "__main__":
-    import logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
@@ -705,4 +811,4 @@ if __name__ == "__main__":
     # print('batch type', type(batch['image'][0]), batch['image'])
     print(batch['prompt'])
     print(batch['control_1'].shape)
-
+    print(batch['img_shapes'])

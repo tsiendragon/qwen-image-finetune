@@ -23,6 +23,7 @@ data:
     processor:
       class_path: src.data.preprocess.ImageProcessor
       init_args:
+        resize_controls_mask_to_image: true  # in case mask has different shape from image
         process_type: center_crop
         resize_mode: bilinear
         target_size:  [384, 672] # [768, 1344]
