@@ -42,3 +42,6 @@ Version format: <major>.<minor>.<patch>
 2. Do not use relative import in code. For exmaple, do not use `from ..models.base_network import BaseNetwork`, but use `from src.models.base_network import BaseNetwork`
 3. use english in docs
 4. For existing codes, do not modify the code for lint/formatter improvement unless you are told to do so.
+5. Use as less try-except. It is not friendly to debug
+6. Do not create addition markdown documentation for explaning of the code unless you are told so
+7. When creating bash script to run something, just keep the bash file as simple as enough
