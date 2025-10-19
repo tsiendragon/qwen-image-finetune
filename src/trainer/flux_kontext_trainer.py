@@ -547,7 +547,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 )  # random time t
 
             t_ = t.unsqueeze(1).unsqueeze(1)
-            print('t_', t_.shape)
             noisy_model_input = (1.0 - t_) * image_latents + t_ * noise
 
             image_width = int(image_width) // (self.vae_scale_factor * 2)
@@ -561,7 +560,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 self.weight_dtype,
             )
             # Prepare input for transformer
-            print('noisy_model_input', noisy_model_input.shape, control_latents.shape,'image_latents', image_latents.shape,  'noise', noise.shape)
             latent_model_input = torch.cat([noisy_model_input, control_latents], dim=1)
             latent_ids = torch.cat([latent_ids, control_ids], dim=0)
             # dim 0 is sequence dimension
@@ -644,7 +642,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         # Step 1: Convert img_shapes to latent space
         img_shapes_latent = [self.convert_img_shapes_to_latent(img_shape, self.vae_scale_factor, 2) for img_shape in img_shapes]
-        print('img_shapes_latent', img_shapes_latent)
 
         # Step 2: Generate per-sample image IDs for RoPE
         # Extract (H, W) from latent shapes
@@ -715,13 +712,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 else:
                     t = torch.rand((1,), device=device, dtype=self.weight_dtype)
                 timestep_input[ii] = t
-                print('timestep', t, t.shape)
-                print('noise_input', noise_input.shape, noise.shape, noise_input[ii, :seq_len_image_latent].shape)
                 noise_input[ii, :seq_len_image_latent] = noise
                 t_ = t.unsqueeze(1)
                 noisy_model_input = (1.0 - t_) * image_latent + t_ * noise
-
-                print('noisy_model_input', noisy_model_input.shape, control_latent.shape, image_latent.shape, noise.shape)
 
                 latent_model_input = torch.cat([noisy_model_input, control_latent], dim=0)
                 latent_model_input_list.append(latent_model_input)

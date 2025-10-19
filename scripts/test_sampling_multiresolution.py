@@ -74,9 +74,10 @@ def process_sample(
         true_cfg_scale=cfg_scale,
         negative_prompt="",
         weight_dtype=torch.bfloat16,
-        height=height,
-        width=width,
-        output_type='pil'
+        # height=height,
+        # width=width,
+        output_type='pil',
+        use_native_size=True,
     )
 
     # Handle result - can be list or single image
@@ -105,14 +106,9 @@ def save_outputs(
 
     # Save images with different suffixes
     base_name = basename.replace('.png', '').replace('.jpg', '')
-    prompt_image.save(os.path.join(save_folder, 'images', f"{base_name}_input.png"))
-    target_image.save(os.path.join(save_folder, 'images', f"{base_name}_target.png"))
-    generated_image.save(os.path.join(save_folder, 'images', f"{base_name}_generated.png"))
-
-    # Save prompt
-    prompt_file = f"{base_name}.txt"
-    with open(os.path.join(save_folder, 'images', prompt_file), 'w') as f:
-        f.write(prompt)
+    prompt_image.save(os.path.join(save_folder,  f"{base_name}_input.png"))
+    target_image.save(os.path.join(save_folder,  f"{base_name}_target.png"))
+    generated_image.save(os.path.join(save_folder,  f"{base_name}_generated.png"))
 
 
 def main():
@@ -202,7 +198,6 @@ def main():
     config.data.init_args.processor.init_args.multi_resolutions = None
     config.data.init_args.processor.init_args.process_type = 'resize'
     # config.data.init_args.processor.init_args.target_size = [512, 512]  #
-
 
     # Create trainer
     logger.info("Initializing trainer...")

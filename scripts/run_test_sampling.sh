@@ -90,17 +90,28 @@
 #     fi
 # done
 
-python scripts/test_sampling_multiresolution.py \
-  --config tests/test_configs/test_example_fluxkontext_fp16_faceseg_multiresolution.yaml \
-  --dataset-name TsienDragon/face_segmentation_20 \
-  --split train \
-  --num-samples 10 \
-  --steps 20 \
-  --device cuda:1 \
-  --save-folder /tmp/flux_kontext_faceseg_results_flux_image_edit_lora \
-  --lora-weight /home/lilong/.cache/huggingface/hub/models--TsienDragon--flux-kontext-face-segmentation/snapshots/a8406e69a343de1b92b902ce5812fe7d7b44153c/pytorch_lora_weights.safetensors
+# python scripts/test_sampling_multiresolution.py \
+#   --config tests/test_configs/test_example_fluxkontext_fp16_faceseg_multiresolution.yaml \
+#   --dataset-name TsienDragon/face_segmentation_20 \
+#   --split train \
+#   --num-samples 10 \
+#   --steps 20 \
+#   --device cuda:1 \
+#   --save-folder /tmp/flux_kontext_faceseg_results_flux_image_edit_lora \
+#   --lora-weight /home/lilong/.cache/huggingface/hub/models--TsienDragon--flux-kontext-face-segmentation/snapshots/a8406e69a343de1b92b902ce5812fe7d7b44153c/pytorch_lora_weights.safetensors
 
 #/home/lilong/.cache/huggingface/hub/models--TsienDragon--qwen-image-edit-lora-face-segmentation/snapshots/847ede43e3aaa4174e1ede1435f513acd7d0456b/pytorch_lora_weights.safetensors
 #/tmp/image_edit_lora/faceSegFluxKontextFp16MultiRes/v0/checkpoint-599-1800/pytorch_lora_weights.safetensors
 #/tmp/image_edit_lora/faceSegFluxKontextFp16MultiRes/v0/checkpoint-last-1227-3683-last/pytorch_lora_weights.safetensors
 
+lora_weight='/tmp/image_edit_lora/figaroHairSegFluxKontextFp16MultiRes/v0/checkpoint-last-37-6215-last/pytorch_lora_weights.safetensors'
+config='tests/test_configs/test_example_fluxkontext_multiresolution.yaml'
+python scripts/test_sampling_multiresolution.py \
+  --config $config \
+  --dataset-name TsienDragon/figaro_hair_segmentation_1k \
+  --split test \
+  --num-samples 20 \
+  --steps 20 \
+  --device cuda:1 \
+  --save-folder /tmp/flux_kontext_figaro_hair_segmentation \
+  --lora-weight $lora_weight

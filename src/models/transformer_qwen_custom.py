@@ -89,7 +89,7 @@ class QwenEmbedRopeBatched(_QwenEmbedRope):
 
         Args:
             img_shapes_batch: List of img_shapes for each sample
-                Example: [[(1, 32, 32)], [(1, 64, 64)]] for 2 samples
+                Example: [[(1, 32, 32)], [(1, 64, 64)]] for 1 samples
             txt_seq_lens: Text sequence length for each sample
             device: Target device
             valid_img_lengths: Optional (B,) - 每个样本的实际图像 token 数量
@@ -105,11 +105,13 @@ class QwenEmbedRopeBatched(_QwenEmbedRope):
         rope_list = []
 
         for b in range(batch_size):
-            img_shapes = img_shapes_batch[b]
+            img_shapes = [img_shapes_batch[b]]  # keep batch dimension
             txt_len = txt_seq_lens[b] if isinstance(txt_seq_lens, list) else txt_seq_lens
 
             # 计算该样本的 RoPE (复用父类逻辑)
+            print('img_shapes in forward_batched', img_shapes)
             img_freqs, txt_freqs = super().forward(img_shapes, [txt_len], device)
+            print('img_freqs', img_freqs.shape, txt_freqs.shape)
 
             rope_list.append((img_freqs, txt_freqs))
 
@@ -136,6 +138,7 @@ class QwenEmbedRopeBatched(_QwenEmbedRope):
             # Per-sample mode
             if not isinstance(txt_seq_lens, list):
                 txt_seq_lens = [txt_seq_lens] * len(img_shapes)
+
             return self.forward_batched(img_shapes, txt_seq_lens, device, **kwargs)
         else:
             # Shared mode - 调用父类方法
@@ -166,7 +169,7 @@ class QwenDoubleStreamAttnProcessorPerSample:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """为每个样本应用独立的 RoPE
 
-        优化版本：直接在原始张量上操作，避免切片和拼接带来的数值误差
+        优化版本：使用 contiguous 和 in-place 操作减少数值误差
 
         Args:
             query: [B, seq_txt + seq_img, H, D]
@@ -175,6 +178,10 @@ class QwenDoubleStreamAttnProcessorPerSample:
         """
         batch_size = query.shape[0]
         total_seq_len = query.shape[1]
+
+        # 使用 contiguous 确保内存布局连续，减少切片操作的开销
+        query = query.contiguous()
+        key = key.contiguous()
 
         # 预分配输出张量 - 使用 clone 确保 padding 部分也被初始化
         # 这样 padding 位置保持原始值（会被 attention mask 遮盖）
@@ -195,18 +202,20 @@ class QwenDoubleStreamAttnProcessorPerSample:
             )
 
             # 分别应用 text 和 image RoPE
-            # Text part
+            # Text part - 使用连续的切片减少内存碎片
             query_out[b: b + 1, :seq_txt] = apply_rotary_emb_qwen(
-                query[b: b + 1, :seq_txt], txt_freqs, use_real=False
+                query[b: b + 1, :seq_txt].contiguous(), txt_freqs, use_real=False
             )
-            key_out[b: b + 1, :seq_txt] = apply_rotary_emb_qwen(key[b : b + 1, :seq_txt], txt_freqs, use_real=False)
+            key_out[b: b + 1, :seq_txt] = apply_rotary_emb_qwen(
+                key[b: b + 1, :seq_txt].contiguous(), txt_freqs, use_real=False
+            )
 
             # Image part
             query_out[b: b + 1, seq_txt: seq_txt + seq_img] = apply_rotary_emb_qwen(
-                query[b: b + 1, seq_txt: seq_txt + seq_img], img_freqs, use_real=False
+                query[b: b + 1, seq_txt: seq_txt + seq_img].contiguous(), img_freqs, use_real=False
             )
             key_out[b: b + 1, seq_txt: seq_txt + seq_img] = apply_rotary_emb_qwen(
-                key[b: b + 1, seq_txt: seq_txt + seq_img], img_freqs, use_real=False
+                key[b: b + 1, seq_txt: seq_txt + seq_img].contiguous(), img_freqs, use_real=False
             )
 
             # Padding 部分保持不变（会被 attention mask 遮盖，不影响结果）
@@ -430,21 +439,35 @@ class QwenImageTransformer2DModel(_QwenImageTransformer2DModel):
         )
 
         # ============ 3. Generate RoPE (per-sample or shared) ============
-        # 检测是否为 per-sample mode
-        per_sample_mode = isinstance(img_shapes, list) and len(img_shapes) > 0 and isinstance(img_shapes[0], list)
+        # 检测输入格式
+        is_batched_format = isinstance(img_shapes, list) and len(img_shapes) > 0 and isinstance(img_shapes[0], list)
 
-        if per_sample_mode:
-            # Per-sample mode
+        if is_batched_format:
+            # 输入格式为 List[List[Tuple]]
             batch_size = len(img_shapes)
 
             # 确保 txt_seq_lens 是列表
             if not isinstance(txt_seq_lens, list):
                 txt_seq_lens = [txt_seq_lens] * batch_size
 
-            # 生成 per-sample RoPE
-            image_rotary_emb = self.pos_embed.forward_batched(img_shapes, txt_seq_lens, device=hidden_states.device)
+            # 检查是否所有样本的 img_shapes 都完全相同
+            # 如果相同，使用原始的 shared mode 以保证数值一致性
+            all_same = all(shapes == img_shapes[0] for shapes in img_shapes)
+
+            if all_same:
+                # 所有样本形状相同 -> 使用原始的 shared mode
+                # 传入完整的 img_shapes，原始模型会取 img_shapes[0] 来处理
+                # 这样可以保证与原始实现完全一致
+                image_rotary_emb = _QwenEmbedRope.forward(
+                    self.pos_embed, img_shapes, txt_seq_lens, device=hidden_states.device
+                )
+            else:
+                # 样本形状不同 -> 使用 per-sample mode
+                image_rotary_emb = self.pos_embed.forward_batched(
+                    img_shapes, txt_seq_lens, device=hidden_states.device
+                )
         else:
-            # Shared mode
+            # 输入格式为 List[Tuple] -> 原始的 shared mode
             image_rotary_emb = self.pos_embed(img_shapes, txt_seq_lens, device=hidden_states.device)
 
         # ============ 4. Handle attention mask ============
@@ -469,7 +492,7 @@ class QwenImageTransformer2DModel(_QwenImageTransformer2DModel):
 
             # Zero-out padded queries
             text_mask = mask[:, :seq_txt]
-            img_mask = mask[:, seq_txt : seq_txt + seq_img]
+            img_mask = mask[:, seq_txt: seq_txt + seq_img]
 
             if encoder_hidden_states is not None and seq_txt > 0:
                 encoder_hidden_states = encoder_hidden_states.masked_fill(~text_mask.unsqueeze(-1), 0)
@@ -508,9 +531,33 @@ class QwenImageTransformer2DModel(_QwenImageTransformer2DModel):
                     joint_attention_kwargs=attention_kwargs,
                 )
 
+            # Mask padding after each block to prevent residual/MLP leakage
+            # This is critical for numerical accuracy with padding
+            if attention_mask is not None:
+                seq_img_block = hidden_states.shape[1]
+                seq_txt_block = encoder_hidden_states.shape[1] if encoder_hidden_states is not None else 0
+                img_mask_block = attention_mask[:, seq_txt_block: seq_txt_block + seq_img_block]
+
+                # Convert to bool if needed
+                if img_mask_block.dtype != torch.bool:
+                    img_mask_block = img_mask_block > 0
+
+                # Skip masking if all True (no actual padding) to avoid unnecessary computation
+                if not img_mask_block.all():
+                    img_mask_block = img_mask_block.to(hidden_states.device)
+                    hidden_states = hidden_states * img_mask_block.unsqueeze(-1)
+
         # ============ 6. Output projection ============
         hidden_states = self.norm_out(hidden_states, temb)
         output = self.proj_out(hidden_states)
+
+        # Mask padding positions in output if attention_mask was provided
+        if attention_mask is not None:
+            # Recompute img_mask for output masking
+            seq_img = output.shape[1]
+            seq_txt = encoder_hidden_states.shape[1] if encoder_hidden_states is not None else 0
+            img_mask = attention_mask[:, seq_txt: seq_txt + seq_img]
+            output = output.masked_fill(~img_mask.unsqueeze(-1), 0)
 
         if USE_PEFT_BACKEND:
             unscale_lora_layers(self, lora_scale)

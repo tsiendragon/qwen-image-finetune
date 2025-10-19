@@ -450,10 +450,6 @@ class FluxTransformer2DModel(_FluxTransformer2DModel):
         timestep = timestep.to(hidden_states.dtype) * 1000
         if guidance is not None:
             guidance = guidance.to(hidden_states.dtype) * 1000
-        else:
-            1/0
-        print('guidance in custom', guidance)
-        print('timestep in custom', timestep)
 
         temb = (
             self.time_text_embed(timestep, pooled_projections)
