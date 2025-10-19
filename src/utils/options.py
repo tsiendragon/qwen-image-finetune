@@ -13,6 +13,7 @@ def parse_args():
     )
     parser.add_argument("--resume", type=str, default="", help="path to resume checkpoint")
     parser.add_argument("--cache", action="store_true", help="cache the dataset")
+    parser.add_argument("--fit-no-cache", action="store_true", help="force non-cache mode for training")
     args = parser.parse_args()
 
     if args.config == "":
@@ -25,6 +26,10 @@ def parse_args():
 
     if args.cache:
         config.mode = TrMode.cache
+    elif args.fit_no_cache:
+        config.mode = TrMode.fit
+        config.cache.use_cache = False
+        config.data.init_args.use_cache = False
     else:
         config.mode = TrMode.fit
     return config

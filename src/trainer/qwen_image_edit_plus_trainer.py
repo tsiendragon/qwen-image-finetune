@@ -4,7 +4,6 @@ import PIL
 from typing import Optional, Union, List
 import logging
 from diffusers import QwenImageEditPlusPipeline
-from src.loss.edit_mask_loss import map_mask_to_latent
 from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
 from src.utils.images import make_image_devisible, make_image_shape_devisible, resize_bhw, calculate_best_resolution
 from src.models.load_model import load_vae, load_qwenvl
@@ -225,11 +224,11 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
         if "control_latents" in batch:
             batch["control_latents"] = torch.cat(batch["control_latents"], dim=1)
 
-        if self.config.loss.mask_loss and "mask" in batch:
-            mask = batch["mask"]
-            height_image, width_image = batch["height"], batch["width"]
-            batch["mask"] = resize_bhw(mask, height_image, width_image)
-            batch["mask"] = map_mask_to_latent(batch["mask"])
+        # if self.config.loss.mask_loss and "mask" in batch:
+        #     mask = batch["mask"]
+        #     height_image, width_image = batch["height"], batch["width"]
+        #     batch["mask"] = resize_bhw(mask, height_image, width_image)
+        #     batch["mask"] = map_mask_to_latent(batch["mask"])
         return batch
 
     def encode_prompt(

@@ -187,14 +187,25 @@ class BaseTrainer(ABC):
         checkpoints = glob.glob(f"{version_path}/*/*.safetensors")
         return len(checkpoints) > 0
 
-    def _convert_img_shapes_to_latent(
-        self, img_shapes_original: list, vae_scale_factor: int = 8, packing_factor: int = 2
+    @classmethod
+    def convert_img_shapes_to_latent(
+        cls, img_shapes_original: list, vae_scale_factor: int = 8, packing_factor: int = 2
     ) -> list:
-        """Convert original image shapes to latent space shapes
+        """Convert original image shapes to latent space shapes for single sample
 
         This method transforms image shapes from pixel space to latent space,
-        accounting for VAE downsampling and packing operations.
-
+        accounting for VAE downsampling and packing operations.\n
+        `img_shapes single example`:
+        ```python
+        [(3, 512, 512), (3, 512, 512), (3, 640, 640)]
+        ```
+        `img_shapes batch example`:
+        ```python
+        [
+            [(3, 512, 512), (3, 512, 512), (3, 640, 640)],
+            [(3, 128, 512), (3, 128, 512), (3, 128, 640)]
+        ]
+        ```
         Args:
             img_shapes_original: List of tuples [(C, H, W), ...] in original pixel space
                                 where C is usually 3 (RGB) or 1 (grayscale)
@@ -209,7 +220,7 @@ class BaseTrainer(ABC):
 
         Example:
             >>> original = [(3, 512, 512), (3, 640, 640)]
-            >>> latent = self._convert_img_shapes_to_latent(original, vae_scale_factor=8, packing_factor=2)
+            >>> latent = cls.convert_img_shapes_to_latent(original, vae_scale_factor=8, packing_factor=2)
             >>> latent  # [(1, 32, 32), (1, 40, 40)]
 
         Note:
@@ -218,34 +229,42 @@ class BaseTrainer(ABC):
         """
         if not img_shapes_original:
             return []
-
         total_scale = vae_scale_factor * packing_factor
-
         img_shapes_latent = []
         for shape in img_shapes_original:
             if len(shape) != 3:
                 raise ValueError(f"Expected shape tuple (C, H, W), got {shape}")
-
             c_orig, h_orig, w_orig = shape
-
             # Convert to latent space dimensions
             # Channel becomes 1 in latent space
             # Height and width are downsampled by total_scale
             h_latent = h_orig // total_scale
             w_latent = w_orig // total_scale
-
             if h_latent == 0 or w_latent == 0:
                 logging.warning(
                     f"Latent dimension became 0: original shape {shape}, "
                     f"total_scale {total_scale}, latent shape ({h_latent}, {w_latent}). "
                     f"Original image may be too small."
                 )
-
             img_shapes_latent.append((1, h_latent, w_latent))
-
         return img_shapes_latent
 
-    def _should_use_multi_resolution_mode(self, batch: dict) -> bool:
+    @classmethod
+    def validate_img_shapes(cls, img_shapes: list) -> bool:
+        """Validate img_shapes format"""
+        assert isinstance(img_shapes, list), "img_shapes must be a list"
+        if not img_shapes:
+            return False
+        assert isinstance(img_shapes[0], list), "img_shapes must be a list of lists"
+        assert isinstance(img_shapes[0][0], tuple), "img_shapes must be a list of lists of tuples"
+        assert len(img_shapes[0][0]) == 3, "img_shapes must be a list of lists of tuples with 3 elements"
+        assert img_shapes[0][0][0] in [1, 3], "img_shapes must be a list of lists of tuples with 3 elements"
+        assert img_shapes[0][0][1] > 0, "img_shapes must be a list of lists of tuples with 3 elements"
+        assert img_shapes[0][0][2] > 0, "img_shapes must be a list of lists of tuples with 3 elements"
+        return True
+
+    @classmethod
+    def should_use_multi_resolution_mode(cls, batch: dict) -> bool:
         """Determine if multi-resolution mode should be used for this batch
 
         This is a generic method that can be used by all trainers supporting
@@ -268,78 +287,40 @@ class BaseTrainer(ABC):
         Returns:
             bool: True if multi-resolution mode should be used, False otherwise
         """
-        # Check 1: Is multi_resolutions configured in processor config?
-        # This is the PRIMARY check - if not configured, never use multi-resolution mode
-        processor_config = self.config.data.init_args.processor.init_args
-        if not hasattr(processor_config, "multi_resolutions") or processor_config.multi_resolutions is None:
-            logging.debug("multi_resolutions not configured, using shared mode")
-            return False
-
-        # Check 2: Is batch size > 1?
+        cls.validate_img_shapes(batch['img_shapes'])
         batch_size = len(batch['img_shapes'])
         if batch_size == 1:
             logging.debug("Single sample, using shared mode")
             return False
 
-        # Check 3: Do samples have different resolutions?
-        # Priority 1: Check img_shapes (cache v2.0 standard field, most reliable)
-        if "img_shapes" in batch:
-            shapes = batch["img_shapes"]  # [[(C,H,W), ...], [(C,H,W), ...], ...]
-            if isinstance(shapes, torch.Tensor):
-                shapes = shapes.tolist()
-            # Extract spatial dimensions (H, W) for all images in each sample
-            # Compare the complete resolution profile of each sample
-            sample_resolution_profiles = []
-            for sample_shapes in shapes:
-                if isinstance(sample_shapes, (list, tuple)):
-                    # Extract (H, W) from each image in this sample, ignoring channel (C)
-                    resolution_profile = []
-                    for img_shape in sample_shapes:
-                        if isinstance(img_shape, (list, tuple)) and len(img_shape) >= 3:
-                            # Extract (H, W), ignoring C
-                            resolution_profile.append((img_shape[1], img_shape[2]))
-                        else:
-                            # Fallback: use the whole shape
-                            resolution_profile.append(tuple(img_shape))
-                    sample_resolution_profiles.append(tuple(resolution_profile))
-                else:
-                    # Fallback for unexpected format
-                    sample_resolution_profiles.append(tuple(sample_shapes))
+        shapes = batch["img_shapes"]  # [[(C,H,W), ...], [(C,H,W), ...], ...]
+        if isinstance(shapes, torch.Tensor):
+            shapes = shapes.tolist()
+        # Extract spatial dimensions (H, W) for all images in each sample
+        # Compare the complete resolution profile of each sample
+        sample_resolution_profiles = []
+        for sample_shapes in shapes:
+            if isinstance(sample_shapes, (list, tuple)):
+                # Extract (H, W) from each image in this sample, ignoring channel (C)
+                resolution_profile = []
+                for img_shape in sample_shapes:
+                    if isinstance(img_shape, (list, tuple)) and len(img_shape) >= 3:
+                        # Extract (H, W), ignoring C
+                        resolution_profile.append((img_shape[1], img_shape[2]))
+                    else:
+                        # Fallback: use the whole shape
+                        resolution_profile.append(tuple(img_shape))
+                sample_resolution_profiles.append(tuple(resolution_profile))
+            else:
+                # Fallback for unexpected format
+                sample_resolution_profiles.append(tuple(sample_shapes))
 
-            # Check if all samples have identical resolution profiles
-            # Using set to find unique resolution profiles
-            unique_profiles = len(set(sample_resolution_profiles))
-            if unique_profiles == 1:
-                return False
-            return True
-
-        return False
-
-    def _pad_latents_for_multi_res(
-        self,
-        latents: List[torch.Tensor],
-        max_seq_len: int,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Pad latents to uniform sequence length for multi-resolution training
-
-        This is a wrapper around the utility function pad_latents_for_multi_res
-        from src.utils.tools. See that function for full documentation.
-
-        Args:
-            latents: List of latent tensors, each with shape [seq_i, C] where seq_i varies
-            max_seq_len: Maximum sequence length to pad to
-
-        Returns:
-            padded_latents: Padded latents tensor [B, max_seq, C]
-            attention_mask: Binary mask [B, max_seq] where True=valid, False=padded
-
-        Example:
-            >>> latents = [torch.randn(100, 64), torch.randn(150, 64), torch.randn(120, 64)]
-            >>> padded, mask = self._pad_latents_for_multi_res(latents, 150)
-            >>> padded.shape  # [3, 150, 64]
-            >>> mask.shape    # [3, 150]
-        """
-        return pad_latents_for_multi_res(latents, max_seq_len)
+        # Check if all samples have identical resolution profiles
+        # Using set to find unique resolution profiles
+        unique_profiles = len(set(sample_resolution_profiles))
+        if unique_profiles == 1:
+            return False
+        return True
 
     def accelerator_prepare(self, train_dataloader):
         """Prepare accelerator"""

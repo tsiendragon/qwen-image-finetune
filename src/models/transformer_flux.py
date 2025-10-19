@@ -19,40 +19,41 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from diffusers.configuration_utils import ConfigMixin, register_to_config
+
 # from ...configuration_utils import ConfigMixin, register_to_config
-from diffusers.loaders import FluxTransformer2DLoadersMixin, FromOriginalModelMixin, PeftAdapterMixin
+from diffusers.configuration_utils import ConfigMixin, register_to_config
 # from ...loaders import FluxTransformer2DLoadersMixin, FromOriginalModelMixin, PeftAdapterMixin
-from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
+from diffusers.loaders import FluxTransformer2DLoadersMixin, FromOriginalModelMixin, PeftAdapterMixin
 # from ...utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
-from diffusers.utils.torch_utils import maybe_allow_in_graph
+from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 # from ...utils.torch_utils import maybe_allow_in_graph
-from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
+from diffusers.utils.torch_utils import maybe_allow_in_graph
 # from .._modeling_parallel import ContextParallelInput, ContextParallelOutput
+from diffusers.models._modeling_parallel import ContextParallelInput, ContextParallelOutput
 from diffusers.models.attention import AttentionMixin, AttentionModuleMixin, FeedForward
 # from ..attention import AttentionMixin, AttentionModuleMixin, FeedForward
-from diffusers.models.attention_dispatch import dispatch_attention_fn
 # from ..attention_dispatch import dispatch_attention_fn
-from diffusers.models.cache_utils import CacheMixin
+from diffusers.models.attention_dispatch import dispatch_attention_fn
 # from ..cache_utils import CacheMixin
+from diffusers.models.cache_utils import CacheMixin
+# from ..embeddings import (
+#     CombinedTimestepGuidanceTextProjEmbeddings,
+#     CombinedTimestepTextProjEmbeddings,
+#     apply_rotary_emb,
+#     get_1d_rotary_pos_embed,
+# )
 from diffusers.models.embeddings import (
     CombinedTimestepGuidanceTextProjEmbeddings,
     CombinedTimestepTextProjEmbeddings,
     apply_rotary_emb,
     get_1d_rotary_pos_embed,
 )
-# # from ..embeddings import (
-#     CombinedTimestepGuidanceTextProjEmbeddings,
-#     CombinedTimestepTextProjEmbeddings,
-#     apply_rotary_emb,
-#     get_1d_rotary_pos_embed,
-# )
-from diffusers.models.modeling_outputs import Transformer2DModelOutput
 # from ..modeling_outputs import Transformer2DModelOutput
-from diffusers.models.modeling_utils import ModelMixin
+from diffusers.models.modeling_outputs import Transformer2DModelOutput
 # from ..modeling_utils import ModelMixin
-from diffusers.models.normalization import AdaLayerNormContinuous, AdaLayerNormZero, AdaLayerNormZeroSingle
+from diffusers.models.modeling_utils import ModelMixin
 # from ..normalization import AdaLayerNormContinuous, AdaLayerNormZero, AdaLayerNormZeroSingle
+from diffusers.models.normalization import AdaLayerNormContinuous, AdaLayerNormZero, AdaLayerNormZeroSingle
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -458,7 +459,9 @@ class FluxTransformerBlock(nn.Module):
         image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # return temb.unsqueeze(2).unsqueeze(2), temb.unsqueeze(2).unsqueeze(2)
         norm_hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(hidden_states, emb=temb)
+        # return norm_hidden_states, norm_hidden_states
 
         norm_encoder_hidden_states, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.norm1_context(
             encoder_hidden_states, emb=temb
@@ -613,6 +616,8 @@ class FluxTransformer2DModel(
 
         self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=axes_dims_rope)
 
+        print(f"guidance_embeds: {guidance_embeds}")
+
         text_time_guidance_cls = (
             CombinedTimestepGuidanceTextProjEmbeddings if guidance_embeds else CombinedTimestepTextProjEmbeddings
         )
@@ -759,7 +764,6 @@ class FluxTransformer2DModel(
                     image_rotary_emb=image_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
-
             # controlnet residual
             if controlnet_block_samples is not None:
                 interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
@@ -771,7 +775,6 @@ class FluxTransformer2DModel(
                     )
                 else:
                     hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
-
         for index_block, block in enumerate(self.single_transformer_blocks):
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(

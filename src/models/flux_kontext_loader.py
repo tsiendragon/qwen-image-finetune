@@ -151,11 +151,19 @@ def load_flux_kontext_transformer(
     device_map: Optional[str] = "cpu",  # or "auto"
     variant: Optional[str] = None,  # e.g. "fp16", "bf16", or custom
     use_pipeline: bool = False,
+    use_multi_resolution: bool = False,
 ):
     """
     加载 FluxKontext 的条件 Transformer (MMDiT) 主干。
+    如果 use_multi_resolution, 则从自定义的transformer_flux_custom.py中加载, 支持多种分辨率的训练
     """
-    from diffusers.models import FluxTransformer2DModel
+    if use_multi_resolution:
+        from src.models.transformer_flux_custom import FluxTransformer2DModel
+    else:
+        from diffusers.models import FluxTransformer2DModel
+
+    # from src.models.transformer_flux import FluxTransformer2DModel
+    # from diffusers.models import FluxTransformer2DModel
 
     if not use_pipeline:
         return FluxTransformer2DModel.from_pretrained(

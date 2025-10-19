@@ -46,16 +46,23 @@ import logging
 
 import torch
 import torch.nn.functional as F
+from diffusers.configuration_utils import register_to_config
 
-from diffusers.models.modeling_outputs import Transformer2DModelOutput
-from diffusers.models.transformers.transformer_flux import (  # type: ignore
-    FluxTransformer2DModel as _FluxTransformer2DModel,
-    FluxPosEmbed as _FluxPosEmbed,
-    FluxAttention,
-    _get_qkv_projections,
-)
+# from diffusers.models.modeling_outputs import Transformer2DModelOutput
+# from diffusers.models.transformers.transformer_flux import (  # type: ignore
+#     FluxTransformer2DModel as _FluxTransformer2DModel,
+#     FluxPosEmbed as _FluxPosEmbed,
+#     FluxAttention,
+#     _get_qkv_projections,
+# )
 from diffusers.models.embeddings import apply_rotary_emb
 from diffusers.models.attention_dispatch import dispatch_attention_fn
+
+from src.models.transformer_flux import Transformer2DModelOutput
+from src.models.transformer_flux import FluxTransformer2DModel as _FluxTransformer2DModel
+from src.models.transformer_flux import FluxPosEmbed as _FluxPosEmbed
+from src.models.transformer_flux import FluxAttention
+from src.models.transformer_flux import _get_qkv_projections
 
 logger = logging.getLogger(__name__)
 
@@ -139,11 +146,13 @@ class FluxPosEmbedBatched(_FluxPosEmbed):
                 pad_len = max_seq - valid_len
                 D = freqs_cos.shape[-1]
 
-                pad_zeros_cos = torch.zeros(pad_len, D, device=freqs_cos.device, dtype=freqs_cos.dtype)
-                pad_zeros_sin = torch.zeros(pad_len, D, device=freqs_sin.device, dtype=freqs_sin.dtype)
+                # Padding should be identity rotation: cos=1, sin=0
+                # This ensures apply_rotary_emb doesn't modify padding positions
+                pad_identity_cos = torch.ones(pad_len, D, device=freqs_cos.device, dtype=freqs_cos.dtype)
+                pad_identity_sin = torch.zeros(pad_len, D, device=freqs_sin.device, dtype=freqs_sin.dtype)
 
-                freqs_cos = torch.cat([freqs_cos, pad_zeros_cos], dim=0)
-                freqs_sin = torch.cat([freqs_sin, pad_zeros_sin], dim=0)
+                freqs_cos = torch.cat([freqs_cos, pad_identity_cos], dim=0)
+                freqs_sin = torch.cat([freqs_sin, pad_identity_sin], dim=0)
 
             rope_list.append((freqs_cos, freqs_sin))
 
@@ -205,8 +214,8 @@ class FluxAttnProcessorPerSample:
 
             # 直接对切片应用 RoPE，然后写入预分配的输出张量
             # 这样可以避免创建临时张量和拼接操作
-            query_out[b:b+1] = apply_rotary_emb(query[b:b+1], rope_tuple, sequence_dim=1)
-            key_out[b:b+1] = apply_rotary_emb(key[b:b+1], rope_tuple, sequence_dim=1)
+            query_out[b:b + 1] = apply_rotary_emb(query[b:b + 1], rope_tuple, sequence_dim=1)
+            key_out[b:b + 1] = apply_rotary_emb(key[b:b + 1], rope_tuple, sequence_dim=1)
 
         return query_out, key_out
 
@@ -227,10 +236,6 @@ class FluxAttnProcessorPerSample:
                 - Shared mode: (freqs_cos, freqs_sin) with shape (seq, D)
                 - Per-sample mode: List of (freqs_cos, freqs_sin)
         """
-        # 检查 attn 模块是否有 per-sample RoPE 引用
-        if hasattr(attn, '_per_sample_rope_ref'):
-            image_rotary_emb = attn._per_sample_rope_ref
-
         query, key, value, encoder_query, encoder_key, encoder_value = _get_qkv_projections(
             attn, hidden_states, encoder_hidden_states
         )
@@ -242,7 +247,7 @@ class FluxAttnProcessorPerSample:
         query = attn.norm_q(query)
         key = attn.norm_k(key)
 
-        if attn.added_kv_proj_dim is not None and encoder_hidden_states is not None:
+        if attn.added_kv_proj_dim is not None:
             encoder_query = encoder_query.unflatten(-1, (attn.heads, -1))
             encoder_key = encoder_key.unflatten(-1, (attn.heads, -1))
             encoder_value = encoder_value.unflatten(-1, (attn.heads, -1))
@@ -257,8 +262,23 @@ class FluxAttnProcessorPerSample:
         # Apply RoPE - 关键修改点
         if image_rotary_emb is not None:
             if isinstance(image_rotary_emb, list):
-                # Per-sample mode
-                query, key = self._apply_rope_per_sample(query, key, image_rotary_emb)
+                # Per-sample mode - but check if all samples have identical RoPE
+                # If so, fall back to shared mode for better numerical stability
+                all_same = True
+                if len(image_rotary_emb) > 1:
+                    first_cos, first_sin = image_rotary_emb[0]
+                    for cos, sin in image_rotary_emb[1:]:
+                        if not (torch.equal(cos, first_cos) and torch.equal(sin, first_sin)):
+                            all_same = False
+                            break
+
+                if all_same:
+                    # All samples have identical RoPE - use shared mode for numerical stability
+                    query = apply_rotary_emb(query, image_rotary_emb[0], sequence_dim=1)
+                    key = apply_rotary_emb(key, image_rotary_emb[0], sequence_dim=1)
+                else:
+                    # Samples have different RoPE - use per-sample mode
+                    query, key = self._apply_rope_per_sample(query, key, image_rotary_emb)
             else:
                 # Shared mode
                 query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
@@ -277,14 +297,14 @@ class FluxAttnProcessorPerSample:
         hidden_states = hidden_states.to(query.dtype)
 
         if encoder_hidden_states is not None:
-            seq_txt = encoder_hidden_states.shape[1]
-            encoder_hidden_states_out = hidden_states[:, :seq_txt]
-            hidden_states = hidden_states[:, seq_txt:]
-
+            encoder_hidden_states, hidden_states = hidden_states.split_with_sizes(
+                [encoder_hidden_states.shape[1], hidden_states.shape[1] - encoder_hidden_states.shape[1]], dim=1
+            )
             hidden_states = attn.to_out[0](hidden_states)
             hidden_states = attn.to_out[1](hidden_states)
+            encoder_hidden_states = attn.to_add_out(encoder_hidden_states)
 
-            return hidden_states, encoder_hidden_states_out
+            return hidden_states, encoder_hidden_states
         else:
             return hidden_states
 
@@ -305,38 +325,57 @@ class FluxTransformer2DModel(_FluxTransformer2DModel):
     - Works with attention mask to handle padded tokens
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    @register_to_config
+    def __init__(
+        self,
+        patch_size: int = 1,
+        in_channels: int = 64,
+        out_channels: Optional[int] = None,
+        num_layers: int = 19,
+        num_single_layers: int = 38,
+        attention_head_dim: int = 128,
+        num_attention_heads: int = 24,
+        joint_attention_dim: int = 4096,
+        pooled_projection_dim: int = 768,
+        guidance_embeds: bool = False,
+        axes_dims_rope: Tuple[int, int, int] = (16, 56, 56),
+    ):
+
+        print('patch_size', patch_size)
+        print('in_channels', in_channels)
+        print('out_channels', out_channels)
+        print('num_layers', num_layers)
+        print('num_single_layers', num_single_layers)
+        print('attention_head_dim', attention_head_dim)
+        print('num_attention_heads', num_attention_heads)
+        print('joint_attention_dim', joint_attention_dim)
+        print('pooled_projection_dim', pooled_projection_dim)
+        print('guidance_embeds', guidance_embeds)
+        print('axes_dims_rope', axes_dims_rope)
+
+        super().__init__(
+            patch_size=patch_size,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_layers=num_layers,
+            num_single_layers=num_single_layers,
+            attention_head_dim=attention_head_dim,
+            num_attention_heads=num_attention_heads,
+            joint_attention_dim=joint_attention_dim,
+            pooled_projection_dim=pooled_projection_dim,
+            guidance_embeds=guidance_embeds,
+            axes_dims_rope=axes_dims_rope
+        )
         # 替换为支持 batched 的 pos_embed
         if hasattr(self, "pos_embed"):
             self.pos_embed = FluxPosEmbedBatched(theta=10000, axes_dim=list(self.config.axes_dims_rope))
 
-    def _enable_per_sample_processors(self, per_sample_rope=None):
-        """临时启用 per-sample RoPE processors
-
-        Args:
-            per_sample_rope: List of per-sample RoPE tuples to inject into attention modules
-        """
-        original_processors = {}
-        for name, module in self.named_modules():
+        #  一次性替换所有 attention 的 processor；训练全程固定
+        for _, module in self.named_modules():
             if isinstance(module, FluxAttention):
-                original_processors[name] = module.processor
                 module.processor = FluxAttnProcessorPerSample()
-                # 将 per-sample RoPE 存储在 attention 模块上
-                if per_sample_rope is not None:
-                    module._per_sample_rope_ref = per_sample_rope
-        return original_processors
 
-    def _restore_processors(self, original_processors: Dict[str, Any]):
-        """恢复原始 processors 并清理临时属性"""
-        for name, module in self.named_modules():
-            if name in original_processors:
-                module.processor = original_processors[name]
-                # 清理临时 RoPE 引用
-                if hasattr(module, '_per_sample_rope_ref'):
-                    delattr(module, '_per_sample_rope_ref')
-
-    def forward(  # type: ignore[override]
+    def forward(  # noqa: F811
         self,
         hidden_states: torch.Tensor,
         encoder_hidden_states: Optional[torch.Tensor] = None,
@@ -363,62 +402,195 @@ class FluxTransformer2DModel(_FluxTransformer2DModel):
             Optional padding mask over the concatenated `[text_tokens, image_tokens]` sequence.
             Shape `(batch, seq_txt + seq_img)`; `True/1` marks valid tokens.
         """
+        # ============ 1. Handle joint_attention_kwargs and LoRA ============
+        if joint_attention_kwargs is not None:
+            joint_attention_kwargs = joint_attention_kwargs.copy()
+            lora_scale = joint_attention_kwargs.pop("scale", 1.0)
+        else:
+            joint_attention_kwargs = {}
+            lora_scale = 1.0
 
-        joint_attention_kwargs = dict(joint_attention_kwargs or {})
+        try:
+            from diffusers.loaders.peft import USE_PEFT_BACKEND
+            from peft.tuners.tuners_utils import scale_lora_layers, unscale_lora_layers
+        except ImportError:
+            USE_PEFT_BACKEND = False
 
-        # 检测 per-sample RoPE 模式
-        per_sample_mode = img_ids is not None and img_ids.ndim == 3
-        original_processors = None
+        if USE_PEFT_BACKEND:
+            scale_lora_layers(self, lora_scale)
+        else:
+            if joint_attention_kwargs.get("scale", None) is not None:
+                logger.warning(
+                    "Passing `scale` via `joint_attention_kwargs` when not using the PEFT backend is ineffective."
+                )
 
-        if per_sample_mode:
-            # 生成 per-sample RoPE
-            # 从 attention_mask 推断 valid_lengths
-            if attention_mask is not None:
-                batch_size = img_ids.shape[0]
-                seq_img = img_ids.shape[1]
+        # ============ 2. Embeddings ============
+        hidden_states = self.x_embedder(hidden_states)
+
+        # Immediately mask padding after x_embedder to prevent bias leakage
+        # CRITICAL: Must mask here because Linear layer bias makes zero inputs non-zero
+        # Only apply if there's actual padding (not all True)
+        if attention_mask is not None:
+            seq_img = hidden_states.shape[1]
+            # Calculate text sequence length from txt_ids (NOT encoder_hidden_states which hasn't been embedded yet)
+            if txt_ids is not None:
+                seq_txt = txt_ids.shape[1] if txt_ids.ndim == 3 else txt_ids.shape[0]
+            else:
                 seq_txt = 0
-                if txt_ids is not None:
-                    seq_txt = txt_ids.shape[1] if txt_ids.ndim == 3 else txt_ids.shape[0]
 
-                # 计算每个样本的有效图像 token 数量
+            # Extract and apply image mask
+            img_mask_early = attention_mask[:, seq_txt: seq_txt + seq_img]
+            if img_mask_early.dtype != torch.bool:
+                img_mask_early = img_mask_early > 0
+            # Skip masking if all True (no actual padding)
+            if not img_mask_early.all():
+                img_mask_early = img_mask_early.to(hidden_states.device)
+                hidden_states = hidden_states.masked_fill(~img_mask_early.unsqueeze(-1), 0)
+
+        timestep = timestep.to(hidden_states.dtype) * 1000
+        if guidance is not None:
+            guidance = guidance.to(hidden_states.dtype) * 1000
+        else:
+            1/0
+        print('guidance in custom', guidance)
+        print('timestep in custom', timestep)
+
+        temb = (
+            self.time_text_embed(timestep, pooled_projections)
+            if guidance is None
+            else self.time_text_embed(timestep, guidance, pooled_projections)
+        )
+        # return Transformer2DModelOutput(sample=temb.unsqueeze(2).unsqueeze(2))
+
+        encoder_hidden_states = self.context_embedder(encoder_hidden_states)
+
+        # ============ 3. Generate RoPE (per-sample or shared) ============
+        # Use per-sample mode if:
+        # 1. img_ids is 3D (explicit per-sample ids), OR
+        # 2. attention_mask is present (indicating variable-length sequences)
+        per_sample_mode = (img_ids is not None and img_ids.ndim == 3) or attention_mask is not None
+
+        batch_size = hidden_states.shape[0]
+        if per_sample_mode:
+            # Ensure img_ids is 3D for per-sample processing
+            if img_ids is not None:
+                if img_ids.ndim == 2:
+                    # img_ids is (seq, 3), expand to (batch, seq, 3)
+                    img_ids = img_ids.unsqueeze(0).expand(batch_size, -1, -1)
+                elif img_ids.ndim == 3:
+                    # Check if all samples have identical ids
+                    # If so and no attention_mask, downgrade to shared mode for numerical stability
+                    if attention_mask is None and img_ids.shape[0] > 1:
+                        all_ids_same = True
+                        first_ids = img_ids[0]
+                        for i in range(1, img_ids.shape[0]):
+                            if not torch.equal(img_ids[i], first_ids):
+                                all_ids_same = False
+                                break
+
+                        if all_ids_same:
+                            # All samples have identical ids - use shared mode
+                            img_ids = first_ids  # Convert to 2D
+                            # per_sample_mode = False
+                elif img_ids.ndim != 3 and img_ids.ndim != 2:
+                    raise ValueError(f"img_ids must be 2D or 3D, got {img_ids.ndim}D")
+
+        # Per-sample mode: generate independent RoPE for each sample
+        if per_sample_mode:
+            seq_img = img_ids.shape[1] if img_ids is not None else hidden_states.shape[1]
+
+            # 计算每个样本的有效图像 token 数量
+            if attention_mask is not None:
+                if txt_ids is not None and txt_ids.ndim == 3:
+                    seq_txt = txt_ids.shape[1]
+                elif txt_ids is not None:
+                    seq_txt = txt_ids.shape[0]
+                else:
+                    seq_txt = 0
                 img_mask = attention_mask[:, seq_txt:seq_txt + seq_img]
                 valid_img_lengths = img_mask.sum(dim=1)
             else:
                 valid_img_lengths = None
 
-            # 生成 per-sample img RoPE
-            img_rotary_emb_list = self.pos_embed(img_ids, valid_lengths=valid_img_lengths)
-
-            # 生成 txt RoPE（shared across all samples）
+            # Generate per-sample RoPE by concatenating txt and img ids first,
+            # then computing RoPE (to match shared mode behavior exactly)
             if txt_ids is not None:
-                if txt_ids.ndim == 3:
-                    txt_ids_2d = txt_ids[0]
+                txt_ids_2d = txt_ids[0] if txt_ids.ndim == 3 else txt_ids
+                seq_txt_len = txt_ids_2d.shape[0]
+            else:
+                txt_ids_2d = None
+                seq_txt_len = 0
+
+            combined_rope_list = []
+            for b in range(batch_size):
+                img_ids_b = img_ids[b]
+
+                if valid_img_lengths is not None:
+                    valid_len = int(valid_img_lengths[b].item())
                 else:
-                    txt_ids_2d = txt_ids
-                txt_rotary_emb = self.pos_embed(txt_ids_2d)
-            else:
-                txt_rotary_emb = None
+                    non_zero_rows = (img_ids_b != 0).any(dim=1)
+                    valid_len = non_zero_rows.sum().item() if non_zero_rows.any() else seq_img
 
-            # 组合 txt + img RoPE for each sample
-            if txt_rotary_emb is not None:
-                combined_rope_list = []
-                for img_rope in img_rotary_emb_list:
-                    # Concatenate text and image RoPE
-                    combined_cos = torch.cat([txt_rotary_emb[0], img_rope[0]], dim=0)
-                    combined_sin = torch.cat([txt_rotary_emb[1], img_rope[1]], dim=0)
-                    combined_rope_list.append((combined_cos, combined_sin))
-                per_sample_rope = combined_rope_list
-            else:
-                per_sample_rope = img_rotary_emb_list
+                img_ids_valid = img_ids_b[:valid_len]
 
-            # 启用 per-sample attention processors 并注入 RoPE
-            original_processors = self._enable_per_sample_processors(per_sample_rope)
+                # Concatenate txt and img ids first, then compute RoPE
+                # This matches the shared mode behavior exactly
+                if txt_ids_2d is not None:
+                    combined_ids = torch.cat([txt_ids_2d, img_ids_valid], dim=0)
+                else:
+                    combined_ids = img_ids_valid
 
-            # 将 img_ids 转为 2D 以避免父类警告（父类会忽略它，因为我们已经生成了 RoPE）
-            img_ids = img_ids[0]
+                # Compute RoPE for combined sequence
+                freqs_cos, freqs_sin = self.pos_embed(combined_ids)
+
+                # Pad img portion to max_seq if needed
+                if valid_len < seq_img:
+                    # Split into txt and img portions
+                    txt_cos = freqs_cos[:seq_txt_len] if txt_ids_2d is not None else None
+                    txt_sin = freqs_sin[:seq_txt_len] if txt_ids_2d is not None else None
+                    img_cos = freqs_cos[seq_txt_len:]
+                    img_sin = freqs_sin[seq_txt_len:]
+
+                    # Pad img portion with identity rotation
+                    pad_len = seq_img - valid_len
+                    D = img_cos.shape[-1]
+                    pad_identity_cos = torch.ones(pad_len, D, device=img_cos.device, dtype=img_cos.dtype)
+                    pad_identity_sin = torch.zeros(pad_len, D, device=img_sin.device, dtype=img_sin.dtype)
+
+                    img_cos_padded = torch.cat([img_cos, pad_identity_cos], dim=0)
+                    img_sin_padded = torch.cat([img_sin, pad_identity_sin], dim=0)
+
+                    # Recombine
+                    if txt_cos is not None:
+                        freqs_cos = torch.cat([txt_cos, img_cos_padded], dim=0)
+                        freqs_sin = torch.cat([txt_sin, img_sin_padded], dim=0)
+                    else:
+                        freqs_cos = img_cos_padded
+                        freqs_sin = img_sin_padded
+
+                combined_rope_list.append((freqs_cos, freqs_sin))
+
+            image_rotary_emb = combined_rope_list
+
+        else:
+            # Shared mode: standard processing
             if txt_ids is not None and txt_ids.ndim == 3:
+                logger.warning(
+                    "Passing `txt_ids` 3d torch.Tensor is deprecated. "
+                    "Please remove the batch dimension and pass it as a 2d torch Tensor"
+                )
                 txt_ids = txt_ids[0]
+            if img_ids is not None and img_ids.ndim == 3:
+                logger.warning(
+                    "Passing `img_ids` 3d torch.Tensor is deprecated. "
+                    "Please remove the batch dimension and pass it as a 2d torch Tensor"
+                )
+                img_ids = img_ids[0]
 
+            ids = torch.cat((txt_ids, img_ids), dim=0)
+            image_rotary_emb = self.pos_embed(ids)
+
+        # ============ 4. Handle attention mask ============
         if attention_mask is not None:
             if attention_mask.dim() != 2:
                 raise ValueError("attention_mask must have shape (batch, total_sequence_length).")
@@ -430,9 +602,7 @@ class FluxTransformer2DModel(_FluxTransformer2DModel):
 
             batch_size, total_len = mask.shape
             seq_img = hidden_states.shape[1]
-            seq_txt = 0
-            if txt_ids is not None:
-                seq_txt = txt_ids.shape[1] if txt_ids.ndim == 3 else txt_ids.shape[0]
+            seq_txt = encoder_hidden_states.shape[1] if encoder_hidden_states is not None else 0
 
             expected_len = seq_txt + seq_img
             if total_len < expected_len:
@@ -440,13 +610,9 @@ class FluxTransformer2DModel(_FluxTransformer2DModel):
                     f"attention_mask length {total_len} is smaller than expected sequence length {expected_len}."
                 )
 
-            # Zero-out padded queries so they do not influence attention scores
-            img_mask = mask[:, seq_txt: seq_txt + seq_img]
-            hidden_states = hidden_states.masked_fill(~img_mask.unsqueeze(-1), 0)
-            if encoder_hidden_states is not None and seq_txt > 0:
-                text_mask = mask[:, :seq_txt]
-                encoder_hidden_states = encoder_hidden_states.masked_fill(~text_mask.unsqueeze(-1), 0)
-
+            # Create additive attention mask (don't zero-out hidden_states)
+            # The mask is applied only in attention computation, not to the hidden states directly
+            # This prevents "leakage" through residual connections and other operations
             additive_mask = torch.zeros(
                 batch_size,
                 1,
@@ -458,23 +624,125 @@ class FluxTransformer2DModel(_FluxTransformer2DModel):
             additive_mask = additive_mask.masked_fill(~mask.unsqueeze(1).unsqueeze(1), float("-inf"))
             joint_attention_kwargs["attention_mask"] = additive_mask
 
-        result = super().forward(
-            hidden_states=hidden_states,
-            encoder_hidden_states=encoder_hidden_states,
-            pooled_projections=pooled_projections,
-            timestep=timestep,
-            img_ids=img_ids,
-            txt_ids=txt_ids,
-            guidance=guidance,
-            joint_attention_kwargs=joint_attention_kwargs,
-            controlnet_block_samples=controlnet_block_samples,
-            controlnet_single_block_samples=controlnet_single_block_samples,
-            return_dict=return_dict,
-            controlnet_blocks_repeat=controlnet_blocks_repeat,
-        )
+        # ============ 5. Handle IP-Adapter ============
+        if joint_attention_kwargs is not None and "ip_adapter_image_embeds" in joint_attention_kwargs:
+            ip_adapter_image_embeds = joint_attention_kwargs.pop("ip_adapter_image_embeds")
+            ip_hidden_states = self.encoder_hid_proj(ip_adapter_image_embeds)
+            joint_attention_kwargs.update({"ip_hidden_states": ip_hidden_states})
 
-        # 恢复原始 processors（会自动清理临时 RoPE 引用）
-        if per_sample_mode and original_processors is not None:
-            self._restore_processors(original_processors)
+        # ============ 6. Transformer blocks ============
+        for index_block, block in enumerate(self.transformer_blocks):
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
+                    block,
+                    hidden_states,
+                    encoder_hidden_states,
+                    temb,
+                    image_rotary_emb,
+                    joint_attention_kwargs,
+                )
+            else:
+                encoder_hidden_states, hidden_states = block(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    temb=temb,
+                    image_rotary_emb=image_rotary_emb,
+                    joint_attention_kwargs=joint_attention_kwargs,
+                )
+            # print('hidden_states shape', hidden_states.shape)
+            # return Transformer2DModelOutput(sample=hidden_states)
 
-        return result
+            # Mask padding after each block to prevent residual/MLP leakage
+            # Only apply if there's actual padding (not all True)
+            if attention_mask is not None:
+                seq_img_block = hidden_states.shape[1]
+                if txt_ids is not None:
+                    seq_txt_block = txt_ids.shape[1] if txt_ids.ndim == 3 else txt_ids.shape[0]
+                else:
+                    seq_txt_block = 0
+                img_mask_block = attention_mask[:, seq_txt_block: seq_txt_block + seq_img_block]
+                if img_mask_block.dtype != torch.bool:
+                    img_mask_block = img_mask_block > 0
+                # Skip masking if all True (no actual padding) to avoid numerical precision issues
+                if not img_mask_block.all():
+                    img_mask_block = img_mask_block.to(hidden_states.device)
+                    hidden_states = hidden_states * img_mask_block.unsqueeze(-1)
+
+            # controlnet residual
+            if controlnet_block_samples is not None:
+                import numpy as np
+                interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
+                interval_control = int(np.ceil(interval_control))
+                if controlnet_blocks_repeat:
+                    hidden_states = (
+                        hidden_states + controlnet_block_samples[index_block % len(controlnet_block_samples)]
+                    )
+                else:
+                    hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
+        # ============ 7. Single transformer blocks ============
+        for index_block, block in enumerate(self.single_transformer_blocks):
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
+                    block,
+                    hidden_states,
+                    encoder_hidden_states,
+                    temb,
+                    image_rotary_emb,
+                    joint_attention_kwargs,
+                )
+            else:
+                encoder_hidden_states, hidden_states = block(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    temb=temb,
+                    image_rotary_emb=image_rotary_emb,
+                    joint_attention_kwargs=joint_attention_kwargs,
+                )
+
+            # Mask padding after each block to prevent residual/MLP leakage
+            # Only apply if there's actual padding (not all True)
+            if attention_mask is not None:
+                seq_img_block = hidden_states.shape[1]
+                if txt_ids is not None:
+                    seq_txt_block = txt_ids.shape[1] if txt_ids.ndim == 3 else txt_ids.shape[0]
+                else:
+                    seq_txt_block = 0
+                img_mask_block = attention_mask[:, seq_txt_block: seq_txt_block + seq_img_block]
+                if img_mask_block.dtype != torch.bool:
+                    img_mask_block = img_mask_block > 0
+                # Skip masking if all True (no actual padding) to avoid numerical precision issues
+                if not img_mask_block.all():
+                    img_mask_block = img_mask_block.to(hidden_states.device)
+                    hidden_states = hidden_states * img_mask_block.unsqueeze(-1)
+
+            # controlnet residual
+            if controlnet_single_block_samples is not None:
+                import numpy as np
+                interval_control = len(self.single_transformer_blocks) / len(controlnet_single_block_samples)
+                interval_control = int(np.ceil(interval_control))
+                hidden_states = hidden_states + controlnet_single_block_samples[index_block // interval_control]
+
+        # ============ 8. Output projection ============
+        hidden_states = self.norm_out(hidden_states, temb)
+        output = self.proj_out(hidden_states)
+
+        # Mask padding regions in the output
+        # Only apply if there's actual padding (not all True)
+        if attention_mask is not None:
+            # Recompute sequence lengths for output masking
+            seq_img_out = output.shape[1]
+            seq_txt_out = encoder_hidden_states.shape[1] if encoder_hidden_states is not None else 0
+            img_mask = attention_mask[:, seq_txt_out: seq_txt_out + seq_img_out]
+            if img_mask.dtype != torch.bool:
+                img_mask = img_mask > 0
+            # Skip masking if all True (no actual padding)
+            if not img_mask.all():
+                output = output.masked_fill(~img_mask.unsqueeze(-1), 0)
+
+        if USE_PEFT_BACKEND:
+            unscale_lora_layers(self, lora_scale)
+
+        if not return_dict:
+            return (output,)
+
+        return Transformer2DModelOutput(sample=output)
