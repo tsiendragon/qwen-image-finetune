@@ -433,6 +433,8 @@ class ImageProcessor:
             new_controls = []
             for i in range(len(controls)):
                 if controls_size is not None:
+                    if i + 1 >= len(controls_size):
+                        print('controls_size in preprocess', controls_size, "i", i)
                     controls_size_i = controls_size[i + 1]  # index starting from 1,
                 else:
                     controls_size_i = None
