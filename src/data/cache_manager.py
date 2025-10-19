@@ -110,9 +110,9 @@ class EmbeddingCacheManager:
             embedding = torch.load(cache_path, map_location="cpu", weights_only=False)
             data[embedding_key] = embedding
 
-        # Load img_shapes
-        if "img_shapes" in metadata:
-            data["img_shapes"] = torch.tensor(metadata["img_shapes"])
+        # # Load img_shapes
+        # if "img_shapes" in metadata:
+        #     data["img_shapes"] = torch.tensor(metadata["img_shapes"])
 
         if replace_empty_embeddings:
             for key in prompt_empty_drop_keys:
