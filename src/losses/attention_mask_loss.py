@@ -193,14 +193,14 @@ class AttentionMaskMseLoss(nn.Module):
         # Step 3: Edit mask -> foreground/background weighting
         if edit_mask is None:
             # Treat all tokens as foreground
-            m = torch.ones_like(attention_mask, dtype=torch.float32)
+            m = torch.ones_like(attention_mask, dtype=torch.float32, device=model_pred.device)
         else:
             if edit_mask.shape != (B, T):
                 raise ValueError(
                     f"edit_mask shape {edit_mask.shape} incompatible with "
                     f"attention_mask shape {attention_mask.shape}"
                 )
-            m = edit_mask.float()
+            m = edit_mask.float().to(model_pred.device)
 
         # Compute edit weights: foreground gets higher weight
         edit_weight = (
@@ -210,11 +210,11 @@ class AttentionMaskMseLoss(nn.Module):
         weighted_loss = element_loss * edit_weight  # [B, T, C]
 
         # Step 4: Apply attention mask to filter padding
-        attn = attention_mask.float().unsqueeze(-1)  # [B, T, 1]
+        attn = attention_mask.float().unsqueeze(-1).to(model_pred.device)  # [B, T, 1]
         masked_loss = weighted_loss * attn  # [B, T, C]
 
         # Step 5: Average over channels first -> token-level loss
-        token_loss = masked_loss.mean(dim=2)  # [B, T]
+        token_loss = masked_loss.mean(dim=2).to(model_pred.device)  # [B, T]
 
         # Step 6: Return based on reduction mode
         if self.reduction == 'none':

@@ -61,6 +61,11 @@ class MaskEditLoss(nn.Module):
             torch.Tensor - 加权后的loss值
         """
         # 计算基础element-wise loss
+        print('shape of model_pred', model_pred.shape)
+        print('shape of target', target.shape)
+        print('shape of edit_mask', edit_mask.shape)
+        if weighting is not None:
+            print('shape of weighting', weighting.shape)
         element_loss = (model_pred.float() - target.float()) ** 2
 
         # 如果有weighting，应用到element_loss
