@@ -19,8 +19,8 @@ from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
 # calculate_dimensions,
 # from src.loss.edit_mask_loss import map_mask_to_latent
 from src.trainer.base_trainer import BaseTrainer
-from src.utils.tools import infer_image_tensor, extract_batch_field
-from src.utils.images import make_image_devisible, make_image_shape_devisible, resize_bhw, calculate_best_resolution
+from src.utils.tools import infer_image_tensor, pad_latents_for_multi_res
+from src.utils.images import make_image_devisible, make_image_shape_devisible, calculate_best_resolution
 # image_adjust_best_resolution
 
 
@@ -470,6 +470,7 @@ class QwenImageEditTrainer(BaseTrainer):
 
         if "control_latents" in batch:
             batch["control_latents"] = torch.cat(batch["control_latents"], dim=1)
+        return batch
 
         # if self.config.loss.mask_loss and "mask" in batch:
         #     mask = batch["mask"]
@@ -478,10 +479,15 @@ class QwenImageEditTrainer(BaseTrainer):
         #     batch["mask"] = map_mask_to_latent(batch["mask"])
         # need to convert img_shapes from pixel space to latent shapce
 
-        img_shapes = batch["img_shapes"]
-        img_shapes = self.convert_img_shapes_to_latent_space(img_shapes)
-        batch["img_shapes"] = img_shapes
-        return batch
+        # img_shapes = batch["img_shapes"]
+        # # img_shapes = self.convert_img_shapes_to_latent_space(img_shapes)
+        # img_shapes_latent = [
+        #     self.convert_img_shapes_to_latent(img_shape, self.vae_scale_factor, 2)
+        #     for img_shape in img_shapes
+        # ]
+
+        # batch["img_shapes_latent"] = img_shapes_latent
+        # return batch
 
     def cache_step(
         self,
@@ -494,7 +500,7 @@ class QwenImageEditTrainer(BaseTrainer):
         """
 
         image_latents = data["image_latents"].detach().cpu()[0]
-        control_latents = data["control_latents"].detach().cpu()[0]
+        control_latents = data["control_latents"].detach().cpu()[0]  # different are con
         prompt_embeds = data["prompt_embeds"].detach().cpu()[0]
         prompt_embeds_mask = data["prompt_embeds_mask"].detach().cpu()[0]
         empty_prompt_embeds = data["empty_prompt_embeds"].detach().cpu()[0]
@@ -538,289 +544,75 @@ class QwenImageEditTrainer(BaseTrainer):
             raise ValueError("Cache format error: img_shapes field is missing. Please regenerate cache.")
         return batch
 
-    def _postprocess_image(self, image_tensor: torch.Tensor) -> np.ndarray:
-        """Post-process output images"""
-        image = image_tensor.cpu().float()
-        image = image.squeeze(2).squeeze(0)  # [C,H,W]
-        image = (image / 2 + 0.5).clamp(0, 1)  # Convert from [-1,1] to [0,1]
-        image = image.permute(1, 2, 0).numpy()  # [H,W,C]
-        image = (image * 255).astype(np.uint8)
-        return image
+    # def _postprocess_image(self, image_tensor: torch.Tensor) -> np.ndarray:
+    #     """Post-process output images"""
+    #     image = image_tensor.cpu().float()
+    #     image = image.squeeze(2).squeeze(0)  # [C,H,W]
+    #     image = (image / 2 + 0.5).clamp(0, 1)  # Convert from [-1,1] to [0,1]
+    #     image = image.permute(1, 2, 0).numpy()  # [H,W,C]
+    #     image = (image * 255).astype(np.uint8)
+    #     return image
 
-    # def _get_image_shapes(self, embeddings: dict, batch_size: int) -> List[List[Tuple[int, int, int]]]:
-    #     """
-    #     embeddings comes from prepare_embeddings.
-    #     The image shapes is made of, the first one is the target image shape, second is control, and additional controls
-    #     ```python
+    # def convert_img_shapes_to_latent_space(self, img_shapes: List[List[Tuple[int, int, int]]]) -> List[List[Tuple[int, int, int]]]:
+    #     """Convert image shapes from pixel space to latent space
     #     img_shapes = [
     #             [
     #                 (1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2),
     #                 (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2),
     #                 (1, height_control_1 // self.vae_scale_factor // 2, width_control_1 // self.vae_scale_factor // 2),
     #             ]
-    #         ]
-    #     ```
-    #     hiehgt_image, width_image, height_control, width_control, height_control_1, width_control_1
+    #     ]
     #     """
-    #     assert "height" in embeddings and "width" in embeddings, "height_image and width_image must be in embeddings"
-    #     img_shapes = []
-    #     height_image = embeddings["height"]
-    #     width_image = embeddings["width"]
-    #     img_shapes.append((1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2))
-    #     if "height_control" in embeddings and "width_control" in embeddings:
-    #         height_control = embeddings["height_control"]
-    #         width_control = embeddings["width_control"]
-    #         img_shapes.append(
-    #             (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2)
-    #         )
-    #         num_additional_controls = (
-    #             embeddings["n_controls"] if isinstance(embeddings["n_controls"], int) else embeddings["n_controls"][0]
-    #         )
-    #         for i in range(num_additional_controls):
-    #             additional_control_key = f"control_{i+1}"
-    #             if additional_control_key in embeddings:
-    #                 height_control_i = embeddings[f"height_control_{i+1}"]
-    #                 width_control_i = embeddings[f"width_control_{i+1}"]
-    #                 img_shapes.append(
-    #                     (
-    #                         1,
-    #                         height_control_i // self.vae_scale_factor // 2,
-    #                         width_control_i // self.vae_scale_factor // 2,
-    #                     )
-    #                 )
-    #     return [img_shapes] * batch_size
-
-    def convert_img_shapes_to_latent_space(self, img_shapes: List[List[Tuple[int, int, int]]]) -> List[List[Tuple[int, int, int]]]:
-        """Convert image shapes from pixel space to latent space
-        img_shapes = [
-                [
-                    (1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2),
-                    (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2),
-                    (1, height_control_1 // self.vae_scale_factor // 2, width_control_1 // self.vae_scale_factor // 2),
-                ]
-        ]
-        """
-        new_shapes = []
-        for shape_per_batch in img_shapes:
-            new_shape_per_batch = []
-            for shape in shape_per_batch:
-                new_shape_per_batch.append(
-                    (1, shape[1] // self.vae_scale_factor // 2, shape[2] // self.vae_scale_factor // 2)
-                )
-            new_shapes.append(new_shape_per_batch)
-        return new_shapes
-
-    def _get_image_shapes_multi_resolution(
-        self, embeddings: dict, batch_size: int
-    ) -> List[List[Tuple[int, int, int]]]:
-        """Get image shapes for multi-resolution mode (per-sample shapes)
-
-        This method extends _get_image_shapes to support per-sample different
-        resolutions, which is required for multi-resolution training.
-
-        Args:
-            embeddings: Batch embeddings containing shape information
-            batch_size: Number of samples in the batch
-
-        Returns:
-            List[List[Tuple]] where:
-            - Outer list: batch dimension (length = batch_size)
-            - Inner list: images in this sample [target, control, control_1, ...]
-            - Tuple: (1, H_latent, W_latent) for each image
-
-        Example:
-            >>> embeddings = {
-            ...     "img_shapes": [
-            ...         [(1, 32, 64), (1, 32, 64)],  # Sample 0: target + control
-            ...         [(1, 48, 48), (1, 48, 48)],  # Sample 1: different size
-            ...     ]
-            ... }
-            >>> shapes = trainer._get_image_shapes_multi_resolution(embeddings, 2)
-            >>> shapes  # [[(1, 32, 64), (1, 32, 64)], [(1, 48, 48), (1, 48, 48)]]
-        """
-        # Priority 1: Use img_shapes from collate/cache
-        if "img_shapes" in embeddings:
-            # Format: List[List[(1, H', W')]]
-            img_shapes = embeddings["img_shapes"]
-
-            # Handle different formats (list, tensor, etc.)
-            if isinstance(img_shapes, torch.Tensor):
-                # Convert tensor to nested list
-                # Assume shape: [batch_size, num_images, 3]
-                img_shapes = img_shapes.tolist()
-                # Restructure to nested list format
-                result = []
-                for b in range(batch_size):
-                    sample_shapes = [tuple(img_shapes[b][i]) for i in range(len(img_shapes[b]))]
-                    result.append(sample_shapes)
-                return result
-
-            # Already in correct format: List[List[Tuple]]
-            if len(img_shapes) == batch_size:
-                return img_shapes
-
-            # Fallback: single shape, replicate for all samples
-            if len(img_shapes) == 1:
-                return img_shapes * batch_size
-
-        # Priority 2: Reconstruct from height/width fields (runtime, non-cache mode)
-        result = []
-        for b in range(batch_size):
-            img_shapes_sample = []
-
-            # Target image
-            height = extract_batch_field(embeddings, "height", b)
-            width = extract_batch_field(embeddings, "width", b)
-            img_shapes_sample.append((
-                1,
-                height // self.vae_scale_factor // 2,
-                width // self.vae_scale_factor // 2,
-            ))
-
-            # Control images (if exist)
-            if "height_control" in embeddings and "width_control" in embeddings:
-                height_ctrl = extract_batch_field(embeddings, "height_control", b)
-                width_ctrl = extract_batch_field(embeddings, "width_control", b)
-                img_shapes_sample.append((
-                    1,
-                    height_ctrl // self.vae_scale_factor // 2,
-                    width_ctrl // self.vae_scale_factor // 2,
-                ))
-
-                # Additional control images
-                num_controls = extract_batch_field(embeddings, "n_controls", b) if "n_controls" in embeddings else 0
-                for i in range(num_controls):
-                    h_key = f"height_control_{i+1}"
-                    w_key = f"width_control_{i+1}"
-                    if h_key in embeddings and w_key in embeddings:
-                        h_i = extract_batch_field(embeddings, h_key, b)
-                        w_i = extract_batch_field(embeddings, w_key, b)
-                        img_shapes_sample.append((
-                            1,
-                            h_i // self.vae_scale_factor // 2,
-                            w_i // self.vae_scale_factor // 2,
-                        ))
-
-            result.append(img_shapes_sample)
-
-        return result
-
-    def _forward_qwen_multi_resolution(
-        self,
-        packed_input: torch.Tensor,
-        prompt_embeds: torch.Tensor,
-        prompt_embeds_mask: torch.Tensor,
-        timesteps: torch.Tensor,
-        img_shapes: list,
-        txt_seq_lens: list,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass for Qwen model in multi-resolution mode.
-
-        This method handles variable-resolution images by:
-        1. Padding latents to uniform length
-        2. Generating per-sample RoPE frequencies
-        3. Creating attention mask to ignore padding
-        4. Calling model with pre-computed RoPE
-
-        Args:
-            packed_input: Noisy input + control latents [B, seq_i, C] (may be variable length)
-            prompt_embeds: Text embeddings [B, txt_len, D]
-            prompt_embeds_mask: Text attention mask [B, txt_len]
-            timesteps: Timesteps for diffusion [B]
-            img_shapes: Per-sample image shapes List[List[Tuple]]
-            txt_seq_lens: Text sequence lengths [B]
-
-        Returns:
-            model_pred: Model predictions [B, max_seq, C]
-            img_attention_mask: Image attention mask [B, max_seq] (True=valid, False=padded)
-        """
-        device = packed_input.device
-        dtype = packed_input.dtype
-        batch_size = packed_input.shape[0]
-
-        # Calculate sequence lengths for each sample
-        seq_lens = [shapes[0][1] * shapes[0][2] * 2 for shapes in img_shapes]  # *2 for target+control
-        max_seq = max(seq_lens)
-
-        # Pad packed_input if needed
-        if packed_input.shape[1] < max_seq:
-            # Convert to list for padding
-            packed_list = [packed_input[i, :seq_lens[i]] for i in range(batch_size)]
-            padded_packed, img_attention_mask = self._pad_latents_for_multi_res(packed_list, max_seq)
-        else:
-            padded_packed = packed_input
-            # Create attention mask
-            img_attention_mask = torch.zeros(batch_size, max_seq, device=device, dtype=torch.bool)
-            for i in range(batch_size):
-                img_attention_mask[i, :seq_lens[i]] = True
-
-        # Generate per-sample RoPE frequencies
-        img_freqs_list = []
-        txt_freqs = None
-
-        for b in range(batch_size):
-            # Generate RoPE for this sample
-            img_freqs_b, txt_freqs_b = self.dit.pos_embed(
-                [img_shapes[b]], [txt_seq_lens[b]], device=device
-            )
-
-            # Pad img_freqs to max_seq
-            rope_dim = img_freqs_b.shape[-1]
-            img_freqs_padded = torch.zeros(max_seq, rope_dim, device=device, dtype=img_freqs_b.dtype)
-            img_freqs_padded[:img_freqs_b.shape[0]] = img_freqs_b
-            img_freqs_list.append(img_freqs_padded)
-
-            # txt_freqs is the same for all samples (if txt_seq_lens are the same)
-            if txt_freqs is None:
-                txt_freqs = txt_freqs_b
-
-        # Stack per-sample RoPE into 3D tensor (B, max_seq, rope_dim)
-        img_freqs_batched = torch.stack(img_freqs_list, dim=0)
-        image_rotary_emb = (img_freqs_batched, txt_freqs)
-
-        # Create 4D attention mask for scaled_dot_product_attention
-        # Shape: (B, 1, 1, txt_len + max_seq)
-        txt_len = prompt_embeds.shape[1]
-        joint_seq = txt_len + max_seq
-        attention_mask = torch.zeros(batch_size, joint_seq, device=device, dtype=torch.bool)
-
-        for i in range(batch_size):
-            attention_mask[i, :txt_seq_lens[i]] = True  # text tokens
-            attention_mask[i, txt_len:txt_len + seq_lens[i]] = True  # valid image tokens
-
-        # Convert to 4D: (B, 1, 1, joint_seq)
-        attention_mask_4d = attention_mask.view(batch_size, 1, 1, joint_seq)
-
-        # Forward through model with pre-computed RoPE
-        model_pred = self.dit(
-            hidden_states=padded_packed,
-            timestep=timesteps / 1000,
-            guidance=None,
-            encoder_hidden_states=prompt_embeds,
-            encoder_hidden_states_mask=prompt_embeds_mask,
-            image_rotary_emb=image_rotary_emb,  # Pre-computed per-sample RoPE
-            attention_kwargs={'attention_mask': attention_mask_4d},
-            return_dict=False,
-        )[0]
-
-        return model_pred, img_attention_mask
+    #     new_shapes = []
+    #     for shape_per_batch in img_shapes:
+    #         new_shape_per_batch = []
+    #         for shape in shape_per_batch:
+    #             new_shape_per_batch.append(
+    #                 (1, shape[1] // self.vae_scale_factor // 2, shape[2] // self.vae_scale_factor // 2)
+    #             )
+    #         new_shapes.append(new_shape_per_batch)
+    #     return new_shapes
+    # has this function in base trainer
 
     def _compute_loss(self, embeddings: dict) -> torch.Tensor:
+        """
+        Compute training loss with support for both shared and multi-resolution modes.
+        The method automatically detects whether to use multi-resolution mode based on:
+        1. Configuration: multi_resolutions must be configured
+        2. Batch structure: batch_size > 1 and samples have different resolutions
+
+        For multi-resolution mode, it applies padding and attention masking to handle
+        variable-length sequences efficiently.
+        """
+        # Check if multi-resolution mode should be used
+        use_multi_res = self.should_use_multi_resolution_mode(embeddings)
+        if use_multi_res:
+            return self._compute_loss_multi_resolution_mode(embeddings)
+        else:
+            return self._compute_loss_shared_mode(embeddings)
+
+    def _compute_loss_shared_mode(self, embeddings: dict) -> torch.Tensor:
+        """
+        Compute loss for shared resolution mode (all samples have the same resolution).
+        This is the original and simpler computation path without padding/masking.
+        """
         device = self.accelerator.device
         image_latents = embeddings["image_latents"].to(self.weight_dtype).to(device)
         control_latents = embeddings["control_latents"].to(self.weight_dtype).to(device)
         prompt_embeds = embeddings["prompt_embeds"].to(self.weight_dtype).to(device)
         prompt_embeds_mask = embeddings["prompt_embeds_mask"].to(dtype=torch.int64).to(device)
-        img_shapes = embeddings["img_shapes"]  # must from the cache embeddings
+        img_shapes = embeddings["img_shapes"]
+        img_shapes_latent = [
+            self.convert_img_shapes_to_latent(img_shape, self.vae_scale_factor, 2)
+            for img_shape in img_shapes
+        ]
+
         batch_size = image_latents.shape[0]
-        if "edit_mask" in embeddings:  # already has edit_mask in collate function
+
+        if "edit_mask" in embeddings:
             edit_mask = embeddings["edit_mask"]
         else:
             edit_mask = None
-
-        # ✅ Use BaseTrainer's multi-resolution detection
-        is_multi_res = self.should_use_multi_resolution_mode(embeddings)
 
         with torch.no_grad():
             noise = torch.randn_like(image_latents, device=device, dtype=self.weight_dtype)
@@ -841,47 +633,161 @@ class QwenImageEditTrainer(BaseTrainer):
             packed_input = torch.cat([noisy_model_input, control_latents], dim=1)
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
 
-        # ✅ Multi-resolution mode: use padding + per-sample RoPE
-        if is_multi_res:
-            model_pred, img_attention_mask = self._forward_qwen_multi_resolution(
-                packed_input=packed_input,
-                prompt_embeds=prompt_embeds,
-                prompt_embeds_mask=prompt_embeds_mask,
-                timesteps=timesteps,
-                img_shapes=img_shapes,
-                txt_seq_lens=txt_seq_lens,
-            )
-        else:
-            # Original concatenation mode
-            model_pred = self.dit(
-                hidden_states=packed_input,
-                timestep=timesteps / 1000,
-                guidance=None,
-                encoder_hidden_states_mask=prompt_embeds_mask,
-                encoder_hidden_states=prompt_embeds,
-                img_shapes=img_shapes,
-                txt_seq_lens=txt_seq_lens,
-                return_dict=False,
-            )[0]
-            img_attention_mask = None
+        model_pred = self.dit(
+            hidden_states=packed_input,
+            timestep=timesteps / 1000,
+            guidance=None,
+            encoder_hidden_states_mask=prompt_embeds_mask,
+            encoder_hidden_states=prompt_embeds,
+            img_shapes=img_shapes_latent,
+            txt_seq_lens=txt_seq_lens,
+            return_dict=False,
+        )[0]
 
         model_pred = model_pred[:, : image_latents.size(1)]
         weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
         target = noise - image_latents
+        # pred shape [B, seq, C], target shape [B, seq, C]
+        loss = self.forward_loss(model_pred, target, weighting, edit_mask)
 
-        # ✅ Use BaseTrainer's loss computation for multi-resolution
-        if is_multi_res and img_attention_mask is not None:
-            # Normalize loss by valid tokens only
-            loss = self._compute_loss_multi_resolution(
-                model_pred=model_pred,
-                target=target,
-                attention_mask=img_attention_mask,
-                edit_mask=edit_mask,
-                weighting=weighting,
-            )
+        return loss
+
+    def _compute_loss_multi_resolution_mode(self, embeddings: dict) -> torch.Tensor:
+        """
+        Compute loss for multi-resolution mode where samples have different resolutions.
+        Following Flux Kontext approach:
+        1. Extract valid latents (remove padding) per sample
+        2. Add noise to image latents per sample
+        3. Concat noisy_image and control_latent per sample
+        4. Pad all samples together and create attention mask
+        """
+        device = self.accelerator.device
+        image_latents = embeddings["image_latents"].to(self.weight_dtype).to(device)
+        control_latents = embeddings["control_latents"].to(self.weight_dtype).to(device)
+        prompt_embeds = embeddings["prompt_embeds"].to(self.weight_dtype).to(device)
+        prompt_embeds_mask = embeddings["prompt_embeds_mask"].to(dtype=torch.int64).to(device)
+        img_shapes = embeddings["img_shapes"]
+        img_shapes_latent = [
+            self.convert_img_shapes_to_latent(img_shape, self.vae_scale_factor, 2)
+            for img_shape in img_shapes
+        ]
+
+        batch_size = image_latents.shape[0]
+
+        if "edit_mask" in embeddings:
+            edit_mask = embeddings["edit_mask"]
         else:
-            # pred shape [B, seq, C], target shape [B, seq, C]
-            loss = self.forward_loss(model_pred, target, weighting, edit_mask)
+            edit_mask = None
+
+        # Calculate actual sequence lengths for each sample
+        seq_len_image = [shapes[0][1] * shapes[0][2] for shapes in img_shapes_latent]
+        # Control latents include all control images
+        seq_len_control = []
+        for shapes in img_shapes_latent:
+            control_seq = sum([shapes[i][1] * shapes[i][2] for i in range(1, len(shapes))])
+            seq_len_control.append(control_seq)
+
+        txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
+
+        with torch.no_grad():
+            # Prepare containers for per-sample processing
+            latent_model_input_list = []
+            noise_list = []
+            timesteps_list = []
+            sigmas_list = []
+            image_latents_list = []
+            image_latent_mask = torch.zeros(batch_size, max(seq_len_image), device=device, dtype=self.weight_dtype)
+
+            # Sample timesteps (one per sample)
+            u = compute_density_for_timestep_sampling(
+                weighting_scheme="none",
+                batch_size=batch_size,
+                logit_mean=0.0,
+                logit_std=1.0,
+                mode_scale=1.29,
+            )
+            indices = (u * self.scheduler.config.num_train_timesteps).long()
+            timesteps = self.scheduler.timesteps[indices].to(device=device)
+
+            # Process each sample individually (like Flux Kontext)
+            for i in range(batch_size):
+                seq_len_image_i = seq_len_image[i]
+                seq_len_control_i = seq_len_control[i]
+
+                # Extract valid latents (remove padding)
+                image_latent = image_latents[i, :seq_len_image_i]
+                control_latent = control_latents[i, :seq_len_control_i]
+
+                # Generate noise for this sample
+                noise = torch.randn_like(image_latent, device=device, dtype=self.weight_dtype)
+                noise_list.append(noise)
+                image_latents_list.append(image_latent)
+
+                # Get timestep and sigma for this sample
+                t = timesteps[i]
+                timesteps_list.append(t)
+                sigma = self._get_sigmas(t.unsqueeze(0), n_dim=3, dtype=image_latent.dtype)
+                sigmas_list.append(sigma)
+
+                # Add noise to image latent
+                noisy_image = (1.0 - sigma) * image_latent + sigma * noise
+
+                # Concat [noisy_image, control] for this sample
+                latent_model_input = torch.cat([noisy_image, control_latent], dim=0)  # [seq_image_i + seq_control_i, C]
+                latent_model_input_list.append(latent_model_input)
+
+                # Mark valid image positions for loss computation
+                image_latent_mask[i, :seq_len_image_i] = 1
+
+            timesteps = torch.stack(timesteps_list)
+            sigmas = torch.stack([s.squeeze() for s in sigmas_list])
+
+        # Pad all samples together and create attention mask
+        padded_latent_input, img_attention_mask = pad_latents_for_multi_res(
+            latent_model_input_list, max_seq_len=None
+        )
+
+        # Build complete attention mask: [batch, seq_txt + seq_img]
+        seq_txt = prompt_embeds.shape[1]
+        seq_img = img_attention_mask.shape[1]
+
+        full_attention_mask = torch.ones(
+            batch_size, seq_txt + seq_img, device=device, dtype=torch.bool
+        )
+        full_attention_mask[:, seq_txt:] = img_attention_mask
+
+        # Forward through model with attention mask
+        model_pred = self.dit(
+            hidden_states=padded_latent_input,
+            timestep=timesteps / 1000,
+            guidance=None,
+            encoder_hidden_states=prompt_embeds,
+            encoder_hidden_states_mask=prompt_embeds_mask,
+            img_shapes=img_shapes_latent,
+            txt_seq_lens=txt_seq_lens,
+            attention_mask=full_attention_mask,
+            return_dict=False,
+        )[0]
+
+        # Pad noise and image_latents for loss computation
+        max_seq = max(seq_len_image)
+        noise_padded, _ = pad_latents_for_multi_res(noise_list, max_seq_len=max_seq)
+        image_latents_padded, _ = pad_latents_for_multi_res(image_latents_list, max_seq_len=max_seq)
+
+        # Extract image predictions only (first part of sequence)
+        model_pred = model_pred[:, :max_seq]
+
+        weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
+        target = noise_padded - image_latents_padded
+
+        # Compute loss with attention mask to ignore padded regions
+        loss = self._compute_loss_multi_resolution(
+            model_pred=model_pred,
+            target=target,
+            attention_mask=image_latent_mask,  # Use image_latent_mask for loss computation
+            edit_mask=edit_mask,
+            weighting=weighting,
+        )
 
         return loss
 
@@ -1100,7 +1006,6 @@ class QwenImageEditTrainer(BaseTrainer):
             width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
 
         logging.info(f'target shape for generation {width}, {height}')
-
 
         if additional_controls:
             n_controls = len(additional_controls[0])
