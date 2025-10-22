@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a PyTorch-based framework for fine-tuning vision-language models (Qwen-Image-Edit and FLUX Kontext) using LoRA (Low-Rank Adaptation). The codebase follows a modular trainer pattern:
 
 - **Base Trainer System**: `src/trainer/base_trainer.py` defines the abstract interface
-- **Model-specific Trainers**: 
+- **Model-specific Trainers**:
   - `QwenImageEditTrainer` in `src/trainer/qwen_image_edit_trainer.py`
   - `FluxKontextLoraTrainer` in `src/trainer/flux_kontext_trainer.py`
 - **Dynamic Trainer Loading**: `src/main.py` imports trainers based on config `train.trainer` field

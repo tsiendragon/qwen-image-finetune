@@ -12,9 +12,9 @@ import torch
 from pathlib import Path
 
 # from diffusers.models import FluxTransformer2DModel as OriginalFluxTransformer2DModel
-from src.models.transformer_flux import FluxTransformer2DModel as OriginalFluxTransformer2DModel
-from src.models.transformer_flux_custom import FluxTransformer2DModel as CustomFluxTransformer2DModel
-# from src.models.transformer_flux_custom_v2 import FluxTransformer2DModelVarSeq as CustomFluxTransformer2DModel
+from qflux.models.transformer_flux import FluxTransformer2DModel as OriginalFluxTransformer2DModel
+from qflux.models.transformer_flux_custom import FluxTransformer2DModel as CustomFluxTransformer2DModel
+# from qflux.models.transformer_flux_custom_v2 import FluxTransformer2DModelVarSeq as CustomFluxTransformer2DModel
 
 
 class TestFluxTransformerEquivalence:

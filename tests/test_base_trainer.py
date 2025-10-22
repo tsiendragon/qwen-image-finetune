@@ -5,7 +5,7 @@ Tests for BaseTrainer abstract class.
 import pytest
 import torch
 from unittest.mock import Mock
-from src.base_trainer import BaseTrainer
+from qflux.base_trainer import BaseTrainer
 
 
 class MockTrainer(BaseTrainer):

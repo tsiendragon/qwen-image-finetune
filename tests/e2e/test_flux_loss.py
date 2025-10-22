@@ -12,9 +12,9 @@ import pytest
 import torch
 import logging
 from pathlib import Path
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.data.config import load_config_from_yaml
-from src.utils.tools import pad_latents_for_multi_res
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.data.config import load_config_from_yaml
+from qflux.utils.tools import pad_latents_for_multi_res
 
 logger = logging.getLogger(__name__)
 
@@ -436,5 +436,3 @@ class TestFluxKontextLossComputation:
         model_losses = sum(model_losses)/2
         assert abs(loss.item() - model_losses) < 1e-4, f"Loss mismatch: {loss.item()} != {model_losses}"
         print('Loss matched: {loss.item()} ~= {model_losses}')
-
-

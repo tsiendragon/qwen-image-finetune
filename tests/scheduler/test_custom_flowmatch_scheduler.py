@@ -11,7 +11,7 @@ This module tests:
 import pytest
 import torch
 import numpy as np
-from src.scheduler.custom_flowmatch_scheduler import (
+from qflux.scheduler.custom_flowmatch_scheduler import (
     CustomFlowMatchEulerDiscreteScheduler,
     calculate_shift,
     scheduler_config
@@ -213,4 +213,3 @@ class TestSchedulerIntegration:
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v"])
-

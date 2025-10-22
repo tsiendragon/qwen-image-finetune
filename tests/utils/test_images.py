@@ -2,7 +2,7 @@ import pytest
 import torch
 import numpy as np
 import PIL.Image
-from src.utils.images import (
+from qflux.utils.images import (
     resize_bhw,
     make_image_shape_devisible,
     make_image_devisible,

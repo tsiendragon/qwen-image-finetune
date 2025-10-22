@@ -17,8 +17,8 @@ from datasets import load_dataset
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.data.config import load_config_from_yaml
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.data.config import load_config_from_yaml
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

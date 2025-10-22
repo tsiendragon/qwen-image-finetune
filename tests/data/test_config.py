@@ -4,7 +4,7 @@
 
 import os
 import pytest
-from src.data.config import load_config_from_yaml
+from qflux.data.config import load_config_from_yaml
 
 
 class TestConfig:

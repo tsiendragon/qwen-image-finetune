@@ -10,9 +10,9 @@ class TestImageProcessor:
 
     def test_select_pixels_candidate(self):
         """测试选择最佳像素数"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
-        from src.utils.images import calculate_best_resolution
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
+        from qflux.utils.images import calculate_best_resolution
 
         config = ImageProcessorInitArgs(
             multi_resolutions=["512*512", "640*640", "768*512", "832*576"],
@@ -46,8 +46,8 @@ class TestImageProcessor:
 
     def test_process_image_multi_resolution(self):
         """测试 multi_resolutions 模式的图像处理"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         config = ImageProcessorInitArgs(
             multi_resolutions=["512*512", "640*640", "768*512", "832*576"],
@@ -73,8 +73,8 @@ class TestImageProcessor:
 
     def test_process_image_resize(self):
         """测试 resize 模式的图像处理"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         target_size = (512, 768)  # (height, width)
         config = ImageProcessorInitArgs(
@@ -94,8 +94,8 @@ class TestImageProcessor:
 
     def test_process_image_center_crop(self):
         """测试 center_crop 模式的图像处理"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         target_size = (512, 512)  # (height, width)
         config = ImageProcessorInitArgs(
@@ -115,8 +115,8 @@ class TestImageProcessor:
 
     def test_process_image_center_padding(self):
         """测试 center_padding 模式的图像处理"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         target_size = (1024, 1024)  # (height, width)
         config = ImageProcessorInitArgs(
@@ -142,8 +142,8 @@ class TestImageProcessor:
 
     def test_process_image_right_padding(self):
         """测试 right_padding 模式的图像处理"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         target_size = (1024, 1024)  # (height, width)
         config = ImageProcessorInitArgs(
@@ -169,8 +169,8 @@ class TestImageProcessor:
 
     def test_process_image_fixed_pixels(self):
         """测试 fixed_pixels 模式的图像处理"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         target_pixels = 512 * 512
         config = ImageProcessorInitArgs(
@@ -196,8 +196,8 @@ class TestImageProcessor:
 
     def test_process_image_grayscale(self):
         """测试灰度图像的处理"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         target_size = (512, 512)
         config = ImageProcessorInitArgs(
@@ -217,8 +217,8 @@ class TestImageProcessor:
 
     def test_resize_controls_mask_to_image_disabled(self):
         """测试禁用 resize_controls_mask_to_image 时的行为"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         target_size = (512, 512)
         config = ImageProcessorInitArgs(
@@ -247,8 +247,8 @@ class TestImageProcessor:
 
     def test_resize_controls_mask_with_same_size(self):
         """测试当 control 和 mask 已经与 image 同尺寸时的行为"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         target_size = (512, 512)
         config = ImageProcessorInitArgs(

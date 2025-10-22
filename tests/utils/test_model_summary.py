@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from src.utils.model_summary import (
+from qflux.utils.model_summary import (
     gather_model_stats,
     print_model_summary_table,
     _dtype_tag,

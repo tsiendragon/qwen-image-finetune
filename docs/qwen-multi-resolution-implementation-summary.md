@@ -324,4 +324,3 @@ else:
 - 统一的 `extract_batch_field` 工具
 - 基于相对误差的严格验证标准
 - 完整的 patch 机制，无需修改原始模型代码
-

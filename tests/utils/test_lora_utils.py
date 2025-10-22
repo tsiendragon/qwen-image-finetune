@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import tempfile
 import safetensors.torch
-from src.utils.lora_utils import classify_lora_weight, get_lora_layers, FpsLogger
+from qflux.utils.lora_utils import classify_lora_weight, get_lora_layers, FpsLogger
 
 
 class TestClassifyLoraWeight:

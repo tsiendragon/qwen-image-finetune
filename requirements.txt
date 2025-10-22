@@ -32,3 +32,9 @@ pydantic==2.11.7
 blake3
 pillow
 rich
+pre-commit
+ruff
+mypy
+dotenv
+types-tabulate
+types-PyYAML

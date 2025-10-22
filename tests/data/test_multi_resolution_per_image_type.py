@@ -2,8 +2,8 @@
 import pytest
 import numpy as np
 from unittest.mock import patch, MagicMock
-from src.data.config import ImageProcessorInitArgs
-from src.data.preprocess import ImageProcessor
+from qflux.data.config import ImageProcessorInitArgs
+from qflux.data.preprocess import ImageProcessor
 
 
 class TestMultiResolutionPerImageType:
@@ -234,5 +234,3 @@ class TestMultiResolutionPerImageType:
             # Mask should have similar resolution to image (both use target candidates)
             assert processed["mask"].shape[0] == processed["image"].shape[1]  # Height
             assert processed["mask"].shape[1] == processed["image"].shape[2]  # Width
-
-

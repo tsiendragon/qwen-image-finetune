@@ -11,8 +11,8 @@ import pytest
 import torch
 import logging
 from pathlib import Path
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.data.config import load_config_from_yaml
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.data.config import load_config_from_yaml
 
 logger = logging.getLogger(__name__)
 

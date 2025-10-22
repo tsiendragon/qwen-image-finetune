@@ -1,7 +1,7 @@
 import pytest
 import torch
 from unittest.mock import Mock, patch
-from src.utils.logger import load_logger, log_images_auto, log_text_auto
+from qflux.utils.logger import load_logger, log_images_auto, log_text_auto
 
 
 class TestLoadLogger:

@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import random
 import os
-from src.utils.seed import seed_everything
+from qflux.utils.seed import seed_everything
 
 
 class TestSeedEverything:

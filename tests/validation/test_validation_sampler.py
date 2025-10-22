@@ -11,8 +11,8 @@ This module tests:
 import pytest
 import torch
 from unittest.mock import Mock, MagicMock, patch
-from src.validation.validation_sampler import ValidationSampler
-from src.data.config import ValidationDataConfig, DataConfig
+from qflux.validation.validation_sampler import ValidationSampler
+from qflux.data.config import ValidationDataConfig, DataConfig
 
 
 class TestValidationSamplerInit:
@@ -246,4 +246,3 @@ class TestValidationSamplerE2E:
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v"])
-

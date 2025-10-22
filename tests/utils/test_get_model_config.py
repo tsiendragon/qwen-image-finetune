@@ -1,5 +1,5 @@
 from unittest.mock import Mock, patch, MagicMock, mock_open
-from src.utils.get_model_config import get_pretrained_model_config, compare_with_local_config
+from qflux.utils.get_model_config import get_pretrained_model_config, compare_with_local_config
 
 
 class TestGetPretrainedModelConfig:

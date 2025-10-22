@@ -11,7 +11,7 @@ from diffusers import QwenImageEditPipeline
 # 添加项目路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.models.load_model import load_qwenvl
+from qflux.models.load_model import load_qwenvl
 
 
 def compare_models(model1, model2, model1_name="Model1", model2_name="Model2", tolerance=1e-6):

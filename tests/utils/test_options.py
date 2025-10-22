@@ -1,8 +1,8 @@
 import pytest
 import sys
 from unittest.mock import Mock, patch
-from src.utils.options import parse_args
-from src.data.config import TrMode
+from qflux.utils.options import parse_args
+from qflux.data.config import TrMode
 
 
 class TestParseArgs:

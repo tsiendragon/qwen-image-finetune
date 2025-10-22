@@ -10,7 +10,7 @@ This module tests:
 
 import pytest
 import torch
-from src.losses import MseLoss
+from qflux.losses import MseLoss
 
 
 class TestMseLoss:

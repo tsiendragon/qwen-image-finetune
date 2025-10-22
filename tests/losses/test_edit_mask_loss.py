@@ -10,7 +10,7 @@ This module tests:
 
 import pytest
 import torch
-from src.losses import MaskEditLoss
+from qflux.losses import MaskEditLoss
 
 
 class TestMaskEditLoss:

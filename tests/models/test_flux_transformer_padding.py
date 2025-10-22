@@ -5,7 +5,7 @@ import torch
 
 os.environ.setdefault("HF_TOKEN", "dummy")
 with mock.patch("huggingface_hub.login"):
-    from src.models.transformer_flux_custom import FluxTransformer2DModel
+    from qflux.models.transformer_flux_custom import FluxTransformer2DModel
 
 
 def _prepare_latent_image_ids(height: int, width: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:

@@ -91,4 +91,3 @@ validation:
   num_validation_samples: 4
 
 # 22.17 GB used for traning with batchsize 2, speed 18.35s/it, on A100
-

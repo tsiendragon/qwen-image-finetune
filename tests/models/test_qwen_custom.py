@@ -10,8 +10,8 @@ produces identical results to the original diffusers implementation when process
 import pytest
 import torch
 
-from src.models.transformer_qwenimage import QwenImageTransformer2DModel as OriginalQwenTransformer2DModel
-from src.models.transformer_qwen_custom import QwenImageTransformer2DModel as CustomQwenTransformer2DModel
+from qflux.models.transformer_qwenimage import QwenImageTransformer2DModel as OriginalQwenTransformer2DModel
+from qflux.models.transformer_qwen_custom import QwenImageTransformer2DModel as CustomQwenTransformer2DModel
 
 
 class TestQwenTransformerEquivalence:

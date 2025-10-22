@@ -10,9 +10,9 @@ import os
 from typing import Dict, Any
 from unittest.mock import Mock
 
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.utils.model_compare import compare_model_parameters
-from src.data.config import load_config_from_yaml
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.utils.model_compare import compare_model_parameters
+from qflux.data.config import load_config_from_yaml
 
 logger = logging.getLogger(__name__)
 

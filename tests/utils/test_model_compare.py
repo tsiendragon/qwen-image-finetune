@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn as nn
 from unittest.mock import Mock, patch
-from src.utils.model_compare import (
+from qflux.utils.model_compare import (
     compare_model_parameters,
     compare_tokenizers,
     compare_flux_kontext_models,

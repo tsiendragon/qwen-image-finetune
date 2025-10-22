@@ -7,7 +7,7 @@ import sys
 import os
 # Add path for local imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from src.models.load_model import load_vae  # noqa: E402
+from qflux.models.load_model import load_vae  # noqa: E402
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import QwenImageEditPipeline  # noqa: E402
 def compare_models(model1, model2, model_name="models"):
     """比较两个模型是否相同"""

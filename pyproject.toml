@@ -1,3 +1,9 @@
+[project]
+name = "qflux"
+version = "2.4.1"
+description = "Unified finetuning framework for Image Diffusion model such as Qwen, Flux, and related multimodal models."
+
+
 [tool.pytest.ini_options]
 log_cli = true
 log_cli_level = "INFO"
@@ -6,9 +12,51 @@ log_cli_date_format = "%H:%M:%S"
 # For prints to show while still capturing:
 addopts = ["--capture=tee-sys"]
 
-[tool.flake8]
-max-line-length = 120
-extend-ignore = ["E203","W503"]  # common with Black
-
-[tool.black]
+[tool.ruff]
+target-version = "py312"
+src = ["src"]
 line-length = 120
+exclude = ["build", "dist", ".venv", "venv", "migrations", "docs/theme", "tests", "scripts", "configs", "docs"]
+
+[tool.ruff.lint]
+# 规则集：等价你原 flake8 插件组合并更快（含 bugbear/naming/comprehension）
+select = ["F", "E", "W", "B", "N", "C4", "I", "UP"]
+ignore = [
+  # 需要去噪时在这里加忽略，例如 "E203", "E266", ...
+  "UP038", "F841",
+  "N999",  # Ignore invalid module name (repo name contains hyphen)
+  "N806",  # Allow uppercase variable names (e.g., B, T, C for dimensions)
+  "N803",  # Allow uppercase argument names (e.g., A for area)
+  "N801",  # Allow class names with underscores (e.g., AttnProcessor2_0 convention)
+  "N817",  # Allow CamelCase imports as acronyms (e.g., FSDP)
+  "B904",  # Allow raise without from in except blocks
+  "UP007", # Allow Union[] instead of | for type annotations (Python 3.8 compatibility)
+]
+
+[tool.ruff.format]
+# 与 Black 兼容的风格
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+follow_imports = "silent"
+
+# 质量提示（不影响通过率）
+show_error_codes = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+implicit_reexport = true
+
+# 放松约束：不强制写注解、未注解函数内部不检查
+disallow_untyped_defs = false
+check_untyped_defs = false
+no_implicit_optional = false
+
+
+# 目录排除（按你的项目可改）
+exclude = '(build|dist|\.venv|venv|migrations|docs|scripts|tests)'
+
+[tool.ruff.lint.pep8-naming]
+extend-ignore-names = ["F", "B","C","H","W"]   # 允许 `import torch.nn.functional as F`

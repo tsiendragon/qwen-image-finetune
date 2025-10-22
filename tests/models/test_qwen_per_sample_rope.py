@@ -2,7 +2,7 @@
 import torch
 import pytest
 
-from src.models.transformer_qwen_custom import (
+from qflux.models.transformer_qwen_custom import (
     QwenEmbedRopeBatched,
     QwenDoubleStreamAttnProcessorPerSample,
     QwenImageTransformer2DModel,

@@ -11,7 +11,7 @@ This module tests:
 import pytest
 import torch
 from unittest.mock import MagicMock
-from src.utils.tools import extract_batch_field
+from qflux.utils.tools import extract_batch_field
 
 
 class MockConfig:
@@ -30,7 +30,7 @@ class TestQwenMultiResolution:
 
     def test_get_image_shapes_multi_resolution_from_img_shapes(self):
         """验证从 img_shapes 字段获取 per-sample shapes"""
-        from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
+        from qflux.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
 
         # Mock trainer
         trainer = MagicMock(spec=QwenImageEditTrainer)
@@ -62,7 +62,7 @@ class TestQwenMultiResolution:
 
     def test_get_image_shapes_multi_resolution_from_height_width(self):
         """验证从 height/width 字段重建 per-sample shapes"""
-        from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
+        from qflux.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
 
         # Mock trainer
         trainer = MagicMock(spec=QwenImageEditTrainer)
@@ -105,7 +105,7 @@ class TestQwenMultiResolution:
 
     def test_get_image_shapes_with_additional_controls(self):
         """验证多控制分支的 shapes 生成"""
-        from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
+        from qflux.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
 
         # Mock trainer
         trainer = MagicMock(spec=QwenImageEditTrainer)
@@ -200,8 +200,8 @@ class TestQwenMultiResolution:
 
         # 创建简化的 Qwen 模型（用于测试）
         try:
-            from src.models.transformer_qwenimage import QwenImageTransformer2DModel
-            from src.models.qwen_multi_resolution_patch import patch_qwen_model_for_multi_resolution
+            from qflux.models.transformer_qwenimage import QwenImageTransformer2DModel
+            from qflux.models.qwen_multi_resolution_patch import patch_qwen_model_for_multi_resolution
         except ImportError as e:
             print(f"⚠ Skipping: Required modules not available: {e}")
             return
@@ -513,4 +513,3 @@ if __name__ == "__main__":
     print()
 
     print("All Qwen multi-resolution tests passed! ✓")
-

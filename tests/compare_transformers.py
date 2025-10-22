@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.models.load_model import load_transformer
+from qflux.models.load_model import load_transformer
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import QwenImageEditPipeline
 
 

@@ -30,7 +30,7 @@ def sample_grayscale_image():
 @pytest.fixture
 def mock_processor_config():
     """提供 mock ImageProcessor 配置"""
-    from src.data.config import ImageProcessorInitArgs
+    from qflux.data.config import ImageProcessorInitArgs
     return ImageProcessorInitArgs(
         target_size=(512, 512),
         process_type="resize"
@@ -40,7 +40,7 @@ def mock_processor_config():
 @pytest.fixture
 def mock_multi_resolution_config():
     """提供 mock 多分辨率配置"""
-    from src.data.config import ImageProcessorInitArgs
+    from qflux.data.config import ImageProcessorInitArgs
     return ImageProcessorInitArgs(
         multi_resolutions=["512*512", "640*640", "768*512", "832*576"],
         max_aspect_ratio=3.0
@@ -51,4 +51,3 @@ def mock_multi_resolution_config():
 def cuda_available():
     """检查 CUDA 是否可用"""
     return torch.cuda.is_available()
-

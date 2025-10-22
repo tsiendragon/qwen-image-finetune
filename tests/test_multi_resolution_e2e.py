@@ -7,9 +7,9 @@ import torch
 import logging
 import os
 
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.data.config import load_config_from_yaml
-from src.data.dataset import loader
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.data.config import load_config_from_yaml
+from qflux.data.dataset import loader
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -161,8 +161,8 @@ class TestMultiResolutionPreprocessing:
 
     def test_resolution_selection_logic(self):
         """Test that resolution selection produces expected results"""
-        from src.data.preprocess import ImageProcessor
-        from src.data.config import ImageProcessorInitArgs
+        from qflux.data.preprocess import ImageProcessor
+        from qflux.data.config import ImageProcessorInitArgs
 
         # Create processor with multi-resolutions
         config = ImageProcessorInitArgs(
@@ -194,4 +194,3 @@ class TestMultiResolutionPreprocessing:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s", "--tb=short"])
-

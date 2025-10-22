@@ -1,5 +1,5 @@
 from pathlib import Path
-from src.utils.huggingface import (
+from qflux.utils.huggingface import (
     is_huggingface_repo,
     _pick_first_existing,
 )

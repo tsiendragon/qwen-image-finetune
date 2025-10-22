@@ -10,7 +10,7 @@ This module tests:
 import pytest
 import torch
 import numpy as np
-from src.scheduler.default_weighting_scheme import default_weighing_scheme
+from qflux.scheduler.default_weighting_scheme import default_weighing_scheme
 
 
 class TestDefaultWeightingScheme:
@@ -140,4 +140,3 @@ class TestDefaultWeightingScheme:
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v"])
-

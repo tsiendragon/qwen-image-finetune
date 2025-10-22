@@ -14,7 +14,7 @@ import torch
 import json
 import os
 from pathlib import Path
-from src.data.cache_manager import EmbeddingCacheManager
+from qflux.data.cache_manager import EmbeddingCacheManager
 
 
 class TestEmbeddingCacheManagerInit:
@@ -232,4 +232,3 @@ class TestEdgeCases:
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v"])
-

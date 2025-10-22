@@ -688,4 +688,3 @@ def test_backward_compatibility():
 3. **Dynamic batching**：运行时动态组织 batch
 
 当前推荐：**先使用 attention mask 方案训练**，如果效果不佳再实现 per-sample RoPE。
-

@@ -12,7 +12,7 @@ verifying that:
 
 import pytest
 import torch
-from src.losses import AttentionMaskMseLoss
+from qflux.losses import AttentionMaskMseLoss
 
 
 class TestAttentionMaskMseLoss:

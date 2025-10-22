@@ -1,7 +1,7 @@
 import pytest
 import torch
 from unittest.mock import Mock
-from src.utils.sampling import calculate_shift, retrieve_timesteps
+from qflux.utils.sampling import calculate_shift, retrieve_timesteps
 
 
 class TestCalculateShift:

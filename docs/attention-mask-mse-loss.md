@@ -331,4 +331,3 @@ assert torch.all(pred.grad[:, padding_positions] == 0)
 - Multi-Resolution Training: See `docs/cache-system.md`
 - Padding Utilities: See `src/utils/tools.py` (`pad_latents_for_multi_res`)
 - Edit Mask Loss: See `src/losses/edit_mask_loss.py`
-

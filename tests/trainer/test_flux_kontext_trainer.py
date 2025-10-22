@@ -5,9 +5,9 @@ import sys
 import os
 import pytest
 import glob
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.data.config import load_config_from_yaml
-from src.data.dataset import loader
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.data.config import load_config_from_yaml
+from qflux.data.dataset import loader
 
 
 logging.basicConfig(

@@ -3,7 +3,7 @@ import torch
 from PIL import Image
 import tempfile
 import os
-from src.utils.tools import (
+from qflux.utils.tools import (
     sample_indices_per_rank,
     content_hash_blake3,
     calculate_md5,

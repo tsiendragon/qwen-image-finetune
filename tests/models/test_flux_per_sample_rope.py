@@ -2,7 +2,7 @@
 import torch
 import pytest
 
-from src.models.transformer_flux_custom import (
+from qflux.models.transformer_flux_custom import (
     FluxPosEmbedBatched,
     FluxAttnProcessorPerSample,
     FluxTransformer2DModel,
@@ -514,4 +514,3 @@ class TestFluxTransformer2DModelPerSample:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
