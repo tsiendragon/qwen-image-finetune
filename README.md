@@ -6,19 +6,19 @@
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**,**Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 ## New
-- **🎯 Multi-Resolution Mixed Training (v3.0.0)**: Revolutionary multi-resolution training support that allows training with multiple resolution candidates in a single session. The system intelligently selects the optimal resolution based on each image's aspect ratio, supporting both simple shared-resolution mode and advanced per-image-type configuration. Compatible with all model architectures and training modes. See [CHANGELOG](docs/CHANGELOG.md) for complete details.
+- **🎯 Multi-Resolution Mixed Training (v3.0.0)**: Revolutionary multi-resolution training support that allows training with multiple resolution candidates in a single session. The system intelligently selects the optimal resolution based on each image's aspect ratio, supporting both simple shared-resolution mode and advanced per-image-type configuration. Compatible with all model architectures and training modes. See [CHANGELOG](docs/changelog/index.md) for complete details.
   - Simple mode: `multi_resolutions: [320*320, 512*512, 640*640]`
   - Advanced mode with per-type control: `multi_resolutions: {target: [...], controls: [[...], [...]]}`
   - Example config: `tests/test_configs/test_example_fluxkontext_multiresolution.yaml`
 
-- **📚 Documentation Improvements (v2.4.1)**: Comprehensive documentation updates including MIT license badge, enhanced data preparation guide (Folder/HuggingFace/CSV sources), and English language standardization. See [CHANGELOG](docs/CHANGELOG.md) for details.
+- **📚 Documentation Improvements (v2.4.1)**: Comprehensive documentation updates including MIT license badge, enhanced data preparation guide (Folder/HuggingFace/CSV sources), and English language standardization. See [CHANGELOG](docs/changelog/index.md) for details.
 
 - **🔥 Dynamic Shape Support (v2.4.0)**: For Qwen-Image-Edit or Plus, we introduce the fixed number of pixels condition for batch process such that it support multiple shapes.
   - `data.init_args.processor.init_args.target_pixels: 512*512`
   - `data.init_args.processor.init_args.controls_pixels: [512*512]`
 But this still got limitations for the randomness of shapes used in training. Next we may add H/W buckets to support real dynamic shapes training.
 
-- **Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/architecture/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
+- **Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/spec/models/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
   <div align="center">
     <table>
       <tr>
@@ -76,8 +76,8 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 - **Multi-Resolution Mixed Training**: Train with multiple resolution candidates (e.g., 320x320, 512x512, 640x640) in a single session with intelligent aspect-ratio-aware selection
 - **Multi-Precision Training**: FP16, FP8, and FP4 quantization levels for different hardware requirements
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
-- [**Edit Mask Loss** feature documentation in `docs/image_edit_mask_loss.md`](docs/image_edit_mask_loss.md) Advanced mask-weighted loss function for focused training on edit regions
-- [**Speed Optimization** including quantilizationand flash attention in `docs/speed_optimization.md`](docs/speed_optimization.md)
+- [**Edit Mask Loss** feature documentation in `docs/spec/losses/image_edit_mask_loss.md`](docs/spec/losses/image_edit_mask_loss.md) Advanced mask-weighted loss function for focused training on edit regions
+- [**Speed Optimization** including quantilizationand flash attention in `docs/guide/speed_optimization.md`](docs/guide/speed_optimization.md)
 - **Embedding Cache System**: Proprietary caching mechanism for 2-3x training acceleration
 - **Validation Sampling**: Real-time training progress monitoring with TensorBoard visualization
 - **Resume Training**: Seamless training resumption from checkpoints with full state recovery
@@ -101,6 +101,37 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 - [Citation](#citation)
 - [License](#license)
 
+## Documentation
+
+Comprehensive documentation is organized in the `docs/` directory:
+
+- **[Getting Started Guide](docs/guide/)** — Setup, training, inference, and configuration guides
+  - [Setup](docs/guide/setup.md) — Environment setup and installation
+  - [Training](docs/guide/training.md) — Training workflows and best practices
+  - [Inference](docs/guide/inference.md) — Model inference and deployment
+  - [Data Preparation](docs/guide/data-preparation.md) — Dataset preparation and formats
+  - [Configuration](docs/guide/configuration.md) — Configuration system reference
+  - [LoRA Fine-tuning](docs/guide/lora.md) — LoRA training strategies
+  - [Speed Optimization](docs/guide/speed_optimization.md) — Performance tuning and quantization
+  - [HuggingFace Integration](docs/guide/huggingface-related.md) — Dataset and model sharing
+  - [Testing Reference](docs/guide/testing-quick-reference.md) — Testing guidelines
+  - [Debug Guide](docs/guide/debug.md) — Troubleshooting and debugging
+
+- **[Technical Specifications](docs/spec/)** — Detailed module specifications
+  - [Models](docs/spec/models/) — Architecture specs for FLUX Kontext, Qwen-Image-Edit, and Qwen-Image-Edit-Plus
+  - [Losses](docs/spec/losses/) — Loss function implementations and design rationale
+  - [Data](docs/spec/data/) — Data loading and caching system specifications
+  - [Trainer](docs/spec/trainer/) — Training loop and trainer architecture
+
+- **[Changelog](docs/changelog/)** — Version history and release notes
+  - [Changelog Overview](docs/changelog/index.md) — Summary of all releases
+  - [Latest: v3.0.0](docs/changelog/v3.0.0.md) — Multi-resolution mixed training
+
+- **[Development Plans](docs/plan/)** — Roadmap and feature planning
+  - [Plan Index](docs/plan/index.md) — Active and completed initiatives
+
+- **[TODO List](docs/TODO.md)** — Current development tasks and progress
+
 ## Dataset
 
 Here we provided two toy datasets in the huggingface that user can efficiently use to train the model.
@@ -119,11 +150,11 @@ dd = load_editing_dataset("TsienDragon/face_segmentation_20")
 sample = dd["train"][0]
 ```
 
-Dataset structure reference and upload/download instructions are in [`docs/huggingface-related.md`](docs/huggingface-related.md).
+Dataset structure reference and upload/download instructions are in [`docs/guide/huggingface-related.md`](docs/guide/huggingface-related.md).
 
 Added CSV data format support (v2.2.0): Dataset management based on CSV metadata files is now supported, providing a more flexible dataset structure. For datasets that use a CSV metadata file, use the upload_editing_dataset_from_csv() function, which supports mixed image formats and flexible directory structures. The CSV format allows custom column name mappings to accommodate different dataset structure requirements.
 
-**⚠️ Important**: Before using this framework, you must prepare your dataset. See the [Data Preparation](docs/data-preparation.md) guide for step-by-step instructions.
+**⚠️ Important**: Before using this framework, you must prepare your dataset. See the [Data Preparation](docs/guide/data-preparation.md) guide for step-by-step instructions.
 
 ## Quick Start
 
@@ -146,7 +177,7 @@ cd qwen-image-finetune
 # Or with custom path and HF token
 ./setup.sh /your/path hf_your_token_here
 ```
-Refer [`docs/speed_optimization.md`](docs/speed_optimization.md) to install `flash-attn` to accelerate training. It provides the greatest benefit with long prompts or large sequence lengths; for short prompts, the speedup may be limited.
+Refer [`docs/guide/speed_optimization.md`](docs/guide/speed_optimization.md) to install `flash-attn` to accelerate training. It provides the greatest benefit with long prompts or large sequence lengths; for short prompts, the speedup may be limited.
 
 ### Train with Toy Dataset
 1. prepare the datasets or use Hugging Face dataset (**recommended**). Refer `tests/test_configs/test_example_fluxkontext_fp16.yaml`

@@ -178,7 +178,6 @@ class AttentionMaskMseLoss(nn.Module):
             raise ValueError(
                 f"attention_mask shape {attention_mask.shape} incompatible with " f"model_pred shape [{B}, {T}, {C}]"
             )
-
         # Step 1: Element-wise MSE
         element_loss = (model_pred.float() - target.float()) ** 2  # [B, T, C]
 
@@ -189,7 +188,9 @@ class AttentionMaskMseLoss(nn.Module):
         # Step 3: Edit mask -> foreground/background weighting
         if edit_mask is None:
             # Treat all tokens as foreground
-            m = torch.ones_like(attention_mask, dtype=torch.float32, device=model_pred.device)
+            # m = torch.ones_like(attention_mask, dtype=torch.float32, device=model_pred.device)
+            edit_weight = torch.ones_like(attention_mask, dtype=torch.float32, device=model_pred.device)
+            edit_weight = edit_weight.unsqueeze(-1)  # [B, T, 1]
         else:
             if edit_mask.shape != (B, T):
                 raise ValueError(
@@ -197,9 +198,8 @@ class AttentionMaskMseLoss(nn.Module):
                     f"attention_mask shape {attention_mask.shape}"
                 )
             m = edit_mask.float().to(model_pred.device)
-
+            edit_weight = (m * self.foreground_weight + (1.0 - m) * self.background_weight).unsqueeze(-1)  # [B, T, 1]
         # Compute edit weights: foreground gets higher weight
-        edit_weight = (m * self.foreground_weight + (1.0 - m) * self.background_weight).unsqueeze(-1)  # [B, T, 1]
 
         weighted_loss = element_loss * edit_weight  # [B, T, C]
 

@@ -15,10 +15,11 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 from qflux.data.cache_manager import EmbeddingCacheManager
+from qflux.data.config import DatasetInitArgs
 from qflux.losses.edit_mask_loss import map_mask_to_latent
 from qflux.utils.huggingface import is_huggingface_repo, load_editing_dataset
 from qflux.utils.tools import hash_string_md5
-from qflux.x.data.config import DatasetInitArgs
+
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
@@ -156,10 +157,12 @@ class ImageDataset(Dataset):
             print(f"缓存已启用，缓存目录: {self.cache_dir}")
             print(f"use_cache: {self.use_cache}")
         else:
-            self.cache_manager = None
+            self.cache_manager = None  # type: ignore
             print("缓存未启用")
-
-        self.cache_exists = self.cache_manager.exist(self.cache_dir) if self.cache_manager else False
+        if self.cache_manager:
+            self.cache_exists = self.cache_manager.exist(self.cache_dir)  # type: ignore
+        else:
+            self.cache_exists = False
         # loading datsets
         self._load_all_datasets()
         self.load_processor()
@@ -732,7 +735,7 @@ def loader(
     """
     动态加载数据集类并创建 DataLoader。
     Args:
-        class_path: 类的完整路径，如 'src.data.dataset.ImageDataset'
+        class_path: 类的完整路径，如 'qlufx.data.dataset.ImageDataset'
         init_args: 用于初始化该类的参数字典（传给其 __init__）
         batch_size: 批次大小
         num_workers: 工作进程数
@@ -744,7 +747,7 @@ def loader(
     ```python
     from qflux.data.dataset import loader
     dl = loader(
-        class_path='src.data.dataset.ImageDataset',
+        class_path='qflux.data.dataset.ImageDataset',
         init_args={'dataset_path': '/data/ds', 'use_cache': False},
         batch_size=2,
         num_workers=2,

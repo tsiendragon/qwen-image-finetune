@@ -60,3 +60,7 @@ exclude = '(build|dist|\.venv|venv|migrations|docs|scripts|tests)'
 
 [tool.ruff.lint.pep8-naming]
 extend-ignore-names = ["F", "B","C","H","W"]   # 允许 `import torch.nn.functional as F`
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+known-first-party = ["qflux"]

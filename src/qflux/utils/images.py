@@ -28,7 +28,7 @@ def make_image_shape_devisible(width, height, vae_scale_factor: int) -> tuple[in
     return width, height
 
 
-def make_image_devisible(image: torch.Tensor | PIL.Image | np.ndarray, vae_scale_factor: int) -> torch.Tensor:
+def make_image_devisible(image: torch.Tensor | PIL.Image.Image | np.ndarray, vae_scale_factor: int) -> torch.Tensor:
     """make image devisible by vae_scale_factor * 2, suppose image is B,C,H,W"""
 
     if isinstance(image, torch.Tensor):

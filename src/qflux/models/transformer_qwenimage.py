@@ -33,6 +33,7 @@ from diffusers.models.normalization import AdaLayerNormContinuous, RMSNorm
 from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -431,11 +432,6 @@ class QwenImageTransformerBlock(nn.Module):
         joint_attention_kwargs: dict[str, Any] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # Get modulation parameters for both streams
-        print("hidden states shape", hidden_states.shape)
-        print("encoder hidden states shape", encoder_hidden_states.shape)
-        if encoder_hidden_states_mask is not None:
-            print("encoder hidden states mask", encoder_hidden_states_mask)
-        print("temb shape", temb.shape)
         img_mod_params = self.img_mod(temb)  # [B, 6*dim]
         txt_mod_params = self.txt_mod(temb)  # [B, 6*dim]
 

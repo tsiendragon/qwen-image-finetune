@@ -29,7 +29,7 @@ from peft.utils import get_peft_model_state_dict
 from torch.distributed.fsdp import ShardingStrategy  # BackwardPrefetch
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy  # transformer_auto_wrap_policy
 
-# from qflux.x.utils.tools import extract_batch_field
+# from qflux.utils.tools import extract_batch_field
 from tqdm import tqdm
 
 from qflux.data.cache_manager import EmbeddingCacheManager
@@ -42,6 +42,7 @@ from qflux.utils.lora_utils import FpsLogger, classify_lora_weight
 from qflux.utils.model_summary import print_model_summary_table
 from qflux.utils.sampling import calculate_shift, retrieve_timesteps
 from qflux.utils.tools import calculate_sha256_file, get_git_info, instantiate_class
+
 
 logger = logging.getLogger(__name__)
 

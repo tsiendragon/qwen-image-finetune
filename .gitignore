@@ -65,6 +65,9 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+test_resources*/
+# Test resources (downloaded from HuggingFace)
+tests/resources*/
 
 # Translations
 *.mo

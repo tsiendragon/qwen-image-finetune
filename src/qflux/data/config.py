@@ -21,6 +21,7 @@ from pydantic import (
     model_validator,
 )
 
+
 # ----------------------------
 # Common helpers / types
 # ----------------------------
@@ -284,7 +285,7 @@ class ImageProcessorInitArgs(BaseModel):
 
 class ImageProcessorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    class_path: str = "src.data.preprocess.ImageProcessor"
+    class_path: str = "qflux.data.preprocess.ImageProcessor"
     init_args: ImageProcessorInitArgs = Field(default_factory=ImageProcessorInitArgs)
 
 

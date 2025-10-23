@@ -8,6 +8,7 @@ import logging
 import torch
 from diffusers import FluxKontextPipeline
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -154,9 +155,9 @@ def load_flux_kontext_transformer(
     如果 use_multi_resolution, 则从自定义的transformer_flux_custom.py中加载, 支持多种分辨率的训练
     """
     if use_multi_resolution:
-        from qflux.x.models.transformer_flux_custom import FluxTransformer2DModel
+        from qflux.models.transformer_flux_custom import FluxTransformer2DModel
     else:
-        from diffusers.models import FluxTransformer2DModel
+        from diffusers.models import FluxTransformer2DModel  # type: ignore
 
     # from qflux.models.transformer_flux import FluxTransformer2DModel
     # from diffusers.models import FluxTransformer2DModel

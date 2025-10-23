@@ -11,7 +11,6 @@ This module tests the flux kontext sampling pipeline, verifying that:
 import pytest
 import torch
 import logging
-from pathlib import Path
 import cv2
 import numpy as np
 from diffusers.utils import load_image
@@ -20,8 +19,6 @@ from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
 from qflux.data.config import load_config_from_yaml
 
 logger = logging.getLogger(__name__)
-
-RESOURCES_DIR = Path(__file__).parent.parent / "resources"
 
 
 def assert_ralative_error_tensor(x: torch.Tensor, y: torch.Tensor, rtol: float = 1e-5, key='control'):
@@ -64,18 +61,20 @@ def sample_image():
 
 
 @pytest.fixture
-def reference_embeddings():
+def reference_embeddings(test_resources):
     """Fixture to load reference embeddings from resources"""
+    embeddings_dir = test_resources / "flux_sampling" / "embeddings"
+    images_dir = test_resources / "reference_outputs" / "images"
     embeddings = {
-        "control": torch.load(RESOURCES_DIR / "sample_control_image.pt", map_location=torch.device("cpu"), weights_only=True),
-        "latents": torch.load(RESOURCES_DIR / "sample_latents.pt", map_location=torch.device("cpu"), weights_only=True),
-        "latent_ids": torch.load(RESOURCES_DIR / "sample_latent_ids.pt", map_location=torch.device("cpu"), weights_only=True),
-        "control_latents": torch.load(RESOURCES_DIR / "sample_control_latents.pt", map_location=torch.device("cpu"), weights_only=True),
-        "control_ids": torch.load(RESOURCES_DIR / "sample_control_ids.pt", map_location=torch.device("cpu"), weights_only=True),
-        "text_ids": torch.load(RESOURCES_DIR / "sample_text_ids.pt", map_location=torch.device("cpu"), weights_only=True),
-        "prompt_embeds": torch.load(RESOURCES_DIR / "sample_prompt_embeds.pt", map_location=torch.device("cpu"), weights_only=True),
-        "pooled_prompt_embeds": torch.load(RESOURCES_DIR / "sample_pooled_prompt_embeds.pt", map_location=torch.device("cpu"), weights_only=True),
-        "output_image": cv2.imread(RESOURCES_DIR / "test_flux_kontext_output.png")[..., ::-1],
+        "control": torch.load(embeddings_dir / "sample_control_image.pt", map_location=torch.device("cpu"), weights_only=True),
+        "latents": torch.load(embeddings_dir / "sample_latents.pt", map_location=torch.device("cpu"), weights_only=True),
+        "latent_ids": torch.load(embeddings_dir / "sample_latent_ids.pt", map_location=torch.device("cpu"), weights_only=True),
+        "control_latents": torch.load(embeddings_dir / "sample_control_latents.pt", map_location=torch.device("cpu"), weights_only=True),
+        "control_ids": torch.load(embeddings_dir / "sample_control_ids.pt", map_location=torch.device("cpu"), weights_only=True),
+        "text_ids": torch.load(embeddings_dir / "sample_text_ids.pt", map_location=torch.device("cpu"), weights_only=True),
+        "prompt_embeds": torch.load(embeddings_dir / "sample_prompt_embeds.pt", map_location=torch.device("cpu"), weights_only=True),
+        "pooled_prompt_embeds": torch.load(embeddings_dir / "sample_pooled_prompt_embeds.pt", map_location=torch.device("cpu"), weights_only=True),
+        "output_image": cv2.imread(str(images_dir / "test_flux_kontext_output.png"))[..., ::-1],
     }
     return embeddings
 
@@ -113,7 +112,8 @@ class TestFluxSampling:
         target_width = embeddings["width"]
         assert target_height == height, f"Target height should be {height}"
         assert target_width == width, f"Target width should be {width}"
-        torch.save(embeddings["control"], RESOURCES_DIR / "aaa_sample_control_image.pt")
+        # Note: Uncomment below to save control embeddings for debugging
+        # torch.save(embeddings["control"], test_resources / "flux_sampling" / "embeddings" / "aaa_sample_control_image.pt")
         assert_ralative_error_tensor(embeddings["pooled_prompt_embeds"], reference_embeddings["pooled_prompt_embeds"])
         assert_ralative_error_tensor(embeddings["prompt_embeds"], reference_embeddings["prompt_embeds"])
         assert_ralative_error_tensor(embeddings["text_ids"], reference_embeddings["text_ids"])
@@ -142,6 +142,9 @@ class TestFluxSampling:
         ref_image = reference_embeddings["output_image"]
         assert ref_image.shape == image_np.shape, f"Reference image shape should be {image_np.shape}"
         rel_error = np.linalg.norm(image_np - ref_image) / (np.linalg.norm(image_np) + np.linalg.norm(ref_image)+1e-6)
-        assert rel_error < 1e-4, f"Relative error {rel_error} is greater than 1e-4"
         print(f"Relative error {rel_error} is less than 1e-4")
-        cv2.imwrite(RESOURCES_DIR / "test_flux_kontext_output_unit_test.png", image_np[..., ::-1])
+        cv2.imwrite('/mnt/nas/public2/lilong/repos/qwen-image-finetune/test_sampling_output.png', image_np[..., ::-1])
+        print('save image to test_sampling_output.png')
+        # Note: Uncomment below to save output image for debugging
+        # cv2.imwrite(str(test_resources / "reference_outputs" / "images" / "test_flux_kontext_output_unit_test.png"), image_np[..., ::-1])
+        assert rel_error < 1e-4, f"Relative error {rel_error} is greater than 1e-4"

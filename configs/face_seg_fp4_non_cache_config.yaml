@@ -11,7 +11,7 @@ model:
     pretrained_weight: null
 
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path: "/raid/lilong/data/face_seg/"  # change the path to your own dataset path
     image_size: [864, 1048]  # face segmentation usually uses 512x512
