@@ -20,7 +20,7 @@ pip install --upgrade --force-reinstall flash-attn --no-build-isolation
 1. install cuda toolkit
 If your ncvv is not the current version or missing. Use the following steps to install correct version.
 In the webpage: [cuda toolkit 12.2 Downloads](https://developer.nvidia.com/cuda-12-2-0-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=20.04&target_type=runfile_local)
-![install](images/image-1.png)
+![install](../images/image-1.png)
 Install cuda toolkit according to the commands. If want to specify the cuda path
     ```bash
     sh cuda_12.2.0_535.54.03_linux.run --toolkit --silent --installpath=$HOME/.local/cuda-12.2

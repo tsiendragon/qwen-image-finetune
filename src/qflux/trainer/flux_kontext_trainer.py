@@ -491,6 +491,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         control_ids = embeddings["control_ids"]
         pooled_prompt_embeds = embeddings["pooled_prompt_embeds"]
         prompt_embeds = embeddings["prompt_embeds"]
+        assert self.accelerator is not None, "accelerator is not set"
         device = self.accelerator.device
         image_height, image_width = embeddings["image"].shape[2:]
         # move to self.dit device
@@ -580,6 +581,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         For optimal performance with very different resolutions, custom attention
         processors (Phase 2.2-2.3) should be implemented.
         """
+        assert self.accelerator is not None, "accelerator is not set"
         device = self.accelerator.device
         dtype = self.weight_dtype
 
@@ -910,8 +912,10 @@ class FluxKontextLoraTrainer(BaseTrainer):
         latent_ids = torch.cat([latent_ids, control_ids], dim=0)
         image_seq_len = latents.shape[1]
         timesteps, num_inference_steps = self.prepare_predict_timesteps(num_inference_steps, image_seq_len)
+        print("timesteps", timesteps)
         guidance = torch.full([1], embeddings["guidance"], device=dit_device, dtype=torch.float32)
         guidance = guidance.expand(batch_size)
+        assert self.scheduler is not None, "scheduler is not set"
         self.scheduler.set_begin_index(0)
         # move all tensors to dit_device
         latent_ids = latent_ids.to(dit_device)
@@ -1687,6 +1691,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         # Prepare guidance
         guidance = torch.full([1], embeddings["guidance"], device=dit_device, dtype=torch.float32)
         guidance = guidance.expand(batch_size)
+        assert self.scheduler is not None, "scheduler is not set"
         self.scheduler.set_begin_index(0)
 
         # Move tensors to device
@@ -1793,6 +1798,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 image_noise_pred = noise_pred[:, :max_image_seq_len]
 
                 # Apply scheduler step on padded tensors (one call for the whole batch)
+                assert self.scheduler is not None, "scheduler is not set"
                 updated_latents_padded = self.scheduler.step(
                     image_noise_pred, t, image_latents_padded, return_dict=False
                 )[0]
