@@ -4,6 +4,7 @@ This document summarizes the key highlights for each released version. Detailed 
 
 ## Version Index
 
+- [3.0.1](./v3.0.1.md) — Bug fixes, test infrastructure improvements, and dependency updates.
 - [3.0.0](./v3.0.0.md) — Multi-resolution mixed training pipeline, dynamic resolution candidate selection.
 - [2.4.1](./v2.4.1.md) — Documentation polish and dataset guide updates.
 - [2.4.0](./v2.4.0.md) — Dynamic shape support for Qwen-Image-Edit-Plus.

@@ -36,6 +36,9 @@ Track ongoing development, documentation, and operations tasks. Update completio
 - [x] Dynamic shape support with pixel-based resizing for Plus version (v2.4.0)
 - [x] Documentation improvements and guide updates (v2.4.1)
 - [x] Multi-resolution mixed training (v3.0.0)
+- [x] Test resources management with HuggingFace Hub integration (v3.0.1)
+- [x] E2E tests for Qwen-Image-Edit and Qwen-Image-Edit-Plus sampling (v3.0.1)
+- [x] Pre-commit hooks configuration (v3.0.1)
 
 ## Notes
 

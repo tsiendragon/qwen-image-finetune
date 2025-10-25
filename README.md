@@ -5,7 +5,11 @@
 ## Overview
 
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**,**Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
+
 ## New
+
+- **🧪 Test Infrastructure Improvements (v3.0.1)**: Enhanced test resources management with HuggingFace Hub integration. Test resources are now automatically downloaded on-demand, reducing repository size and improving maintainability. Added comprehensive E2E tests for Qwen-Image-Edit and Qwen-Image-Edit-Plus sampling workflows. See [CHANGELOG](docs/changelog/v3.0.1.md) for details.
+
 - **🎯 Multi-Resolution Mixed Training (v3.0.0)**: Revolutionary multi-resolution training support that allows training with multiple resolution candidates in a single session. The system intelligently selects the optimal resolution based on each image's aspect ratio, supporting both simple shared-resolution mode and advanced per-image-type configuration. Compatible with all model architectures and training modes. See [CHANGELOG](docs/changelog/index.md) for complete details.
   - Simple mode: `multi_resolutions: [320*320, 512*512, 640*640]`
   - Advanced mode with per-type control: `multi_resolutions: {target: [...], controls: [[...], [...]]}`
