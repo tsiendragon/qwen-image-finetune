@@ -1009,9 +1009,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
     def prepare_predict_batch_data(
         self,
-        prompt_image: PIL.Image.Image | list[PIL.Image.Image] = None,
+        image: PIL.Image.Image | list[PIL.Image.Image],
         prompt: str | list[str] | None = None,
-        additional_controls: list[PIL.Image.Image] = None,
         prompt_2: str | list[str] | None = None,
         negative_prompt: None | str | list[str] = None,
         negative_prompt_2: str | list[str] | None = None,
@@ -1039,6 +1038,12 @@ class FluxKontextLoraTrainer(BaseTrainer):
             use_multi_resolution: if True, use multi-resolution processing mode
                 with padding and attention masking for different image sizes.
         """
+        if not isinstance(image, list):
+            image = [image]
+        # image = [make_image_devisible(image, self.vae_scale_factor) for image in image]
+        prompt_image = [image[0]]
+        additional_controls = [image[1:]] if len(image) > 1 else None
+
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
         self.weight_dtype = weight_dtype
@@ -1581,9 +1586,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         # Prepare multi-resolution batch data
         multi_res_embeddings = self.prepare_predict_batch_data(
-            prompt_image=test_images,
+            image=test_images + test_controls,
             prompt=test_prompts,
-            additional_controls=test_controls,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
             use_multi_resolution=True,  # Use multi-resolution mode

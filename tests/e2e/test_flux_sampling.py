@@ -92,7 +92,7 @@ class TestFluxSampling:
         # Act
         flux_trainer.setup_predict()
         batch = flux_trainer.prepare_predict_batch_data(
-            prompt_image=sample_image,
+            image=sample_image,
             prompt=prompt,
             num_inference_steps=num_inference_steps,
             controls_size=[[height, width]],

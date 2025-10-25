@@ -140,7 +140,6 @@ class TestQwenImageEditSampling:
     @pytest.mark.e2e
     def test_pipeline_weights_match_trainer_components(self, qwen_trainer):
         """Test that pipeline loaded weights match trainer component weights"""
-        return
         # Arrange: Load models and weights
         qwen_trainer.setup_predict()
         logger.info("Loading pipeline for weight comparison...")
@@ -260,7 +259,7 @@ class TestQwenImageEditSampling:
         qwen_trainer.weight_dtype = weight_dtype
         qwen_trainer.setup_predict()
         batch = qwen_trainer.prepare_predict_batch_data(
-            prompt_image=sample_image,
+            image=sample_image,
             prompt=prompt,
             num_inference_steps=num_inference_steps,
             controls_size=[[height, width]],

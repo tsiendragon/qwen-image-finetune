@@ -752,7 +752,7 @@ class QwenImageEditTrainer(BaseTrainer):
             img_attention_mask: Image attention mask [B, max_seq] (True=valid, False=padded)
         """
         device = packed_input.device
-        dtype = packed_input.dtype
+        # dtype = packed_input.dtype
         batch_size = packed_input.shape[0]
 
         # Calculate sequence lengths for each sample
@@ -823,7 +823,7 @@ class QwenImageEditTrainer(BaseTrainer):
     def _compute_loss(self, embeddings: dict) -> torch.Tensor:
         assert self.accelerator is not None, "accelerator is not set"
         device = self.accelerator.device
-        dtype = self.weight_dtype
+        # dtype = self.weight_dtype
         image_latents = embeddings["image_latents"].to(self.weight_dtype).to(device)
         control_latents = embeddings["control_latents"].to(self.weight_dtype).to(device)
         prompt_embeds = embeddings["prompt_embeds"].to(self.weight_dtype).to(device)
@@ -1039,9 +1039,8 @@ class QwenImageEditTrainer(BaseTrainer):
 
     def prepare_predict_batch_data(
         self,
-        prompt_image: PIL.Image.Image | list[PIL.Image.Image],
+        image: PIL.Image.Image | list[PIL.Image.Image],
         prompt: str | list[str],
-        additional_controls: list[PIL.Image.Image] = None,
         controls_size: list[int] | None = None,  # first one is for main control
         height: int | None = None,
         width: int | None = None,
@@ -1066,6 +1065,12 @@ class QwenImageEditTrainer(BaseTrainer):
         if use_native_size = True:
             the prompt image and additional controls will use their own size. That is they will not be resized.
         """
+        if not isinstance(image, list):
+            image = [image]
+        # image = [make_image_devisible(image, self.vae_scale_factor) for image in image]
+        prompt_image = [image[0]]
+        additional_controls = [image[1:]] if len(image) > 1 else None
+
         assert prompt_image is not None, "prompt_image is required"
         assert prompt is not None, "prompt is required"
         if isinstance(prompt_image, PIL.Image.Image):

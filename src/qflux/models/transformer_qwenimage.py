@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# follow from https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/transformers/transformer_qwenimage.py
+# follow from https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/
+# transformers/transformer_qwenimage.py
 
 import functools
 import math
@@ -198,7 +199,6 @@ class QwenEmbedRope(nn.Module):
         Args: video_fhw: [frame, height, width] a list of 3 integers representing the shape of the video Args:
         txt_length: [bs] a list of 1 integers representing the length of the text
         """
-        print("video_fhw in rope forward", video_fhw)
         if self.pos_freqs.device != device:
             self.pos_freqs = self.pos_freqs.to(device)
             self.neg_freqs = self.neg_freqs.to(device)
