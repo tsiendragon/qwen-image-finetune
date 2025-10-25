@@ -69,6 +69,7 @@ test_resources*/
 # Test resources (downloaded from HuggingFace)
 tests/resources*/
 test_sampling_output.png
+test_qwen_sampling_output.png
 # Translations
 *.mo
 *.pot

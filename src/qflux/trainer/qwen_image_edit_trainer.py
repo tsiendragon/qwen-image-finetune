@@ -7,22 +7,29 @@ import numpy as np
 import PIL
 import torch
 import torch.nn.functional as F  # NOQA
+from diffusers import AutoencoderKLQwenImage
 from diffusers.pipelines.qwenimage.pipeline_qwenimage_edit import (
     QwenImageEditPipeline,
     randn_tensor,
     retrieve_latents,
 )
+from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
 from diffusers.training_utils import (
     compute_density_for_timestep_sampling,
     compute_loss_weighting_for_sd3,
 )
 from tqdm.auto import tqdm
+from transformers import Qwen2_5_VLForConditionalGeneration
+from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
+
+from qflux.models.transformer_qwenimage import QwenImageTransformer2DModel
 
 # calculate_dimensions,
 # from qflux.loss.edit_mask_loss import map_mask_to_latent
 from qflux.trainer.base_trainer import BaseTrainer
 from qflux.utils.images import calculate_best_resolution, make_image_devisible, make_image_shape_devisible
-from qflux.utils.tools import extract_batch_field, infer_image_tensor
+from qflux.utils.tools import extract_batch_field, infer_image_tensor, pad_latents_for_multi_res
+
 
 # image_adjust_best_resolution
 
@@ -50,17 +57,17 @@ class QwenImageEditTrainer(BaseTrainer):
         self.config = config
 
         # Component attributes
-        self.vae = None  # AutoencoderKLQwenImage
-        self.text_encoder = None  # Qwen2_5_VLForConditionalGeneration (text_encoder)
-        self.dit = None  # QwenImageTransformer2DModel
-        self.tokenizer = None  # Qwen2Tokenizer
-        self.scheduler = None  # FlowMatchEulerDiscreteScheduler
+        self.vae: AutoencoderKLQwenImage
+        self.text_encoder: Qwen2_5_VLForConditionalGeneration
+        self.dit: QwenImageTransformer2DModel
+        self.tokenizer: Qwen2Tokenizer
+        self.scheduler: FlowMatchEulerDiscreteScheduler
 
         # Parameters obtained from VAE configuration
-        self.vae_scale_factor = None
-        self.vae_latent_mean = None
-        self.vae_latent_std = None
-        self.vae_z_dim = None
+        self.vae_scale_factor: int
+        self.vae_latent_mean: float
+        self.vae_latent_std: float
+        self.vae_z_dim: int
         self.adapter_name = config.model.lora.adapter_name
 
     def get_pipeline_class(self):
@@ -756,7 +763,7 @@ class QwenImageEditTrainer(BaseTrainer):
         if packed_input.shape[1] < max_seq:
             # Convert to list for padding
             packed_list = [packed_input[i, : seq_lens[i]] for i in range(batch_size)]
-            padded_packed, img_attention_mask = self._pad_latents_for_multi_res(packed_list, max_seq)
+            padded_packed, img_attention_mask = pad_latents_for_multi_res(packed_list, max_seq)
         else:
             padded_packed = packed_input
             # Create attention mask
@@ -814,7 +821,9 @@ class QwenImageEditTrainer(BaseTrainer):
         return model_pred, img_attention_mask
 
     def _compute_loss(self, embeddings: dict) -> torch.Tensor:
+        assert self.accelerator is not None, "accelerator is not set"
         device = self.accelerator.device
+        dtype = self.weight_dtype
         image_latents = embeddings["image_latents"].to(self.weight_dtype).to(device)
         control_latents = embeddings["control_latents"].to(self.weight_dtype).to(device)
         prompt_embeds = embeddings["prompt_embeds"].to(self.weight_dtype).to(device)
@@ -876,16 +885,8 @@ class QwenImageEditTrainer(BaseTrainer):
         weighting = compute_loss_weighting_for_sd3(weighting_scheme="none", sigmas=sigmas)
         target = noise - image_latents
 
-        # ✅ Use BaseTrainer's loss computation for multi-resolution
         if is_multi_res and img_attention_mask is not None:
-            # Normalize loss by valid tokens only
-            loss = self._compute_loss_multi_resolution(
-                model_pred=model_pred,
-                target=target,
-                attention_mask=img_attention_mask,
-                edit_mask=edit_mask,
-                weighting=weighting,
-            )
+            raise NotImplementedError("Multi-resolution mode is not implemented for image edit")
         else:
             # pred shape [B, seq, C], target shape [B, seq, C]
             loss = self.forward_loss(model_pred, target, weighting, edit_mask)
@@ -1194,13 +1195,16 @@ class QwenImageEditTrainer(BaseTrainer):
         width_latent = 2 * (int(width_image) // (self.vae_scale_factor * 2))
 
         shape = (batch_size, 1, num_channels_latents, height_latent, width_latent)
-        latents = randn_tensor(
-            shape,
-            generator=None,
-            device=device,
-            dtype=self.weight_dtype,
-        )
-        latents = self._pack_latents(latents, batch_size, num_channels_latents, height_latent, width_latent)
+        if "latents" in embeddings:
+            latents = embeddings["latents"].to(device, dtype=self.weight_dtype)
+        else:
+            latents = randn_tensor(
+                shape,
+                generator=None,
+                device=device,
+                dtype=self.weight_dtype,
+            )
+            latents = self._pack_latents(latents, batch_size, num_channels_latents, height_latent, width_latent)
         image_seq_len = latents.shape[1]
 
         print("shape of latents", latents.shape, control_latents.shape)

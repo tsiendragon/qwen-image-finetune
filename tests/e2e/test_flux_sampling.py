@@ -146,8 +146,8 @@ class TestFluxSampling:
         print('ref_image min', ref_image.min(), 'ref_image max', ref_image.max())
         rel_error = np.linalg.norm(image_np - ref_image) / (np.linalg.norm(image_np) + np.linalg.norm(ref_image)+1e-6)
         print(f"Relative error {rel_error} is less than 1e-4")
-        cv2.imwrite('/mnt/nas/public2/lilong/repos/qwen-image-finetune/test_sampling_output.png', image_np[..., ::-1])
-        print('save image to test_sampling_output.png')
+        # cv2.imwrite('test_sampling_output.png', image_np[..., ::-1])
+        # print('save image to test_sampling_output.png')
         # Note: Uncomment below to save output image for debugging
         # cv2.imwrite(str(test_resources / "reference_outputs" / "images" / "test_flux_kontext_output_unit_test.png"), image_np[..., ::-1])
         assert rel_error < 0.01, f"Relative error {rel_error} is greater than 0.01"
