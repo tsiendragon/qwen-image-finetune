@@ -11,7 +11,7 @@ model:
 
 
 data:
-  class_path: src.data.dataset.ImageDataset
+  class_path: qflux.data.dataset.ImageDataset
   init_args:
     dataset_path:
       - repo_id: TsienDragon/character-composition
@@ -21,7 +21,7 @@ data:
     use_edit_mask: true  # if true, dataset output edit mask
     selected_control_indexes: [1]
     processor:
-      class_path: src.data.preprocess.ImageProcessor
+      class_path: qflux.data.preprocess.ImageProcessor
       init_args:
         process_type: center_crop
         resize_mode: bilinear

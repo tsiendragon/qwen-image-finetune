@@ -1,5 +1,5 @@
 safetensors
-diffusers
+diffusers>=0.36.0
 transformers==4.52.4
 pyyaml
 oyaml
@@ -32,3 +32,9 @@ pydantic==2.11.7
 blake3
 pillow
 rich
+pre-commit
+ruff
+mypy
+dotenv
+types-tabulate
+types-PyYAML

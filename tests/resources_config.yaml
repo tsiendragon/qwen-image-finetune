@@ -1,0 +1,127 @@
+# Test Resources Configuration
+# 定义所有测试资源的元数据和依赖关系
+
+# HuggingFace 仓库配置
+repository:
+  repo_id: "TsienDragon/qwen-image-finetune-test-resources"
+  repo_type: "dataset"
+  revision: "main"
+
+# 资源组定义
+# 每个资源组包含一组相关的文件，可以按需下载
+resource_groups:
+  # Flux 模型输入测试数据
+  flux_input:
+    description: "Flux transformer 输入测试数据"
+    files:
+      - "flux_models/transformer/input/flux_input.pth"
+    size: "19MB"
+    used_by:
+      - "tests/src/models/test_flux_transform_custom.py"
+
+  # Flux 训练样本数据 - 样本1
+  flux_training_sample1:
+    description: "Flux 训练流程测试样本1（face segmentation）"
+    files:
+      - "flux_training/face_segmentation/sample1/sample_control_ids.pt"
+      - "flux_training/face_segmentation/sample1/sample_control_latents.pt"
+      - "flux_training/face_segmentation/sample1/sample_guidance.pt"
+      - "flux_training/face_segmentation/sample1/sample_image_latents.pt"
+      - "flux_training/face_segmentation/sample1/sample_latent_ids.pt"
+      - "flux_training/face_segmentation/sample1/sample_latent_model_input.pt"
+      - "flux_training/face_segmentation/sample1/sample_loss.pt"
+      - "flux_training/face_segmentation/sample1/sample_model_pred.pt"
+      - "flux_training/face_segmentation/sample1/sample_noise.pt"
+      - "flux_training/face_segmentation/sample1/sample_pooled_prompt_embeds.pt"
+      - "flux_training/face_segmentation/sample1/sample_prompt_embeds.pt"
+      - "flux_training/face_segmentation/sample1/sample_t.pt"
+      - "flux_training/face_segmentation/sample1/sample_text_ids.pt"
+    size: "11MB"
+    used_by:
+      - "tests/e2e/test_transformer_consistency.py"
+      - "tests/e2e/test_flux_loss.py"
+
+  # Flux 训练样本数据 - 样本2
+  flux_training_sample2:
+    description: "Flux 训练流程测试样本2（face segmentation）"
+    files:
+      - "flux_training/face_segmentation/sample2/sample_control_ids.pt"
+      - "flux_training/face_segmentation/sample2/sample_control_latents.pt"
+      - "flux_training/face_segmentation/sample2/sample_guidance.pt"
+      - "flux_training/face_segmentation/sample2/sample_image_latents.pt"
+      - "flux_training/face_segmentation/sample2/sample_latent_ids.pt"
+      - "flux_training/face_segmentation/sample2/sample_latent_model_input.pt"
+      - "flux_training/face_segmentation/sample2/sample_loss.pt"
+      - "flux_training/face_segmentation/sample2/sample_model_pred.pt"
+      - "flux_training/face_segmentation/sample2/sample_noise.pt"
+      - "flux_training/face_segmentation/sample2/sample_pooled_prompt_embeds.pt"
+      - "flux_training/face_segmentation/sample2/sample_prompt_embeds.pt"
+      - "flux_training/face_segmentation/sample2/sample_t.pt"
+      - "flux_training/face_segmentation/sample2/sample_text_ids.pt"
+    size: "12MB"
+    used_by:
+      - "tests/e2e/test_transformer_consistency.py"
+      - "tests/e2e/test_flux_loss.py"
+
+  # Flux 采样测试数据
+  flux_sampling:
+    description: "Flux 采样和生成测试数据"
+    files:
+      - "flux_sampling/embeddings/sample_control_ids.pt"
+      - "flux_sampling/embeddings/sample_control_image.pt"
+      - "flux_sampling/embeddings/sample_control_latents.pt"
+      - "flux_sampling/embeddings/sample_latent_ids.pt"
+      - "flux_sampling/embeddings/sample_latents.pt"
+      - "flux_sampling/embeddings/sample_pooled_prompt_embeds.pt"
+      - "flux_sampling/embeddings/sample_prompt_embeds.pt"
+      - "flux_sampling/embeddings/sample_text_ids.pt"
+      - "flux_sampling/embeddings/aaa_sample_control_image.pt"
+    size: "7.3MB"
+    used_by:
+      - "tests/e2e/test_flux_sampling.py"
+
+  # 输出参考图像
+  reference_outputs:
+    description: "测试输出参考图像"
+    files:
+      - "reference_outputs/images/test_flux_kontext_output_unit_test.png"
+      - "reference_outputs/images/test_flux_kontext_output.png"
+    size: "688KB"
+    used_by:
+      - "tests/e2e/test_flux_sampling.py"
+
+# 测试文件到资源组的映射
+# 用于自动确定测试需要哪些资源
+test_dependencies:
+  "tests/src/models/test_flux_transform_custom.py":
+    - flux_input
+
+  "tests/e2e/test_transformer_consistency.py":
+    - flux_training_sample1
+    - flux_training_sample2
+
+  "tests/e2e/test_flux_loss.py":
+    - flux_training_sample1
+    - flux_training_sample2
+
+  "tests/e2e/test_flux_sampling.py":
+    - flux_sampling
+    - reference_outputs
+
+# 路径映射：旧路径 -> 新路径
+# 用于兼容性，将旧的资源路径映射到新的组织结构
+path_mapping:
+  "flux_input.pth": "flux_models/transformer/input/flux_input.pth"
+  "flux_training_face_seg_sample1/": "flux_training/face_segmentation/sample1/"
+  "flux_training_face_seg_sample2/": "flux_training/face_segmentation/sample2/"
+  "sample_control_ids.pt": "flux_sampling/embeddings/sample_control_ids.pt"
+  "sample_control_image.pt": "flux_sampling/embeddings/sample_control_image.pt"
+  "sample_control_latents.pt": "flux_sampling/embeddings/sample_control_latents.pt"
+  "sample_latent_ids.pt": "flux_sampling/embeddings/sample_latent_ids.pt"
+  "sample_latents.pt": "flux_sampling/embeddings/sample_latents.pt"
+  "sample_pooled_prompt_embeds.pt": "flux_sampling/embeddings/sample_pooled_prompt_embeds.pt"
+  "sample_prompt_embeds.pt": "flux_sampling/embeddings/sample_prompt_embeds.pt"
+  "sample_text_ids.pt": "flux_sampling/embeddings/sample_text_ids.pt"
+  "aaa_sample_control_image.pt": "flux_sampling/embeddings/aaa_sample_control_image.pt"
+  "test_flux_kontext_output.png": "reference_outputs/images/test_flux_kontext_output.png"
+  "test_flux_kontext_output_unit_test.png": "reference_outputs/images/test_flux_kontext_output_unit_test.png"

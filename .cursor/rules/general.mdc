@@ -37,6 +37,7 @@ Version format: <major>.<minor>.<patch>
 •   Provide checkpoint/config migrators; if present and defaults unchanged, avoid MAJOR
 •   CI must load N−1/N−2 checkpoints & configs unless a MAJOR release
 
+
 ## Other rules
 1. do note create examples/ script or other script for example usage. Make the code/project concise and clean
 2. Do not use relative import in code. For exmaple, do not use `from ..models.base_network import BaseNetwork`, but use `from src.models.base_network import BaseNetwork`

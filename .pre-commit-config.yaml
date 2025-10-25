@@ -1,0 +1,38 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude: ^docs/theme/
+      - id: trailing-whitespace
+        exclude: |
+          (?x)^(
+              docs/theme/ |
+              VERSION
+          )$
+
+  # Ruff：统一 Lint + Auto-fix + Import Sort + Formatter（替代 flake8/isort/black）
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.2
+    hooks:
+      - id: ruff
+        args: [--fix]   # 自动修复（含导入排序 I001）
+      - id: ruff-format # 代码格式化（Black 风格）
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        name: mypy (lenient, src only)
+        files: ^src/                       # 只检查源码
+        exclude: ^(tests|scripts|docs)/    # 跳过这些目录
+        args:
+          - --config-file=pyproject.toml   # 使用你项目内的 mypy 配置
+        language_version: python3.12        # 和你项目版本一致
+        additional_dependencies:
+          - typing-extensions==4.8.0       # Py3.8 建议加
+          - types-requests
+          - types-python-dateutil
+          - types-PyYAML
+          # - pydantic==1.*                 # 如果用 pydantic v1
+          # - pydantic==2.*                 # 如果用 pydantic v2（无需插件）

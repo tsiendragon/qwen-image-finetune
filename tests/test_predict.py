@@ -19,7 +19,7 @@ project_root = Path(__file__).parent.parent
 print('project_root', project_root)
 sys.path.insert(0, str(project_root))
 try:
-    from src.data.config import load_config_from_yaml
+    from qflux.data.config import load_config_from_yaml
 except ImportError as e:
     print(f"导入错误: {e}")
     print("请确保在项目根目录运行此脚本")
@@ -187,7 +187,7 @@ def main():
         # 加载配置文件
         config_path = project_root / args.config
         base_config = load_config(config_path)
-        from src.main import import_trainer
+        from qflux.main import import_trainer
 
         Trainer = import_trainer(base_config)
         image, prompt = load_test_data(args.image, args.prompt)

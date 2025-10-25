@@ -12,7 +12,7 @@ model:
     pretrained_weight: null
 
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path:
       - split: train
@@ -23,7 +23,7 @@ data:
     use_cache: ${cache.use_cache}
     cache_drop_rate: 0.1  # 10% probability of using empty prompt for training
     processor:
-      class_path: "src.data.preprocess.ImageProcessor"
+      class_path: "qflux.data.preprocess.ImageProcessor"
       init_args:
         process_type: center_crop
         target_size: [832, 576]

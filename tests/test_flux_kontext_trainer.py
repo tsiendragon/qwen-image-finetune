@@ -7,7 +7,7 @@ import torch
 import numpy as np
 from PIL import Image
 from unittest.mock import Mock, patch, MagicMock
-from src.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.flux_kontext_trainer import FluxKontextLoraTrainer
 
 
 class TestFluxKontextLoraTrainer:

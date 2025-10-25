@@ -11,12 +11,10 @@ import pytest
 import torch
 import logging
 from pathlib import Path
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.data.config import load_config_from_yaml
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.data.config import load_config_from_yaml
 
 logger = logging.getLogger(__name__)
-
-RESOURCES_DIR = Path(__file__).parent.parent / "resources"
 
 
 def load_sample_data(sample_dir: Path):
@@ -53,15 +51,15 @@ def load_sample_data(sample_dir: Path):
 
 
 @pytest.fixture
-def sample_data_1():
+def sample_data_1(test_resources):
     """Fixture to load first sample data"""
-    return load_sample_data(RESOURCES_DIR / "flux_training_face_seg_sample1")
+    return load_sample_data(test_resources / "flux_training" / "face_segmentation" / "sample1")
 
 
 @pytest.fixture
-def sample_data_2():
+def sample_data_2(test_resources):
     """Fixture to load second sample data"""
-    return load_sample_data(RESOURCES_DIR / "flux_training_face_seg_sample2")
+    return load_sample_data(test_resources / "flux_training" / "face_segmentation" / "sample2")
 
 
 class MockAccelerator:

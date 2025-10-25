@@ -21,7 +21,7 @@ from tqdm import tqdm
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.utils.huggingface import upload_editing_dataset  # noqa: E402
+from qflux.utils.huggingface import upload_editing_dataset  # noqa: E402
 
 
 logging.basicConfig(

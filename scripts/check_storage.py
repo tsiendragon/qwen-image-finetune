@@ -16,7 +16,7 @@ import psutil
 
 
 class StorageChecker:
-    def __init__(self, target_path=None):
+    def __init__(self, target_path: str | None = None):
         """
         初始化存储检测器
         :param target_path: 目标路径，默认为当前目录
@@ -25,14 +25,14 @@ class StorageChecker:
         self.mount_point = self._get_mount_point()
         self.device_name = self._get_device_name()
 
-    def _get_mount_point(self):
+    def _get_mount_point(self) -> str:
         """获取目标路径的挂载点"""
         path = Path(self.target_path).resolve()
         while not os.path.ismount(str(path)):
             path = path.parent
         return str(path)
 
-    def _get_device_name(self):
+    def _get_device_name(self) -> str | None:
         """获取设备名称"""
         try:
             # 获取挂载信息
@@ -57,7 +57,7 @@ class StorageChecker:
             print(f"错误：无法获取设备名称: {e}")
             return None
 
-    def check_device_type(self):
+    def check_device_type(self) -> str:
         """检查设备类型（SSD/HDD）"""
         if not self.device_name:
             return "未知"
@@ -85,7 +85,7 @@ class StorageChecker:
             print(f"警告：无法检测设备类型: {e}")
             return "未知"
 
-    def test_sequential_read_speed(self, file_size_mb=100, block_size_kb=1024):
+    def test_sequential_read_speed(self, file_size_mb: int = 100, block_size_kb: int = 1024) -> float:
         """测试顺序读取速度"""
         print(f"正在测试顺序读取速度（文件大小: {file_size_mb}MB）...")
 
@@ -121,7 +121,7 @@ class StorageChecker:
             if os.path.exists(test_file):
                 os.remove(test_file)
 
-    def test_sequential_write_speed(self, file_size_mb=100, block_size_kb=1024):
+    def test_sequential_write_speed(self, file_size_mb: int = 100, block_size_kb: int = 1024) -> float:
         """测试顺序写入速度"""
         print(f"正在测试顺序写入速度（文件大小: {file_size_mb}MB）...")
 
@@ -151,7 +151,7 @@ class StorageChecker:
             if os.path.exists(test_file):
                 os.remove(test_file)
 
-    def test_random_io_speed(self, file_size_mb=50, iterations=100):
+    def test_random_io_speed(self, file_size_mb: int = 50, iterations: int = 100) -> dict:
         """测试随机I/O速度"""
         print(f"正在测试随机I/O速度（{iterations}次随机读取）...")
 
@@ -198,14 +198,14 @@ class StorageChecker:
             if os.path.exists(test_file):
                 os.remove(test_file)
 
-    def test_stability(self, rounds=5, file_size_mb=50):
+    def test_stability(self, rounds: int = 5, file_size_mb: int = 50)-> dict:
         """测试存储稳定性"""
         print(f"正在测试存储稳定性（{rounds}轮测试）...")
 
         read_speeds = []
         write_speeds = []
 
-        for i in range(rounds):
+        for i in range(rounds):  # noqa: PERF102
             print(f"  第 {i+1}/{rounds} 轮...")
 
             # 小文件测试以减少时间
@@ -230,7 +230,7 @@ class StorageChecker:
             'write_cv': write_cv
         }
 
-    def get_disk_info(self):
+    def get_disk_info(self)-> dict:
         """获取磁盘基本信息"""
         try:
             disk_usage = psutil.disk_usage(self.target_path)
@@ -247,7 +247,7 @@ class StorageChecker:
             print(f"错误：无法获取磁盘信息: {e}")
             return {}
 
-    def run_full_test(self):
+    def run_full_test(self)-> None:
         """运行完整的存储测试"""
         print("=" * 60)
         print("存储设备检测与性能测试")
@@ -326,7 +326,7 @@ class StorageChecker:
         print("=" * 60)
 
 
-def main():
+def main()-> None:
     import argparse
 
     parser = argparse.ArgumentParser(description='存储设备性能检测工具')
