@@ -5,6 +5,8 @@ from collections.abc import Callable
 
 import safetensors.torch
 import torch
+import torch.nn as nn
+from torch.nn.parameter import Parameter
 
 
 def classify_lora_weight(lora_weight):
@@ -33,8 +35,34 @@ def get_lora_layers(model):
 
     for name, module in model.named_children():
         fn_recursive_find_lora_layer(name, module, lora_layers)
-
     return lora_layers
+
+
+def collect_lora_linears(root: nn.Module) -> list[nn.Linear]:
+    loras = []
+    for m in root.modules():
+        if isinstance(m, nn.Linear):
+            # 常见 PEFT LoRA 标记
+            if (
+                hasattr(m, "lora_A")
+                or hasattr(m, "lora_B")
+                or hasattr(m, "lora_embedding_A")
+                or hasattr(m, "lora_embedding_B")
+                or hasattr(m, "lora_edit")
+                or hasattr(m, "lora_down")
+                or hasattr(m, "lora_up")
+            ):  # 你自定义的标记
+                loras.append(m)
+                continue
+            # 兜底：该 Linear 下有名字包含 "lora" 的子参数，或除了 weight/bias 外仍有可训练参数
+            names_params = dict[str, Parameter](m.named_parameters(recurse=False))
+            if any(("lora" in n) for n in names_params.keys()):
+                loras.append(m)
+                continue
+            other_trainables = [p for n, p in names_params.items() if n not in ("weight", "bias") and p.requires_grad]
+            if other_trainables:
+                loras.append(m)
+    return loras
 
 
 class FpsLogger:
@@ -172,3 +200,58 @@ class FpsLogger:
 
     def last_fps(self):
         return float(self._last_fps)
+
+
+def get_lora_state_dict_oom_safe(model, adapter_name: str = "default"):
+    """
+    OOM-safe：仅读取 PEFT 风格的 LoRA 子模块 (lora_A/lora_B/...),
+    导出到 CPU，并去掉 ".{adapter_name}" 后缀，便于后续 convert_state_dict_to_diffusers。
+    """
+    import torch
+    import torch.nn as nn
+
+    model = getattr(model, "_orig_mod", model)
+
+    # 安全检查：LoRA 不应被 FSDP 切分
+    for n, p in model.named_parameters():
+        if ("lora_" in n or "lora_recover" in n) and getattr(p, "_is_sharded", False):
+            raise RuntimeError(f"LoRA param is sharded by FSDP: {n}")
+
+    sd = {}
+
+    def _put(k: str, t: torch.Tensor):
+        if adapter_name:
+            k = k.replace(f".{adapter_name}", "")
+        # 清理 FSDP/包装前缀，避免保存时出现不一致
+        k = (
+            k.replace("._fsdp_wrapped_module.", ".")
+            .replace("._checkpoint_wrapped_module.", ".")
+            .replace("._offload_wrapped_module.", ".")
+        )
+        if k.startswith("module."):
+            k = k[len("module.") :]
+        sd[k] = t.detach().to("cpu", non_blocking=True)
+
+    with torch.inference_mode():
+        # 只抓 PEFT 的子模块：lora_A / lora_B / lora_embedding_A / lora_embedding_B / (可选) adapter_name
+        for mod_name, m in model.named_modules():
+            for attr in (
+                "lora_A",
+                "lora_B",
+                "lora_embedding_A",
+                "lora_embedding_B",
+                adapter_name,  # 一些实现把 adapter_name 当子模块名
+            ):
+                if hasattr(m, attr):
+                    sub = getattr(m, attr)
+                    if isinstance(sub, nn.Module):
+                        for pn, p in sub.named_parameters(recurse=False):
+                            _put(f"{mod_name}.{attr}.{pn}", p)
+
+        # 兜底：极少实现把 lora_* 直接挂在本体上
+        for n, p in model.named_parameters():
+            if ("lora_A." in n or "lora_B." in n or "lora_embedding_" in n) and n not in sd:
+                _put(n, p)
+
+    torch.cuda.empty_cache()
+    return sd

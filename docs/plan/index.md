@@ -4,6 +4,8 @@ This index summarizes active and upcoming initiatives. Each entry links to a det
 
 | Plan | Description | Status | Details |
 | --- | --- | --- | --- |
+| FSDP Memory Optimization | Implement FSDP to reduce memory usage for FluxKontext BF16 training | In progress | [fsdp_memory_optimization.md](./fsdp_memory_optimization.md) |
+| Training Performance Benchmarks | Track memory usage and throughput across different configurations | In progress | [training_performance_benchmarks.md](./training_performance_benchmarks.md) |
 | Flux Kontext Enhancements | Extend Kontext-based training, sampling, and deployment workflows | In progress | [flux_kontext_implement.md](./flux_kontext_implement.md) |
 | Per-Sample RoPE Experiments | Evaluate per-sample rotary positional encoding improvements | Exploring | [flux-per-sample-rope-implementation.md](./flux-per-sample-rope-implementation.md) |
 | Multi-Control Training | Support multiple control inputs with consistent scheduling | Completed | [multi_control.md](./multi_control.md) |
