@@ -8,7 +8,9 @@ This repository provides a comprehensive framework for fine-tuning image editing
 
 ## New
 
-- **🧪 Test Infrastructure Improvements (v3.0.1)**: Enhanced test resources management with HuggingFace Hub integration. Test resources are now automatically downloaded on-demand, reducing repository size and improving maintainability. Added comprehensive E2E tests for Qwen-Image-Edit and Qwen-Image-Edit-Plus sampling workflows. See [CHANGELOG](docs/changelog/v3.0.1.md) for details.
+- **🔧 FSDP LoRA Checkpoint Fix (v3.0.2)**: Fixed FSDP training issues with LoRA checkpoint saving and documented performance benchmarks across different training strategies. BF16 FSDP shows optimal memory-performance balance (10GB memory, 1.7 FPS) compared to FP4 DDP (25GB memory, 0.4 FPS). See [CHANGELOG:v3.0.2](docs/changelog/v3.0.2.md) for details.
+
+- **🧪 Test Infrastructure Improvements (v3.0.1)**: Enhanced test resources management with HuggingFace Hub integration. Test resources are now automatically downloaded on-demand, reducing repository size and improving maintainability. Added comprehensive E2E tests for Qwen-Image-Edit and Qwen-Image-Edit-Plus sampling workflows. See [CHANGELOG](docs/changelog/v3.0.1.md) for details.v
 
 - **🎯 Multi-Resolution Mixed Training (v3.0.0)**: Revolutionary multi-resolution training support that allows training with multiple resolution candidates in a single session. The system intelligently selects the optimal resolution based on each image's aspect ratio, supporting both simple shared-resolution mode and advanced per-image-type configuration. Compatible with all model architectures and training modes. See [CHANGELOG](docs/changelog/index.md) for complete details.
   - Simple mode: `multi_resolutions: [320*320, 512*512, 640*640]`
@@ -88,6 +90,7 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 - **HuggingFace Integration**: Full compatibility with HuggingFace ecosystem for LoRA weights sharing and deployment
 - **Auto-Upload to HuggingFace**: One-click upload of trained LoRA weights to HuggingFace Hub
 - **Multi-GPU Support**: Distributed training capabilities with gradient accumulation
+- **FSDP Training**: Fully Sharded Data Parallel training with optimized memory usage (10GB vs 25GB)
 - **Quantization Support**: FP4/FP8/FP16 quantization for reduced memory usage and performance optimization
 - **Flexible Architecture**: Modular design supporting various vision-language tasks
 - **Production Ready**: Comprehensive testing suite and deployment configurations
