@@ -6,7 +6,7 @@
 
 ## 背景与问题
 
-当前在4×RTX 4090环境下训练FluxKontext模型时，使用BF16精度会导致内存溢出(OOM)问题。这限制了我们在有限硬件资源下的训练能力，特别是对于较大模型或批量大小。
+当前在4×RTX 4090环境下训练FluxKontext模型时，使用BF16精度的DDP模式会导致内存溢出(OOM)问题。RTX 4090显卡有24GB显存，而BF16 DDP训练需要超过24GB的内存，无法直接运行。这限制了我们在有限硬件资源下的训练能力，特别是对于较大模型或批量大小。
 
 ## 目标
 
@@ -43,20 +43,22 @@ FSDP通过以下机制减少内存使用：
 
 ### 3. 配置参数设计
 
+```bash
+# FSDP 配置
+CUDA_VISIBLE_DEVICES=0,1 \
+accelerate launch \
+  --num_processes 2 \
+  --mixed_precision bf16 \
+  --use_fsdp \
+  --fsdp_sharding_strategy 1 \  # 1 = FULL_SHARD
+  -m qflux.main --config $config_file
+```
+
 ```yaml
-trainer:
-  fsdp:
-    enabled: true
-    sharding_strategy: "FULL_SHARD"  # 可选: FULL_SHARD, SHARD_GRAD_OP, NO_SHARD
-    cpu_offload: false
-    mixed_precision: true
-    activation_checkpointing: true
-    backward_prefetch: "BACKWARD_PRE"  # 可选: BACKWARD_PRE, BACKWARD_POST
-    forward_prefetch: true
-    limit_all_gathers: true
-    use_orig_params: false
-    sync_module_states: true
-    min_num_params: 1e6  # 最小参数量阈值，小于此值的模块不分片
+# 模型配置
+model:
+  pretrained_model_name_or_path: black-forest-labs/FLUX.1-Kontext-dev
+  quantize: false
 ```
 
 ## 预期效果
@@ -81,6 +83,10 @@ trainer:
    - 测量相同配置下FSDP vs DDP的内存使用
    - 比较训练吞吐量和迭代时间
    - 对比BF16 DDP、FP4 DDP和BF16 FSDP三种配置的训练效率、内存占用和收敛性能
+   - 初步测试结果：
+     - BF16 DDP: 内存需求超过24GB，在RTX 4090上直接OOM
+     - FP4 DDP: 每GPU内存占用约25GB，吞吐量约0.4 FPS
+     - BF16 FSDP: 每GPU内存占用约10GB，吞吐量约1.7 FPS
 
 2. **功能验证**：
    - 验证模型收敛性是否受影响
@@ -107,12 +113,12 @@ trainer:
 
 ## 风险与缓解
 
-| 风险 | 影响 | 缓解措施 |
-|------|------|---------|
-| 通信瓶颈导致训练速度显著下降 | 中 | 实现梯度累积和通信优化，调整分片粒度 |
-| 与现有功能冲突（如LoRA） | 高 | 专门测试FSDP与LoRA的兼容性，必要时实现适配层 |
-| Checkpoint兼容性问题 | 中 | 实现专用的保存/加载逻辑，支持FSDP模型转换为常规模型 |
-| 调试难度增加 | 低 | 添加详细日志和内存分析工具 |
+| 风险 | 影响 | 缓解措施 | 状态 |
+|------|------|---------|------|
+| 通信瓶颈导致训练速度显著下降 | 中 | 实现梯度累积和通信优化，调整分片粒度 | 进行中 |
+| 与现有功能冲突（如LoRA） | 高 | 专门测试FSDP与LoRA的兼容性，必要时实现适配层 | 进行中 |
+| Checkpoint兼容性问题 | 中 | 实现专用的保存/加载逻辑，支持FSDP模型转换为常规模型 | 已解决(v3.0.2) |
+| 调试难度增加 | 低 | 添加详细日志和内存分析工具 | 进行中 |
 
 ## 后续工作
 
