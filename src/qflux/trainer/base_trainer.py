@@ -3,6 +3,7 @@ Abstract Base Trainer for all trainer implementations.
 Defines the core interface that all trainers must implement.
 """
 
+import gc
 import glob
 import importlib
 import json
@@ -18,18 +19,20 @@ import numpy as np
 import PIL
 import safetensors.torch
 import torch
-import torch.nn as nn
 import yaml
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration
 from diffusers import FluxKontextPipeline
+from diffusers.loaders import AttnProcsLayers
 from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.utils.torch_utils import is_compiled_module
 from peft.utils import get_peft_model_state_dict
-from torch.distributed.fsdp import ShardingStrategy  # BackwardPrefetch
+from torch.distributed.fsdp import (
+    BackwardPrefetch,
+    MixedPrecision,
+    ShardingStrategy,  # BackwardPrefetch
+)
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy  # transformer_auto_wrap_policy
-
-# from qflux.utils.tools import extract_batch_field
 from tqdm import tqdm
 
 from qflux.data.cache_manager import EmbeddingCacheManager
@@ -38,38 +41,13 @@ from qflux.models.quantize import quantize_model_to_fp8
 from qflux.scheduler.custom_flowmatch_scheduler import FlowMatchEulerDiscreteScheduler
 from qflux.trainer.constants import LORA_FILE_BASE_NAME
 from qflux.utils.huggingface import download_lora
-from qflux.utils.lora_utils import FpsLogger, classify_lora_weight
+from qflux.utils.lora_utils import FpsLogger, classify_lora_weight, get_lora_layers, get_lora_state_dict_oom_safe
 from qflux.utils.model_summary import print_model_summary_table
 from qflux.utils.sampling import calculate_shift, retrieve_timesteps
 from qflux.utils.tools import calculate_sha256_file, get_git_info, instantiate_class
 
 
 logger = logging.getLogger(__name__)
-
-
-def collect_lora_linears(root: nn.Module):
-    loras = []
-    for m in root.modules():
-        if isinstance(m, nn.Linear):
-            # 常见 PEFT LoRA 标记
-            if (
-                hasattr(m, "lora_A")
-                or hasattr(m, "lora_B")
-                or hasattr(m, "lora_embedding_A")
-                or hasattr(m, "lora_embedding_B")
-                or hasattr(m, "lora_edit")
-            ):  # 你自定义的标记
-                loras.append(m)
-                continue
-            # 兜底：该 Linear 下有名字包含 "lora" 的子参数，或除了 weight/bias 外仍有可训练参数
-            names_params = dict(m.named_parameters(recurse=False))
-            if any(("lora" in n) for n in names_params.keys()):
-                loras.append(m)
-                continue
-            other_trainables = [p for n, p in names_params.items() if n not in ("weight", "bias") and p.requires_grad]
-            if other_trainables:
-                loras.append(m)
-    return loras
 
 
 class BaseTrainer(ABC):
@@ -337,19 +315,17 @@ class BaseTrainer(ABC):
             logging.info(f"Loaded optimizer and scheduler from {self.config.resume}")
 
         # sdp_kernel(enable_flash=False, enable_math=False, enable_mem_efficient=True)
-
-        plug = getattr(self.accelerator.state, "fsdp_plugin", None)
-        if plug is not None:
-            from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision
-
+        if self.is_fsdp_enabled():
+            plug = self.accelerator.state.fsdp_plugin
             # torch.backends.cuda.enable_flash_sdp(False)
             torch.backends.cuda.enable_flash_sdp(True)
 
             torch.backends.cuda.enable_mem_efficient_sdp(True)
             torch.backends.cuda.enable_math_sdp(False)
-
+            lora_mods = list(get_lora_layers(self.dit).values())
+            assert all(isinstance(m, torch.nn.Module) for m in lora_mods), "get_lora_layers 必须返回 Module 实例"
+            plug.ignored_modules = lora_mods
             plug.use_orig_params = True
-            plug.ignored_modules = collect_lora_linears(self.dit)
             plug.limit_all_gathers = True
             # plug.forward_prefetch = False
             # plug.backward_prefetch = BackwardPrefetch.BACKWARD_POST
@@ -368,24 +344,28 @@ class BaseTrainer(ABC):
             #     transformer_auto_wrap_policy,
             #     transformer_layer_cls={QwenImageTransformerBlock},  # 注意：是关键字参数
             # )
-            plug.auto_wrap_policy = partial(size_based_auto_wrap_policy, min_num_params=plug.min_num_params)
+            plug.auto_wrap_policy = partial[bool](size_based_auto_wrap_policy, min_num_params=plug.min_num_params)
             # from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
             plug.sharding_strategy = ShardingStrategy.FULL_SHARD  # FULL_SHARD   # SHARD_GRAD_OP
 
             self.dit = self.dit.to("cpu")
             torch.cuda.empty_cache()
-            import gc
-
             gc.collect()
 
             self.dit, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
                 self.dit, self.optimizer, train_dataloader, self.lr_scheduler
             )
+            u = self.accelerator.unwrap_model(self.dit)
+
+            self.lora_params2device(u, self.accelerator.device)
+
+            bad = [
+                (n, str(p.device))
+                for n, p in u.named_parameters()
+                if "lora_" in n and p.device != self.accelerator.device
+            ]
+            assert not bad, f"LoRA still on wrong device: {bad}"
         else:
-            from diffusers.loaders import AttnProcsLayers
-
-            from qflux.utils.lora_utils import get_lora_layers
-
             lora_layers_model = AttnProcsLayers(get_lora_layers(self.dit))
             lora_layers_model, optimizer, train_dataloader, lr_scheduler = self.accelerator.prepare(
                 lora_layers_model, self.optimizer, train_dataloader, self.lr_scheduler
@@ -396,6 +376,24 @@ class BaseTrainer(ABC):
 
         # Trackers already initialized in setup_accelerator
         return train_dataloader
+
+    def lora_params2device(self, u, dev):
+        # 1) 模块级搬运：凡是 LoRA 相关子模块，统统 to(device)
+        for m in u.modules():
+            for attr in ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B", self.adapter_name):
+                if hasattr(m, attr):
+                    getattr(m, attr).to(dev)
+
+        # 2) 参数/缓冲兜底（包含 lora_recover.*）
+        for n, p in u.named_parameters():
+            if ("lora_" in n or self.adapter_name in n) and p.device != dev:
+                p.data = p.data.to(dev)
+                if p.grad is not None:
+                    p.grad.data = p.grad.data.to(dev)
+
+        for n, b in u.named_buffers():
+            if ("lora_" in n or self.adapter_name in n) and getattr(b, "device", dev) != dev:
+                b.data = b.data.to(dev)
 
     def merge_lora(self):
         """Merge LoRA weights into base model"""
@@ -597,6 +595,7 @@ class BaseTrainer(ABC):
                 self.dit,
                 self.config.predict.devices.dit,
             )
+        self.dit.to("cpu")
         self.__class__.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
 
         self.setup_model_device_train_mode(stage="fit", cache=self.use_cache)
@@ -778,46 +777,32 @@ class BaseTrainer(ABC):
 
     def save_lora_fsdp(self, save_folder, adapter_name=None):
         """Save LoRA weights under FSDP with CPU offload & rank0-only."""
-        import logging
-
-        import torch.distributed as dist
-        from diffusers.utils import convert_state_dict_to_diffusers
-        from peft import get_peft_model_state_dict
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        from torch.distributed.fsdp import StateDictType
-        from torch.distributed.fsdp.fully_sharded_data_parallel import FullStateDictConfig
-
-        # unwrap
+        self.accelerator.wait_for_everyone()
         unwrapped = self.accelerator.unwrap_model(self.dit) if self.accelerator is not None else self.dit
         if is_compiled_module(unwrapped):
             unwrapped = unwrapped._orig_mod
-
         adapter_name = self.adapter_name if adapter_name is None else adapter_name
         if save_folder.endswith(".safetensors"):
             print(f"Warning: save_folder {save_folder} should be a folder")
+        dev = self.accelerator.device
+        for m in unwrapped.modules():
+            for attr in ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B", adapter_name):
+                if hasattr(m, attr):
+                    getattr(m, attr).to(dev)
 
-        # 降峰值
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-
-        # FSDP：在 CPU 上聚合 FULL state_dict，且仅 rank0 拿到字典
-        ctx = FSDP.state_dict_type(
-            unwrapped,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-        )
-
-        with torch.no_grad(), ctx:
-            is_rank0 = (not dist.is_initialized()) or dist.get_rank() == 0
-            if not is_rank0:
-                return  # 其它 rank 不保存
-
-            lora_sd = get_peft_model_state_dict(unwrapped, adapter_name=adapter_name)
+        for n, p in unwrapped.named_parameters():
+            if "lora_" in n:
+                assert not getattr(p, "_is_sharded", False), f"LoRA param {n} is sharded! Fix ignored_modules."
+        with torch.inference_mode():
+            lora_sd = get_lora_state_dict_oom_safe(unwrapped, adapter_name=adapter_name)
             lora_sd = convert_state_dict_to_diffusers(lora_sd)
 
+        # with torch.no_grad(), ctx:
+        if self.accelerator.is_main_process:
             os.makedirs(save_folder, exist_ok=True)
             self.pipeline_class.save_lora_weights(save_folder, lora_sd, safe_serialization=True)
-            logging.info(f"[FSDP] Saved LoRA weights to {save_folder}")
+            logging.info(f"[FSDP] Saved LoRA weights to {save_folder} (local-only, no trunk gather)")
+        self.accelerator.wait_for_everyone()
 
     def save_checkpoint(self, epoch, global_step, is_last=False):
         """Save checkpoint"""
@@ -825,24 +810,25 @@ class BaseTrainer(ABC):
         if not is_last and (self.global_step % self.config.train.checkpointing_steps != 0):
             self.fps_logger.resume()
             return
-        if self.accelerator.is_main_process:
-            logging.info(f"Saving checkpoint to {self.config.logging.output_dir}")
-            save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}")
-            if is_last:
-                save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last")
+        logging.info(f"Saving checkpoint to {self.config.logging.output_dir}")
+        save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}")
+        if is_last:
+            save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last")
+        if self.is_fsdp_enabled():
             os.makedirs(save_path, exist_ok=True)
+            self.save_lora_fsdp(save_path, adapter_name=self.adapter_name)
+        elif self.accelerator.is_main_process:
+            os.makedirs(save_path, exist_ok=True)
+            self.save_lora(save_path, adapter_name=self.adapter_name)
 
-            if self.is_fsdp_enabled():
-                self.save_lora_fsdp(save_path, adapter_name=self.adapter_name)
-            else:
-                self.save_lora(save_path, adapter_name=self.adapter_name)
+        state_info = {"global_step": global_step, "epoch": epoch, "is_last": is_last}
+        if is_last:
+            if not self.is_fsdp_enabled():
+                self.accelerator.save_state(save_path)  # when save in fsdp, will cause problem
+            git_info = get_git_info()
+            state_info.update(git_info)
 
-            state_info = {"global_step": global_step, "epoch": epoch, "is_last": is_last}
-            if is_last:
-                if not self.is_fsdp_enabled():
-                    self.accelerator.save_state(save_path)  # when save in fsdp, will cause problem
-                git_info = get_git_info()
-                state_info.update(git_info)
+        if self.accelerator.is_main_process:
             with open(os.path.join(save_path, "state.json"), "w") as f:
                 json.dump(state_info, f)
         if self.accelerator is not None:

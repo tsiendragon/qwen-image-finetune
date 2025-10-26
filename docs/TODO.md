@@ -4,6 +4,10 @@ Track ongoing development, documentation, and operations tasks. Update completio
 
 ## In Progress
 
+- [ ] FSDP优化实现，解决FluxKontext BF16训练的内存溢出问题
+- [ ] FSDP与LoRA兼容性测试与适配
+- [ ] FSDP checkpoint保存与加载功能
+- [ ] 对比BF16 DDP、FP4 DDP和BF16 FSDP三种配置的训练效率与性能
 - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
 - [ ] Sampling for training monitoring with TensorBoard
 - [ ] Online quantization for training and inference
