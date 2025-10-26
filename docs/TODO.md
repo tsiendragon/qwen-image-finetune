@@ -10,7 +10,7 @@ Track ongoing development, documentation, and operations tasks. Update completio
 - [ ] 对比BF16 DDP、FP4 DDP和BF16 FSDP三种配置的训练效率与性能
 - [ ] 记录不同精度训练的内存与性能指标（FP4 DDP: 25GB内存，0.4 FPS）
 - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
-- [ ] Sampling for training monitoring with TensorBoard
+- [ ] Validation sampling with TensorBoard visualization (v3.1.0)
 - [ ] Online quantization for training and inference
 - [ ] Release character-composition dataset on HuggingFace
 
