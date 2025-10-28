@@ -5,6 +5,7 @@ from torch.distributions import LogNormal
 
 from qflux.scheduler.default_weighting_scheme import default_weighing_scheme
 
+
 scheduler_config = {
     "base_image_seq_len": 256,
     "base_shift": 0.5,

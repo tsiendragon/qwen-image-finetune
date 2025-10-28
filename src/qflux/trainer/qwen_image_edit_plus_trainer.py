@@ -151,15 +151,15 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
             num_additional_controls = batch["n_controls"][0]
 
         for i in range(num_additional_controls):
-            additional_control_key = f"control_{i+1}"
+            additional_control_key = f"control_{i + 1}"
             if additional_control_key in batch:
                 # condition_images =
                 additional_control_image = batch[additional_control_key]
                 # [B,C,H,W], uint8, range [0,255]
                 condition_images.append(self.process_condition_image(additional_control_image))
                 batch[additional_control_key] = self.preprocess_image_for_vae_encoder(batch[additional_control_key])
-                batch[f"width_control_{i+1}"] = batch[additional_control_key].shape[4]
-                batch[f"height_control_{i+1}"] = batch[additional_control_key].shape[3]
+                batch[f"width_control_{i + 1}"] = batch[additional_control_key].shape[4]
+                batch[f"height_control_{i + 1}"] = batch[additional_control_key].shape[3]
         if "condition_images" in batch:
             """more precise processing compared with original Qwen-Image-Edit-Plus"""
             processed = []
@@ -444,13 +444,13 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
         data["control"] = control
 
         data["prompt"] = prompt
-        data["height"] = height if height is not None else control.shape[2]  # type: ignore[attr-defined]
-        data["width"] = width if width is not None else control.shape[3]  # type: ignore[attr-defined]
+        data["height"] = height if height is not None else control.shape[2]
+        data["width"] = width if width is not None else control.shape[3]
         img_shapes.append((3, data["height"], data["width"]))
-        img_shapes.append((3, control.shape[2], control.shape[3]))  # type: ignore[attr-defined]
+        img_shapes.append((3, control.shape[2], control.shape[3]))
 
         if height is None or width is None:
-            width, height = control.shape[2], control.shape[1]  # type: ignore[attr-defined]
+            width, height = control.shape[2], control.shape[1]
         else:
             width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
 
@@ -458,18 +458,18 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
 
         if additional_controls:
             n_controls = len(additional_controls[0])
-            new_controls: dict[str, list] = {f"control_{i+1}": [] for i in range(n_controls)}
+            new_controls: dict[str, list] = {f"control_{i + 1}": [] for i in range(n_controls)}
             # [control_1_batch1, control1_batch2, ..], [control2_batch1, control2_batch2, ..]
 
             for controls in additional_controls:
                 controls = self.preprocessor.preprocess({"controls": controls}, controls_size=controls_size)["controls"]
                 for i, control in enumerate(controls):
-                    new_controls[f"control_{i+1}"].append(control)
-                    img_shapes.append((3, control.shape[1], control.shape[2]))  # type: ignore[attr-defined]
+                    new_controls[f"control_{i + 1}"].append(control)
+                    img_shapes.append((3, control.shape[1], control.shape[2]))
 
             for i in range(n_controls):
-                control_stack = torch.stack(new_controls[f"control_{i+1}"], dim=0)
-                data[f"control_{i+1}"] = control_stack
+                control_stack = torch.stack(new_controls[f"control_{i + 1}"], dim=0)
+                data[f"control_{i + 1}"] = control_stack
             data["n_controls"] = n_controls
         else:
             data["n_controls"] = 0
@@ -477,9 +477,9 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
         if negative_prompt is not None:
             if isinstance(negative_prompt, str):
                 negative_prompt = [negative_prompt]
-            assert len(negative_prompt) == len(
-                data["prompt"]
-            ), "the number of negative_prompt should be same of control"  # NOQA
+            assert len(negative_prompt) == len(data["prompt"]), (
+                "the number of negative_prompt should be same of control"
+            )  # NOQA
             data["negative_prompt"] = negative_prompt
         data["num_inference_steps"] = num_inference_steps
         data["true_cfg_scale"] = true_cfg_scale

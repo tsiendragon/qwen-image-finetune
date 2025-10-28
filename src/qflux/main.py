@@ -9,20 +9,26 @@ from qflux.utils.logger import get_logger
 from qflux.utils.options import parse_args
 from qflux.utils.seed import seed_everything
 
+
 logger = get_logger(__name__, log_level="INFO")
 
 
 def import_trainer(config: Config):
     trainer_type = config.trainer_type
     if trainer_type == "QwenImageEdit":
-        from qflux.trainer.qwen_image_edit_trainer import QwenImageEditTrainer as Trainer
+        from qflux.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
+
+        return QwenImageEditTrainer
     elif trainer_type == "FluxKontext":
-        from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer as Trainer
+        from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+
+        return FluxKontextLoraTrainer
     elif trainer_type == "QwenImageEditPlus":
-        from qflux.trainer.qwen_image_edit_plus_trainer import QwenImageEditPlusTrainer as Trainer
+        from qflux.trainer.qwen_image_edit_plus_trainer import QwenImageEditPlusTrainer
+
+        return QwenImageEditPlusTrainer
     else:
         raise ValueError(f"Invalid trainer type: {trainer_type}")
-    return Trainer
 
 
 def main():

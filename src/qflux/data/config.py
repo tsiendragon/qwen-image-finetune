@@ -108,8 +108,8 @@ class ImageProcessorInitArgs(BaseModel):
     process_type: str = "center_crop"  # resize, _padding, center_crop
     resize_mode: str = "bilinear"
     target_size: list[int] | None = None
-    controls_size: list[int] | list[list[int]] | None = None  # None -> use target_size
-    controls_pixels: int | list[int] | None = None
+    controls_size: list[list[int]] | None = None  # None -> use target_size
+    controls_pixels: list[int] | None = None
     target_pixels: int | None = None
     # Multi-resolution training: list of target pixel candidates
     # If present, enables multi-resolution mode automatically
@@ -660,6 +660,58 @@ class LossConfig(BaseModel):
 
 
 # ----------------------------
+# Validation Config
+# ----------------------------
+
+
+class ValidationSample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    prompt: str
+    images: list[str]
+    controls_size: list[list[int]] | None = None
+    height: int | None = None
+    width: int | None = None
+    negative_prompt: str | None = None
+    guidance_scale: float | None = 3.5
+    num_inference_steps: int | None = 20
+
+
+class ValidationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = False
+    steps: int = 100
+    max_samples: int = 4
+    seed: int = 42
+    dataset: DataConfig | None = None
+    samples: list[ValidationSample] | None = None
+
+    @model_validator(mode="after")
+    def _check_when_enabled(self) -> Self:
+        if self.enabled:
+            if self.steps <= 0:
+                raise ValueError("steps must be positive when validation is enabled")
+            if self.max_samples <= 0:
+                raise ValueError("max_samples must be positive when validation is enabled")
+            if self.dataset is None and self.samples is None:
+                raise ValueError("either dataset or samples must be provided when validation is enabled")
+
+            # 验证samples的格式
+            if self.samples is not None:
+                for i, sample in enumerate(self.samples):
+                    if not sample.images:
+                        raise ValueError(f"Sample {i} must have at least one image")
+                    if not sample.prompt:
+                        raise ValueError(f"Sample {i} must have a prompt")
+
+                    # 如果没有指定controls_size，确保在运行时计算
+                    if sample.controls_size is not None and len(sample.controls_size) != len(sample.images):
+                        raise ValueError(
+                            f"Sample {i} has {len(sample.images)} images but {len(sample.controls_size)} control sizes"
+                        )
+        return self
+
+
+# ----------------------------
 # Root Config
 # ----------------------------
 class TrMode(str, Enum):
@@ -675,6 +727,7 @@ class Config(BaseModel):
     mode: TrMode = TrMode.predict
     model: ModelConfig = Field(default_factory=ModelConfig)
     data: DataConfig = Field(default_factory=DataConfig)
+    validation: ValidationConfig = Field(default_factory=ValidationConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
     lr_scheduler: LRSchedulerConfig = Field(default_factory=LRSchedulerConfig)

@@ -62,6 +62,7 @@ from qflux.models.transformer_flux import FluxAttention, Transformer2DModelOutpu
 from qflux.models.transformer_flux import FluxPosEmbed as _FluxPosEmbed
 from qflux.models.transformer_flux import FluxTransformer2DModel as _FluxTransformer2DModel
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,9 +187,7 @@ class FluxAttnProcessorPerSample:
 
     def __init__(self):
         if not hasattr(F, "scaled_dot_product_attention"):
-            raise ImportError(
-                f"{self.__class__.__name__} requires PyTorch 2.0. " "Please upgrade your pytorch version."
-            )
+            raise ImportError(f"{self.__class__.__name__} requires PyTorch 2.0. Please upgrade your pytorch version.")
 
     def _apply_rope_per_sample(
         self,

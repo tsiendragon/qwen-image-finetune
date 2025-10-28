@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,9 +61,9 @@ def compare_model_parameters(
     results["missing_keys"]["model2_missing"] = list(keys1 - keys2)
 
     if verbose:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"MODEL COMPARISON: {model1_name} vs {model2_name}")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         print(f"Total parameters in {model1_name}: {len(keys1)}")
         print(f"Total parameters in {model2_name}: {len(keys2)}")
         print(f"Common parameters: {len(common_keys)}")
@@ -142,9 +143,9 @@ def compare_model_parameters(
     }
 
     if verbose:
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print("SUMMARY")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")
         print(f"Shape matches: {shape_matches}/{len(common_keys)}")
         print(f"Value matches: {value_matches}/{len(common_keys)}")
         print(f"Models are identical: {results['summary']['models_identical']}")
@@ -193,10 +194,10 @@ def compare_flux_kontext_models(
     try:
         if component == "transformer":
             model_direct = load_flux_kontext_transformer(
-                repo=model_path, dtype=weight_dtype, device_map=device_map, use_pipeline=False
+                repo=model_path, weight_dtype=weight_dtype, device_map=device_map, use_pipeline=False
             )
             model_pipeline = load_flux_kontext_transformer(
-                repo=model_path, dtype=weight_dtype, device_map=device_map, use_pipeline=True
+                repo=model_path, weight_dtype=weight_dtype, device_map=device_map, use_pipeline=True
             )
 
         elif component == "vae":
@@ -279,9 +280,9 @@ def compare_tokenizers(
     results: dict[str, Any] = {"clip_tokenizer": {}, "t5_tokenizer": {}, "summary": {}}
 
     if verbose:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"TOKENIZER COMPARISON: {name1} vs {name2}")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
 
     # Compare CLIP tokenizers
     clip_identical = True
@@ -353,17 +354,17 @@ def run_full_flux_comparison(
     all_results = {}
 
     if verbose:
-        print(f"\n{'='*100}")
+        print(f"\n{'=' * 100}")
         print("FULL FLUX KONTEXT MODEL COMPARISON")
         print(f"Model Path: {model_path}")
         print(f"Components: {components}")
-        print(f"{'='*100}")
+        print(f"{'=' * 100}")
 
     for component in components:
         if verbose:
-            print(f"\n{'-'*60}")
+            print(f"\n{'-' * 60}")
             print(f"Comparing {component.upper()} component...")
-            print(f"{'-'*60}")
+            print(f"{'-' * 60}")
 
         try:
             results = compare_flux_kontext_models(
@@ -381,9 +382,9 @@ def run_full_flux_comparison(
 
     # Overall summary
     if verbose:
-        print(f"\n{'='*100}")
+        print(f"\n{'=' * 100}")
         print("OVERALL SUMMARY")
-        print(f"{'='*100}")
+        print(f"{'=' * 100}")
 
         for component, results in all_results.items():
             if "error" in results:

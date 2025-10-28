@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.4.0
+    rev: v6.0.0
     hooks:
       - id: end-of-file-fixer
         exclude: ^docs/theme/
@@ -13,14 +13,14 @@ repos:
 
   # Ruff：统一 Lint + Auto-fix + Import Sort + Formatter（替代 flake8/isort/black）
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.7.2
+    rev: v0.14.2
     hooks:
       - id: ruff
         args: [--fix]   # 自动修复（含导入排序 I001）
       - id: ruff-format # 代码格式化（Black 风格）
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+    rev: v1.18.2
     hooks:
       - id: mypy
         name: mypy (lenient, src only)
@@ -34,5 +34,6 @@ repos:
           - types-requests
           - types-python-dateutil
           - types-PyYAML
+          - types-tabulate
           # - pydantic==1.*                 # 如果用 pydantic v1
           # - pydantic==2.*                 # 如果用 pydantic v2（无需插件）

@@ -65,6 +65,7 @@ from qflux.models.transformer_qwenimage import (
     apply_rotary_emb_qwen,
 )
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,9 +102,9 @@ class QwenEmbedRopeBatched(_QwenEmbedRope):
         Returns:
             List of (img_freqs, txt_freqs) tuples, one per sample
         """
-        if self.pos_freqs.device != device:  # type: ignore[has-type]
-            self.pos_freqs = self.pos_freqs.to(device)  # type: ignore[has-type]
-            self.neg_freqs = self.neg_freqs.to(device)  # type: ignore[has-type]
+        if self.pos_freqs.device != device:
+            self.pos_freqs = self.pos_freqs.to(device)
+            self.neg_freqs = self.neg_freqs.to(device)
 
         batch_size = len(img_shapes_batch)
         rope_list = []
@@ -121,7 +122,7 @@ class QwenEmbedRopeBatched(_QwenEmbedRope):
 
         return rope_list
 
-    def forward(
+    def forward(  # type: ignore
         self,
         img_shapes: list[tuple[int, int, int]] | list[list[tuple[int, int, int]]],
         txt_seq_lens: int | list[int],
@@ -201,7 +202,7 @@ class QwenDoubleStreamAttnProcessorPerSample:
 
             # 确保不超出边界
             assert seq_txt + seq_img <= total_seq_len, (
-                f"Sample {b}: seq_txt({seq_txt}) + seq_img({seq_img}) = {seq_txt+seq_img} "
+                f"Sample {b}: seq_txt({seq_txt}) + seq_img({seq_img}) = {seq_txt + seq_img} "
                 f"exceeds total_seq_len({total_seq_len})"
             )
 
@@ -469,7 +470,7 @@ class QwenImageTransformer2DModel(_QwenImageTransformer2DModel):
                 )
             else:
                 # 样本形状不同 -> 使用 per-sample mode
-                image_rotary_emb = self.pos_embed.forward_batched(img_shapes, txt_seq_lens, device=hidden_states.device)  # type: ignore[arg-type]
+                image_rotary_emb = self.pos_embed.forward_batched(img_shapes, txt_seq_lens, device=hidden_states.device)
         else:
             # 输入格式为 List[Tuple] -> 原始的 shared mode
             image_rotary_emb = self.pos_embed(img_shapes, txt_seq_lens, device=hidden_states.device)

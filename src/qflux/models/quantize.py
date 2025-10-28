@@ -4,6 +4,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,7 +88,7 @@ def _quantize_with_transformer_engine(
         import transformer_engine.pytorch as te
         from transformer_engine.common import recipe
     except ImportError:
-        raise ImportError("Transformer Engine not installed. " "Install with: pip install transformer-engine")
+        raise ImportError("Transformer Engine not installed. Install with: pip install transformer-engine")
 
     # 检查GPU支持
     if not torch.cuda.is_available():
@@ -96,7 +97,7 @@ def _quantize_with_transformer_engine(
     gpu_capability = torch.cuda.get_device_capability()
     if gpu_capability[0] < 8:  # 需要计算能力8.0+（A100及以上）
         logger.warning(
-            f"GPU compute capability {gpu_capability} may not fully support FP8. " f"Recommended: 8.0+ (A100/H100)"
+            f"GPU compute capability {gpu_capability} may not fully support FP8. Recommended: 8.0+ (A100/H100)"
         )
 
     # 创建FP8配方
@@ -173,7 +174,7 @@ def _quantize_with_bitsandbytes(
         import bitsandbytes as bnb
         from bitsandbytes.nn import Linear4bit, Linear8bitLt
     except ImportError:
-        raise ImportError("BitsAndBytes not installed. " "Install with: pip install bitsandbytes")
+        raise ImportError("BitsAndBytes not installed. Install with: pip install bitsandbytes")
 
     # 移动模型到设备
     model = model.to(device)

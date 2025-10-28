@@ -145,8 +145,7 @@ class ImageDataset(Dataset):
         else:
             self.dataset_paths = [dataset_path]
 
-            self.hf_datasets: dict[str, Any] = {}
-
+        self.hf_datasets: dict[str, Any] = {}
         self.cache_dir = data_config.cache_dir
         self.use_cache = data_config.use_cache
         self.selected_control_indexes = data_config.selected_control_indexes
@@ -445,8 +444,8 @@ class ImageDataset(Dataset):
         if "controls" in data:
             controls_sum_hash = file_hashes["control_hash"]
             for i in range(len(data["controls"])):
-                file_hashes[f"control_{i+1}_hash"] = self.cache_manager.get_hash(data["controls"][i])
-                controls_sum_hash += file_hashes[f"control_{i+1}_hash"]
+                file_hashes[f"control_{i + 1}_hash"] = self.cache_manager.get_hash(data["controls"][i])
+                controls_sum_hash += file_hashes[f"control_{i + 1}_hash"]
             file_hashes["controls_sum_hash"] = controls_sum_hash
         elif "control" in data:
             file_hashes["controls_sum_hash"] = file_hashes["control_hash"]
@@ -557,7 +556,7 @@ class ImageDataset(Dataset):
         if "controls" in data:
             n_controls = len(data["controls"])
             for i in range(n_controls):
-                data[f"control_{i+1}"] = data["controls"][i]
+                data[f"control_{i + 1}"] = data["controls"][i]
             del data["controls"]
             data["n_controls"] = n_controls
         else:

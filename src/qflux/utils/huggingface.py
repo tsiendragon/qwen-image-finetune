@@ -10,6 +10,7 @@ from huggingface_hub import HfApi, create_repo, hf_hub_download
 
 from qflux.trainer.constants import LORA_FILE_BASE_NAME
 
+
 _IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif")
 
 FEATURES = Features(
@@ -378,7 +379,7 @@ def upload_editing_dataset(root_dir: str, repo_id: str, private: bool = True) ->
     )
     print(
         f"✅ Pushed {repo_id} | splits={list(dsd.keys())} | "
-        + f"sizes={{ {', '.join([k+':'+str(len(v)) for k, v in dsd.items()])} }}"
+        + f"sizes={{ {', '.join([k + ':' + str(len(v)) for k, v in dsd.items()])} }}"
     )
 
 
