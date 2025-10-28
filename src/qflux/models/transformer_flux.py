@@ -65,6 +65,7 @@ from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscal
 # from ...utils.torch_utils import maybe_allow_in_graph
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 

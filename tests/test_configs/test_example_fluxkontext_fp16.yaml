@@ -1,5 +1,7 @@
 model:
   pretrained_model_name_or_path: black-forest-labs/FLUX.1-Kontext-dev
+  # pretrained_model_name_or_path: lrzjason/flux-kontext-nf4
+
   quantize: false
   lora:
     r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
@@ -33,16 +35,33 @@ data:
   shuffle: true
   # batchsize 16 dump
 
+validation:
+  enabled: true
+  steps: 100
+  max_samples: 2
+  seed: 42
+  dataset:
+    class_path: qflux.data.dataset.ImageDataset
+    init_args:
+      dataset_path:
+        - split: test
+          repo_id: TsienDragon/face_segmentation_20
+      caption_dropout_rate: 0.0
+      prompt_image_dropout_rate: 0.0
+      use_edit_mask: true
+      selected_control_indexes: [1]
+      processor:
+        class_path: qflux.data.preprocess.ImageProcessor
+        init_args:
+          process_type: center_crop
+          resize_mode: bilinear
+          target_size: [832, 576]
+          controls_size: [[832, 576]]
+
 logging:
   output_dir: /tmp/image_edit_lora/  # change the path to your own output path
   report_to: "tensorboard"
   tracker_project_name: faceSegFluxKontextFp16
-  sampling:
-    enable: false
-    validation_steps: 100
-    num_samples: 1
-    seed: 42
-    validation_data: null
 
 optimizer:
   # class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory

@@ -13,7 +13,6 @@ import shutil
 import signal
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import Optional
 
 import numpy as np
 import PIL
@@ -40,6 +39,7 @@ from qflux.data.config import Config
 from qflux.models.quantize import quantize_model_to_fp8
 from qflux.scheduler.custom_flowmatch_scheduler import FlowMatchEulerDiscreteScheduler
 from qflux.trainer.constants import LORA_FILE_BASE_NAME
+from qflux.trainer.validation import ValidationMixin
 from qflux.utils.huggingface import download_lora
 from qflux.utils.lora_utils import FpsLogger, classify_lora_weight, get_lora_layers, get_lora_state_dict_oom_safe
 from qflux.utils.model_summary import print_model_summary_table
@@ -50,7 +50,7 @@ from qflux.utils.tools import calculate_sha256_file, get_git_info, instantiate_c
 logger = logging.getLogger(__name__)
 
 
-class BaseTrainer(ABC):
+class BaseTrainer(ValidationMixin, ABC):
     """
     Abstract base class for all trainer implementations.
     Defines the core interface that all trainers must implement.
@@ -59,11 +59,11 @@ class BaseTrainer(ABC):
     def __init__(self, config: Config):
         """Initialize trainer with configuration."""
         self.config = config
-        self.accelerator: Optional[Accelerator] = None
-        self.optimizer: Optional[torch.optim.Optimizer] = None
-        self.lr_scheduler: Optional[torch.optim.lr_scheduler.LRScheduler] = None
+        self.accelerator: Accelerator
+        self.optimizer: torch.optim.Optimizer
+        self.lr_scheduler: torch.optim.lr_scheduler.LRScheduler
         self.global_step = 0
-        self.scheduler: Optional[FlowMatchEulerDiscreteScheduler] = None
+        self.scheduler: FlowMatchEulerDiscreteScheduler
 
         # Common attributes that all trainers should have
         self.weight_dtype = torch.bfloat16
@@ -431,11 +431,6 @@ class BaseTrainer(ABC):
         torch.cuda.empty_cache()
         gc.collect()
 
-    def setup_validation(self, train_dataloader):
-        """Setup validation"""
-        self.validation_sampler = None
-        # TODO: do it later
-
     def clip_gradients(self):
         """Clip gradients"""
         if self.accelerator.sync_gradients:
@@ -500,7 +495,7 @@ class BaseTrainer(ABC):
             # 检查是否收到中断信号
             if self.training_interrupted:
                 logger.info("检测到训练中断信号，保存最后检查点后退出本epoch...")
-                # 立刻做一次“last”保存（即使不是 checkpointing_steps 整除）
+                # 立刻做一次"last"保存（即使不是 checkpointing_steps 整除）
                 self.save_checkpoint(epoch, self.global_step, is_last=True)
                 return
 
@@ -529,15 +524,11 @@ class BaseTrainer(ABC):
                     }
                 )
                 self.save_checkpoint(epoch, self.global_step)
-                if self.validation_sampler and self.validation_sampler.should_run_validation(self.global_step):
+
+                # Run validation if needed
+                if self.should_run_validation(self.global_step):
                     self.fps_logger.pause()
-                    try:
-                        self.validation_sampler.run_validation_loop(
-                            global_step=self.global_step,
-                            trainer=self,  # 传入trainer实例
-                        )
-                    except Exception as e:
-                        self.accelerator.print(f"Validation sampling failed: {e}")
+                    self.run_validation()
                     self.fps_logger.resume()
 
     def setup_progressbar(self):
@@ -596,12 +587,14 @@ class BaseTrainer(ABC):
                 self.config.predict.devices.dit,
             )
         self.dit.to("cpu")
+        self.setup_validation(train_dataloader.dataset)
+        self.accelerator.wait_for_everyone()
         self.__class__.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
 
         self.setup_model_device_train_mode(stage="fit", cache=self.use_cache)
         self.configure_optimizers()
         self.setup_criterion()
-        self.setup_validation(train_dataloader)
+        # if validation dataset not passed, use train dataset instead
 
         train_dataloader = self.accelerator_prepare(train_dataloader)
         logging.info("***** Running training *****")
@@ -735,6 +728,10 @@ class BaseTrainer(ABC):
             log_with=self.config.logging.report_to,
             project_config=accelerator_project_config,
         )
+
+        # Prepare validation embeddings now that accelerator is initialized
+        if hasattr(self, "validation_samples") and self.validation_samples:
+            self.prepare_validation_embeddings()
 
         # Initialize tracker with empty project name to avoid subdirectory
         if self.config.logging.report_to == "tensorboard":

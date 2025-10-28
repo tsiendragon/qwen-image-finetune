@@ -176,7 +176,7 @@ class AttentionMaskMseLoss(nn.Module):
 
         if attention_mask.shape != (B, T):
             raise ValueError(
-                f"attention_mask shape {attention_mask.shape} incompatible with " f"model_pred shape [{B}, {T}, {C}]"
+                f"attention_mask shape {attention_mask.shape} incompatible with model_pred shape [{B}, {T}, {C}]"
             )
         # Step 1: Element-wise MSE
         element_loss = (model_pred.float() - target.float()) ** 2  # [B, T, C]
@@ -194,8 +194,7 @@ class AttentionMaskMseLoss(nn.Module):
         else:
             if edit_mask.shape != (B, T):
                 raise ValueError(
-                    f"edit_mask shape {edit_mask.shape} incompatible with "
-                    f"attention_mask shape {attention_mask.shape}"
+                    f"edit_mask shape {edit_mask.shape} incompatible with attention_mask shape {attention_mask.shape}"
                 )
             m = edit_mask.float().to(model_pred.device)
             edit_weight = (m * self.foreground_weight + (1.0 - m) * self.background_weight).unsqueeze(-1)  # [B, T, 1]

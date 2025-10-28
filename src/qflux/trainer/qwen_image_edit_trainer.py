@@ -403,11 +403,11 @@ class QwenImageEditTrainer(BaseTrainer):
             num_additional_controls = batch["n_controls"][0]
 
         for i in range(num_additional_controls):
-            additional_control_key = f"control_{i+1}"
+            additional_control_key = f"control_{i + 1}"
             if additional_control_key in batch:
                 batch[additional_control_key] = self.preprocess_image_for_vae_encoder(batch[additional_control_key])
-                batch[f"width_control_{i+1}"] = batch[additional_control_key].shape[4]
-                batch[f"height_control_{i+1}"] = batch[additional_control_key].shape[3]
+                batch[f"width_control_{i + 1}"] = batch[additional_control_key].shape[4]
+                batch[f"height_control_{i + 1}"] = batch[additional_control_key].shape[3]
 
         prompt_embeds, prompt_embeds_mask = self.encode_prompt(
             prompt=batch["prompt"],
@@ -704,8 +704,8 @@ class QwenImageEditTrainer(BaseTrainer):
                 # Additional control images
                 num_controls = extract_batch_field(embeddings, "n_controls", b) if "n_controls" in embeddings else 0
                 for i in range(num_controls):
-                    h_key = f"height_control_{i+1}"
-                    w_key = f"width_control_{i+1}"
+                    h_key = f"height_control_{i + 1}"
+                    w_key = f"width_control_{i + 1}"
                     if h_key in embeddings and w_key in embeddings:
                         h_i = extract_batch_field(embeddings, h_key, b)
                         w_i = extract_batch_field(embeddings, w_key, b)
@@ -1106,17 +1106,17 @@ class QwenImageEditTrainer(BaseTrainer):
             img = self.preprocessor.preprocess({"control": img}, controls_size=controls_size)["control"]
             control.append(img)
         control = torch.stack(control, dim=0)  # B,C,H,W
-        print("control shape", control.shape)  # type: ignore[attr-defined]
+        print("control shape", control.shape)
         data["control"] = control
         data["prompt"] = prompt
-        data["height"] = height if height is not None else control.shape[2]  # type: ignore[attr-defined]
-        data["width"] = width if width is not None else control.shape[3]  # type: ignore[attr-defined]
+        data["height"] = height if height is not None else control.shape[2]
+        data["width"] = width if width is not None else control.shape[3]
         img_shapes.append((3, height, width))
-        img_shapes.append((3, control.shape[2], control.shape[3]))  # type: ignore[attr-defined]
+        img_shapes.append((3, control.shape[2], control.shape[3]))
         print("width height", width, height)
 
         if height is None or width is None:
-            width, height = control.shape[3], control.shape[2]  # type: ignore[attr-defined]
+            width, height = control.shape[3], control.shape[2]
         else:
             width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
 
@@ -1124,35 +1124,35 @@ class QwenImageEditTrainer(BaseTrainer):
 
         if additional_controls:
             n_controls = len(additional_controls[0])
-            new_controls: dict[str, list] = {f"control_{i+1}": [] for i in range(n_controls)}
+            new_controls: dict[str, list] = {f"control_{i + 1}": [] for i in range(n_controls)}
             # [control_1_batch1, control1_batch2, ..], [control2_batch1, control2_batch2, ..]
 
             for controls in additional_controls:
                 controls = self.preprocessor.preprocess({"controls": controls}, controls_size=controls_size)["controls"]
                 for i, control in enumerate(controls):
-                    new_controls[f"control_{i+1}"].append(control)
-                    img_shapes.append((3, control.shape[1], control.shape[2]))  # type: ignore[attr-defined]
+                    new_controls[f"control_{i + 1}"].append(control)
+                    img_shapes.append((3, control.shape[1], control.shape[2]))
             for k, v in new_controls.items():
                 print(k, type(v), type(v[0]), type(v[0][0]))
             for i in range(n_controls):
-                control_stack = torch.stack(new_controls[f"control_{i+1}"], dim=0)
-                print("new controls", control_stack.shape, f"control_{i+1}")
-                data[f"control_{i+1}"] = control_stack
-            data["n_controls"] = n_controls  # type: ignore[assignment]
+                control_stack = torch.stack(new_controls[f"control_{i + 1}"], dim=0)
+                print("new controls", control_stack.shape, f"control_{i + 1}")
+                data[f"control_{i + 1}"] = control_stack
+            data["n_controls"] = n_controls
         else:
-            data["n_controls"] = 0  # type: ignore[assignment]
+            data["n_controls"] = 0
 
         if negative_prompt is not None:
             if isinstance(negative_prompt, str):
                 negative_prompt = [negative_prompt]
-            assert len(negative_prompt) == len(
-                data["prompt"]
-            ), "the number of negative_prompt should be same of control"  # NOQA
+            assert len(negative_prompt) == len(data["prompt"]), (
+                "the number of negative_prompt should be same of control"
+            )  # NOQA
             data["negative_prompt"] = negative_prompt
-        data["num_inference_steps"] = num_inference_steps  # type: ignore
-        data["true_cfg_scale"] = true_cfg_scale  # type: ignore
-        data["guidance"] = guidance_scale  # type: ignore
-        data["img_shapes"] = [img_shapes] * control.shape[0]  # type: ignore
+        data["num_inference_steps"] = num_inference_steps
+        data["true_cfg_scale"] = true_cfg_scale
+        data["guidance"] = guidance_scale
+        data["img_shapes"] = [img_shapes] * control.shape[0]
         print("data keys", data.keys())
         for k, v in data.items():
             print(k, type(v))

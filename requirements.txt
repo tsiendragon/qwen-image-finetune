@@ -38,3 +38,4 @@ mypy
 dotenv
 types-tabulate
 types-PyYAML
+typing-extensions

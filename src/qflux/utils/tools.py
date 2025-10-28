@@ -10,6 +10,7 @@ import torch
 from blake3 import blake3
 from PIL import Image, ImageOps
 
+
 Layout = Literal["HW", "CHW", "HWC", "BCHW", "BHWC"]
 Range = Literal["0-1", "-1-1", "0-255", "unknown"]
 

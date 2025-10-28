@@ -290,7 +290,7 @@ class ImageProcessor:
             Best pixel count from candidates
         """
         if candidates is None:
-            candidates = self.multi_resolutions
+            candidates = self.multi_resolutions  # type: ignore
 
         if candidates is None or len(candidates) == 0:
             raise ValueError("No resolution candidates provided")
@@ -302,10 +302,10 @@ class ImageProcessor:
         if self.max_aspect_ratio is not None:
             if orig_ratio > self.max_aspect_ratio or orig_ratio < 1.0 / self.max_aspect_ratio:
                 logging.warning(
-                    f"Image aspect ratio {orig_ratio:.2f} exceeds max_aspect_ratio " f"{self.max_aspect_ratio:.2f}"
+                    f"Image aspect ratio {orig_ratio:.2f} exceeds max_aspect_ratio {self.max_aspect_ratio:.2f}"
                 )
                 raise ValueError(
-                    f"Image aspect ratio {orig_ratio:.2f} exceeds " f"max_aspect_ratio {self.max_aspect_ratio:.2f}"
+                    f"Image aspect ratio {orig_ratio:.2f} exceeds max_aspect_ratio {self.max_aspect_ratio:.2f}"
                 )
 
         best_candidate = None
@@ -444,7 +444,7 @@ class ImageProcessor:
                     controls_pixels_i = None
                 # For additional controls, use multi_res_controls[i+1] if available
                 multi_res_cand = self.get_multi_res_cand(
-                    multi_res_controls=multi_res_controls, input_date=f"control_{i+1}"
+                    multi_res_controls=multi_res_controls, input_date=f"control_{i + 1}"
                 )
                 processed_control = self._process_image(
                     controls[i],

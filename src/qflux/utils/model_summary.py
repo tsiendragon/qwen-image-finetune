@@ -5,7 +5,8 @@ from typing import Any
 import torch
 import torch.nn as nn
 from peft.tuners.lora import LoraLayer as PeftLoraLayer
-from tabulate import tabulate  # type: ignore[import-untyped]
+from tabulate import tabulate
+
 
 NAME_PATTERNS = ("lora_a", "lora_b", "lora_up", "lora_down", "lora")
 
@@ -186,21 +187,21 @@ def _collect_lora_info(model: nn.Module) -> tuple[int, Counter, int]:
 # ---------- formatting helpers ----------
 def _human_int(n: int) -> str:
     if n >= 1_000_000_000:
-        return f"{n/1_000_000_000:.2f}B"
+        return f"{n / 1_000_000_000:.2f}B"
     if n >= 1_000_000:
-        return f"{n/1_000_000:.2f}M"
+        return f"{n / 1_000_000:.2f}M"
     if n >= 1_000:
-        return f"{n/1_000:.2f}K"
+        return f"{n / 1_000:.2f}K"
     return str(n)
 
 
 def _human_bytes(b: int) -> str:
     if b >= 1024**3:
-        return f"{b/1024**3:.2f} GB"
+        return f"{b / 1024**3:.2f} GB"
     if b >= 1024**2:
-        return f"{b/1024**2:.2f} MB"
+        return f"{b / 1024**2:.2f} MB"
     if b >= 1024:
-        return f"{b/1024:.2f} KB"
+        return f"{b / 1024:.2f} KB"
     return f"{b} B"
 
 

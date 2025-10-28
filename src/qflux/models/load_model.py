@@ -170,7 +170,7 @@ if __name__ == "__main__":
             # Sort by max difference and show top 10
             value_differences.sort(key=lambda x: x[1], reverse=True)
             for i, (key, max_diff, mean_diff) in enumerate(value_differences[:10]):
-                print(f"  {i+1}. {key}: max={max_diff:.2e}, mean={mean_diff:.2e}")
+                print(f"  {i + 1}. {key}: max={max_diff:.2e}, mean={mean_diff:.2e}")
             if len(value_differences) > 10:
                 print(f"  ... and {len(value_differences) - 10} more")
 

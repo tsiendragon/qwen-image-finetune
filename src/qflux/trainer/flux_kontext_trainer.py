@@ -75,7 +75,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 pretrains["vae"],
                 weight_dtype=self.weight_dtype,
             ).to("cpu")
-            logging.info(f'loaded vae from {pretrains["vae"]}')
+            logging.info(f"loaded vae from {pretrains['vae']}")
         else:
             self.vae = load_flux_kontext_vae(
                 self.config.model.pretrained_model_name_or_path,
@@ -86,7 +86,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 pretrains["text_encoder"],
                 weight_dtype=self.weight_dtype,
             ).to("cpu")
-            logging.info(f'loaded text_encoder from {pretrains["text_encoder"]}')
+            logging.info(f"loaded text_encoder from {pretrains['text_encoder']}")
         else:
             self.text_encoder = load_flux_kontext_clip(
                 self.config.model.pretrained_model_name_or_path,
@@ -98,7 +98,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 pretrains["text_encoder_2"],
                 weight_dtype=self.weight_dtype,
             ).to("cpu")
-            logging.info(f'loaded text_encoder_2 from {pretrains["text_encoder_2"]}')
+            logging.info(f"loaded text_encoder_2 from {pretrains['text_encoder_2']}")
         else:
             self.text_encoder_2 = load_flux_kontext_t5(
                 self.config.model.pretrained_model_name_or_path,
@@ -220,14 +220,18 @@ class FluxKontextLoraTrainer(BaseTrainer):
             # Cache mode: only need transformer
             self.text_encoder.cpu()
             self.text_encoder_2.cpu()
+            self.text_encoder.requires_grad_(False).eval()
+            self.text_encoder_2.requires_grad_(False).eval()
             torch.cuda.empty_cache()
             self.vae.cpu()
             torch.cuda.empty_cache()
-            del self.text_encoder
-            del self.text_encoder_2
+            # del self.text_encoder
+            # del self.text_encoder_2
 
-            if not self.config.logging.sampling.enable:
+            if not self.config.validation.enabled:
                 del self.vae
+                del self.text_encoder
+                del self.text_encoder_2
             else:
                 self.vae.requires_grad_(False).eval()
 
@@ -318,7 +322,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         )
 
         for i in range(num_additional_controls):
-            additional_control_key = f"control_{i+1}"
+            additional_control_key = f"control_{i + 1}"
             if additional_control_key in batch:
                 batch[additional_control_key] = self.normalize_image(batch[additional_control_key])
 
@@ -539,7 +543,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
         latent_model_input = latent_model_input.to(self.weight_dtype)
         pooled_prompt_embeds = pooled_prompt_embeds.to(self.weight_dtype)
         prompt_embeds = prompt_embeds.to(self.weight_dtype)
-        guidance = guidance.to(self.weight_dtype)
+        if guidance is not None:
+            guidance = guidance.to(self.weight_dtype)
         image_latents = image_latents.to(self.weight_dtype).to(self.accelerator.device)
         t = t.to(self.weight_dtype)
 
@@ -640,7 +645,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 concat_control_latent_ids.append(latent_control_ids)
             concat_control_latent_ids = torch.cat(concat_control_latent_ids, dim=0)  # [sum_i seq_i, 3]
             control_ids_list.append(concat_control_latent_ids)
-            seq_len_control_latents[i] = concat_control_latent_ids.shape[0]  # type: ignore[attr-defined]
+            seq_len_control_latents[i] = concat_control_latent_ids.shape[0]
 
             # seq len tensor(1040., device='cuda:0', dtype=torch.bfloat16)
             # seq len control tensor(1040., device='cuda:0', dtype=torch.bfloat16)
@@ -669,9 +674,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 # Shape: [seq_len_image_latent, channels]
                 if "noise" in embeddings:
                     noise = embeddings["noise"][ii].to(device).to(self.weight_dtype)
-                    assert (
-                        noise.shape == image_latent.shape
-                    ), f"noise length {noise.shape} must equal {image_latent.shape}"
+                    assert noise.shape == image_latent.shape, (
+                        f"noise length {noise.shape} must equal {image_latent.shape}"
+                    )
                 else:
                     noise = torch.randn_like(image_latent, device=device, dtype=self.weight_dtype)
 
@@ -912,7 +917,6 @@ class FluxKontextLoraTrainer(BaseTrainer):
         latent_ids = torch.cat([latent_ids, control_ids], dim=0)
         image_seq_len = latents.shape[1]
         timesteps, num_inference_steps = self.prepare_predict_timesteps(num_inference_steps, image_seq_len)
-        print("timesteps", timesteps)
         guidance = torch.full([1], embeddings["guidance"], device=dit_device, dtype=torch.float32)
         guidance = guidance.expand(batch_size)
         assert self.scheduler is not None, "scheduler is not set"
@@ -1087,9 +1091,9 @@ class FluxKontextLoraTrainer(BaseTrainer):
             width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
 
         if additional_controls and controls_size:
-            assert len(additional_controls) + 1 == len(
-                controls_size
-            ), "the number of additional_controls_size should be same of additional_controls"  # NOQA
+            assert len(additional_controls) + 1 == len(controls_size), (
+                "the number of additional_controls_size should be same of additional_controls"
+            )  # NOQA
         if controls_size:
             for item in controls_size:
                 assert len(item) == 2, "the size of controls_size should be (h,w)"  # NOQA
@@ -1122,21 +1126,21 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         if additional_controls:
             n_controls = len(additional_controls[0])
-            new_controls: dict[str, list] = {f"control_{i+1}": [] for i in range(n_controls)}
+            new_controls: dict[str, list] = {f"control_{i + 1}": [] for i in range(n_controls)}
             # [control_1_batch1, control1_batch2, ..], [control2_batch1, control2_batch2, ..]
             for contorls in additional_controls:
                 controls = self.preprocessor.preprocess({"controls": contorls}, controls_size=controls_size)["controls"]
                 for i, control in enumerate(controls):
-                    new_controls[f"control_{i+1}"].append(control)
+                    new_controls[f"control_{i + 1}"].append(control)
             for k, v in new_controls.items():
                 print(k, type(v), type(v[0]), type(v[0][0]))
             for i in range(n_controls):
-                control_stack = torch.stack(new_controls[f"control_{i+1}"], dim=0)
-                print("new controls", control_stack.shape, f"control_{i+1}")
-                data[f"control_{i+1}"] = control_stack
-            data["n_controls"] = n_controls  # type: ignore[assignment]
+                control_stack = torch.stack(new_controls[f"control_{i + 1}"], dim=0)
+                print("new controls", control_stack.shape, f"control_{i + 1}")
+                data[f"control_{i + 1}"] = control_stack
+            data["n_controls"] = n_controls
         else:
-            data["n_controls"] = 0  # type: ignore[assignment]
+            data["n_controls"] = 0
 
         if prompt_2 is not None:
             if isinstance(prompt_2, str):
@@ -1147,24 +1151,24 @@ class FluxKontextLoraTrainer(BaseTrainer):
         if negative_prompt is not None:
             if isinstance(negative_prompt, str):
                 negative_prompt = [negative_prompt]
-            assert len(negative_prompt) == len(
-                data["prompt"]
-            ), "the number of negative_prompt should be same of control"  # NOQA
+            assert len(negative_prompt) == len(data["prompt"]), (
+                "the number of negative_prompt should be same of control"
+            )  # NOQA
             data["negative_prompt"] = negative_prompt
 
         if negative_prompt_2 is not None:
             if isinstance(negative_prompt_2, str):
                 negative_prompt_2 = [negative_prompt_2]
-            assert len(negative_prompt_2) == len(
-                data["prompt"]
-            ), "the number of negative_prompt_2 should be same of control"  # NOQA
+            assert len(negative_prompt_2) == len(data["prompt"]), (
+                "the number of negative_prompt_2 should be same of control"
+            )  # NOQA
             data["negative_prompt_2"] = negative_prompt_2
 
-        data["num_inference_steps"] = num_inference_steps  # type: ignore[assignment]
-        data["height"] = height if height is not None else 1024  # type: ignore[assignment]
-        data["width"] = width if width is not None else 1024  # type: ignore[assignment]
-        data["true_cfg_scale"] = true_cfg_scale if true_cfg_scale is not None else 1.0  # type: ignore[assignment]
-        data["guidance"] = guidance_scale  # type: ignore[assignment]
+        data["num_inference_steps"] = num_inference_steps
+        data["height"] = height if height is not None else 1024
+        data["width"] = width if width is not None else 1024
+        data["true_cfg_scale"] = true_cfg_scale if true_cfg_scale is not None else 1.0
+        data["guidance"] = guidance_scale
         print("data keys", data.keys())
         for k, v in data.items():
             print(k, type(v))
@@ -1355,7 +1359,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
                 for j, control in enumerate(controls):
                     shape_this_sample.append((3, control.shape[1], control.shape[2]))
-                    single_data[f"control_{j+1}"] = control.unsqueeze(0)
+                    single_data[f"control_{j + 1}"] = control.unsqueeze(0)
                 single_data["n_controls"] = n_controls
             else:
                 single_data["n_controls"] = 0
