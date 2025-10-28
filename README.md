@@ -7,6 +7,20 @@
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**,**Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 
 ## New
+- **✨ Validation Visualization Improvements (v3.1.0)**: Enhanced validation sampling visualization with step-by-step progress display. Added support for viewing model improvement during training at regular intervals (every 100 steps).
+<div align="center">
+  <table>
+    <tr>
+      <td align="center"><img src="docs/images/image-45.png" alt="Step 100" width="150"/><br><em>Step 100</em></td>
+      <td align="center"><img src="docs/images/image-46.png" alt="Step 200" width="150"/><br><em>Step 200</em></td>
+      <td align="center"><img src="docs/images/image-47.png" alt="Step 300" width="150"/><br><em>Step 300</em></td>
+      <td align="center"><img src="docs/images/image-48.png" alt="Step 400" width="150"/><br><em>Step 400</em></td>
+      <td align="center"><img src="docs/images/image-49.png" alt="Step 500" width="150"/><br><em>Step 500</em></td>
+      <td align="center"><img src="docs/images/image-50.png" alt="Step 600" width="150"/><br><em>Step 600</em></td>
+    </tr>
+  </table>
+  <p><em>Validation sampling images showing results after every 100 training steps (steps 100-600) Tested with tests/test_configs/test_example_fluxkontext_fp16.yaml --cache</em></p>
+</div>
 
 - **🔧 FSDP LoRA Checkpoint Fix (v3.0.2)**: Fixed FSDP training issues with LoRA checkpoint saving and documented performance benchmarks across different training strategies. BF16 FSDP shows optimal memory-performance balance (10GB memory, 1.7 FPS) compared to FP4 DDP (25GB memory, 0.4 FPS). See [CHANGELOG:v3.0.2](docs/changelog/v3.0.2.md) for details.
 
@@ -119,6 +133,7 @@ Comprehensive documentation is organized in the `docs/` directory:
   - [Data Preparation](docs/guide/data-preparation.md) — Dataset preparation and formats
   - [Configuration](docs/guide/configuration.md) — Configuration system reference
   - [LoRA Fine-tuning](docs/guide/lora.md) — LoRA training strategies
+  - [Validation Sampling](docs/guide/validation_sampling.md) — Training progress visualization
   - [Speed Optimization](docs/guide/speed_optimization.md) — Performance tuning and quantization
   - [HuggingFace Integration](docs/guide/huggingface-related.md) — Dataset and model sharing
   - [Testing Reference](docs/guide/testing-quick-reference.md) — Testing guidelines
@@ -132,7 +147,7 @@ Comprehensive documentation is organized in the `docs/` directory:
 
 - **[Changelog](docs/changelog/)** — Version history and release notes
   - [Changelog Overview](docs/changelog/index.md) — Summary of all releases
-  - [Latest: v3.0.0](docs/changelog/v3.0.0.md) — Multi-resolution mixed training
+  - [Latest: v3.1.0](docs/changelog/v3.1.0.md) — Validation sampling visualization
 
 - **[Development Plans](docs/plan/)** — Roadmap and feature planning
   - [Plan Index](docs/plan/index.md) — Active and completed initiatives
@@ -318,7 +333,20 @@ in the `accelerate_config.yaml`
 
 
 ### Validation Sampling During Training
-- [ ]  TO BE COMPLETED
+
+The framework provides built-in validation sampling during training, allowing you to monitor your model's progress in real-time. This feature is configured in your YAML file:
+
+```yaml
+validation:
+  enabled: true        # Enable validation sampling
+  steps: 100           # Run validation every 100 steps
+  max_samples: 2       # Use up to 2 samples from validation dataset
+  seed: 42             # Fixed seed for reproducible results
+  dataset:             # Validation dataset configuration
+    # Dataset configuration similar to training dataset
+```
+
+See the [Validation Sampling Guide](docs/guide/validation_sampling.md) for detailed configuration options.
 
 Launch TensorBoard to view the validation results:
 ```bash
