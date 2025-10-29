@@ -43,9 +43,9 @@ Track ongoing development, documentation, and operations tasks. Update completio
 - [x] E2E tests for Qwen-Image-Edit and Qwen-Image-Edit-Plus sampling (v3.0.1)
 - [x] Pre-commit hooks configuration (v3.0.1)
 - [x] FSDP checkpoint保存与加载功能 (v3.0.2)
-- [x] Multi-logger support (TensorBoard/wandb/SwanLab) (v3.1.0)
-- [x] Unified LoggerManager API for all logging operations (v3.1.0)
-- [x] Enhanced validation sampling visualization (v3.1.0)
+- [x] Validation sampling during training (v3.1.0)
+- [x] Multi-logger support (TensorBoard/wandb/SwanLab) (v3.2.0)
+- [x] Unified LoggerManager API for all logging operations (v3.2.0)
 
 ## Notes
 
