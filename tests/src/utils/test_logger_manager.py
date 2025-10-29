@@ -406,7 +406,7 @@ class TestLoggerIntegration:
 
         # 验证日志文件已创建
         log_files = list(Path(tmp_path).glob("events.out.tfevents.*"))
-        assert len(log_files) > 0
+        assert log_files
 
     @pytest.mark.skip(reason="需要实际的wandb环境")
     def test_wandb_integration(self, tmp_path):
