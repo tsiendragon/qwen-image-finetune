@@ -6,11 +6,9 @@ Track ongoing development, documentation, and operations tasks. Update completio
 
 - [ ] FSDP优化实现，解决FluxKontext BF16训练的内存溢出问题
 - [ ] FSDP与LoRA兼容性测试与适配
-- [x] FSDP checkpoint保存与加载功能 (v3.0.2)
 - [ ] 对比BF16 DDP、FP4 DDP和BF16 FSDP三种配置的训练效率与性能
 - [ ] 记录不同精度训练的内存与性能指标（FP4 DDP: 25GB内存，0.4 FPS）
 - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
-- [ ] Validation sampling with TensorBoard visualization (v3.1.0)
 - [ ] Online quantization for training and inference
 - [ ] Release character-composition dataset on HuggingFace
 
@@ -44,6 +42,10 @@ Track ongoing development, documentation, and operations tasks. Update completio
 - [x] Test resources management with HuggingFace Hub integration (v3.0.1)
 - [x] E2E tests for Qwen-Image-Edit and Qwen-Image-Edit-Plus sampling (v3.0.1)
 - [x] Pre-commit hooks configuration (v3.0.1)
+- [x] FSDP checkpoint保存与加载功能 (v3.0.2)
+- [x] Multi-logger support (TensorBoard/wandb/SwanLab) (v3.1.0)
+- [x] Unified LoggerManager API for all logging operations (v3.1.0)
+- [x] Enhanced validation sampling visualization (v3.1.0)
 
 ## Notes
 

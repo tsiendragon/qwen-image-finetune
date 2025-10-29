@@ -218,3 +218,34 @@ Input got no Difference
 - Next check timesteps_emb, got error, check sample
 - Check TimestepEmbedding.
   In TimestepEmbedding, the input is same, condition is all None. Linaer_1 leads to difference, this is caused by the bf16. change to float32, no difference
+
+11. pre-commit error:
+
+```bash
+ Traceback (most recent call last):
+  File "/mnt/dgx3-raid/lilong/data/.cache/pre-commit/repoap5dihi6/py_env-python3.12/bin/mypy", line 7, in <module>
+    sys.exit(console_entry())
+             ^^^^^^^^^^^^^^^
+  File "/mnt/dgx3-raid/lilong/data/.cache/pre-commit/repoap5dihi6/py_env-python3.12/lib/python3.12/site-packages/mypy/__main__.py", line 15, in console_entry
+    main()
+  File "mypy/main.py", line 127, in main
+  File "mypy/main.py", line 211, in run_build
+  File "mypy/build.py", line 194, in build
+  File "mypy/build.py", line 270, in _build
+  File "mypy/build.py", line 2976, in dispatch
+  File "mypy/build.py", line 3381, in process_graph
+  File "mypy/build.py", line 3468, in process_fresh_modules
+  File "mypy/build.py", line 2129, in load_tree
+  File "mypy/nodes.py", line 414, in deserialize
+  File "mypy/nodes.py", line 4650, in deserialize
+  File "mypy/nodes.py", line 4547, in deserialize
+  File "mypy/nodes.py", line 268, in deserialize
+  File "mypy/nodes.py", line 1315, in deserialize
+KeyError: 'setter_type'
+```
+这是 mypy 自身版本/缓存不一致 导致的内部崩溃。KeyError: 'setter_type' 出现在反序列化 AST 时，通常是：用 不同版本的 mypy（或不同 Python 版本）读取了 旧的 .mypy_cache。解决就是把缓存清掉并固定版本，必要时关掉增量模式。
+```
+rm -rf .mypy_cache .cache/mypy
+pre-commit clean
+pkill -f dmypy || true
+```

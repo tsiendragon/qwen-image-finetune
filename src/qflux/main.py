@@ -34,6 +34,9 @@ def import_trainer(config: Config):
 def main():
     """使用模块化的 Trainer 类进行训练"""
     # 解析配置
+    fmt = "%(asctime)s %(levelname)s [pid=%(process)d] %(filename)s:%(lineno)d %(funcName)s | %(message)s"
+    logging.basicConfig(level=logging.INFO, format=fmt)
+
     config = parse_args()
 
     # 设置日志级别

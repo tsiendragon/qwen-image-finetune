@@ -15,7 +15,8 @@ configs/local_examples/
 .Python
 run_local*.sh
 build/
-
+src/wandb/
+wandb/
 develop-eggs/
 dist/
 downloads/

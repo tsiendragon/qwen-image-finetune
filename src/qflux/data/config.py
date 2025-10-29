@@ -445,14 +445,15 @@ class SamplingConfig(BaseModel):
 class LoggingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     output_dir: str = "./output"
-    report_to: str = "tensorboard"  # tensorboard, wandb, all, none
+    report_to: str = "tensorboard"  # tensorboard, wandb, swanlab, none
     tracker_project_name: str | None = None  # will get the value from trainer
-    sampling: SamplingConfig = Field(default_factory=SamplingConfig)
+    tags: list[str] | None = None
+    notes: str | None = None
 
     @field_validator("report_to")
     @classmethod
     def _check_report_to(cls, v: str) -> str:
-        allowed = {"tensorboard", "wandb", "all", "none"}
+        allowed = {"tensorboard", "wandb", "swanlab", "none"}
         if v not in allowed:
             raise ValueError(f"report_to must be one of {allowed}")
         return v
@@ -461,6 +462,20 @@ class LoggingConfig(BaseModel):
     @classmethod
     def _check_output_dir(cls, v: str) -> str | None:
         return _normalize_cache_dir(v)
+
+    @field_validator("tags")
+    @classmethod
+    def _check_tags(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None and not isinstance(v, list):
+            raise ValueError("tags must be a list of strings")
+        return v
+
+    @field_validator("notes")
+    @classmethod
+    def _check_notes(cls, v: str | None) -> str | None:
+        if v is not None and not isinstance(v, str):
+            raise ValueError("notes must be a string")
+        return v
 
 
 # ----------------------------

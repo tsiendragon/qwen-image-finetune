@@ -16,6 +16,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from qflux.data.config import Config
+from qflux.utils.tools import pad_to_max_shape
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,8 @@ class ValidationMixin:
     """
 
     config: Config  # 由子类在 __init__ 里赋值
-    accelerator: Accelerator
+    accelerator: Accelerator  # 由子类在 __init__ 里赋值
+    global_step: int  # 由子类中定义
 
     def setup_validation(self, train_dataset: Dataset):
         """
@@ -167,9 +169,7 @@ class ValidationMixin:
             self.vae.requires_grad_(False).eval()
         if hasattr(self, "text_encoder"):
             self.text_encoder.to(device)
-            self.text_encoder.to(device)
         if hasattr(self, "text_encoder_2"):
-            self.text_encoder_2.to(device)
             self.text_encoder_2.to(device)
 
         logging.info(f"### Preparing validation embeddings with {len(self.validation_samples)} samples")
@@ -265,9 +265,10 @@ class ValidationMixin:
         Run validation sampling and log results to TensorBoard.
         Called periodically during training.
         """
+
         if not hasattr(self, "validation_embeddings") or not self.validation_embeddings:
             return
-
+        self.accelerator.wait_for_everyone()
         logger.info(f"Running validation sampling at step {self.global_step}")
 
         # run sampling for each validation sample parallely
@@ -291,50 +292,46 @@ class ValidationMixin:
             if self.accelerator.is_main_process:
                 lat_chunks.append(g_lat.detach().cpu())
                 idx_chunks.append(g_idx.cpu())
+        torch.cuda.synchronize()
+        self.accelerator.wait_for_everyone()
 
         # rank0 合并
         if self.accelerator.is_main_process:
             all_latents = torch.cat(lat_chunks, dim=0)  # [T*W*B, s, d]
-            print("all_latents shape", all_latents.shape)
             idxes = torch.cat(idx_chunks, dim=0)  # [T*W*B, 1]
             # device vae in rank-0
             self.vae.to(self.accelerator.device)
             batch_size = all_latents.shape[0]
+            log_images = []
+            log_validation_samples = []
             for jj in range(batch_size):
                 latents = all_latents[jj : jj + 1]
-                print("latents", latents.shape)
                 idx = int(idxes[jj].item())
-                print("jj, idx", jj, idx, idxes)
                 validation_sample = self.validation_samples[idx]
                 images = self.decode_vae_latent(latents, validation_sample["height"], validation_sample["width"])
-                self._log_validation_images(images, validation_sample, sample_idx=idx)
+                images = images.float().detach().cpu()
+                log_images.append(images)
+                log_validation_samples.append(validation_sample)
+            self._log_validation_images(log_images, log_validation_samples)
+            logging.info(f"[{self.accelerator.process_index}] unload vae to cpu")
+        if self.config.cache.use_cache:
+            # in cache model, can unload vae to cpu
             self.vae.to("cpu")
-            logging.info("unload vae to cpu")
+            torch.cuda.empty_cache()
         self.accelerator.wait_for_everyone()
+        logging.info(f"[{self.accelerator.process_index}] rank {self.accelerator.process_index} finished validation")
+        # self.accelerator.wait_for_everyone()
 
-    def _log_validation_images(self, images, validation_sample, sample_idx):
+    def _log_validation_images(self, log_images: list[torch.Tensor], validation_samples: list[dict[str, Any]]):
         """
-        Log validation images and metadata to TensorBoard.
+        Log validation images and metadata using LoggerManager.
         """
-        # Get prompt for display
-        prompt = validation_sample["prompt"]
-
-        # Get TensorBoard writer
-        if not hasattr(self.accelerator, "trackers") or not self.accelerator.trackers:
-            logger.warning("No trackers found in accelerator")
+        # Check if logger_manager is available
+        if not hasattr(self, "logger_manager") or self.logger_manager is None:
+            logger.warning("LoggerManager not available, skipping validation logging")
             return
 
-        for tracker in self.accelerator.trackers:
-            if hasattr(tracker, "writer"):
-                writer = tracker.writer
-                break
-        else:
-            logger.warning("TensorBoard writer not found in accelerator trackers")
-            return
-
-        # Log generated images
-        for idx, img in enumerate(images):
-            # Ensure image is in correct format [C, H, W]
+        def process_image(img):
             if img.ndim == 4:
                 img = img[0]  # If batched, take first image
             if img.ndim == 3 and img.shape[0] == 3:  # Already in [C, H, W] format
@@ -346,38 +343,55 @@ class ValidationMixin:
             img = img.cpu()
             if img.max() > 1.0:
                 img = img / 255.0
+            return img
 
-            writer.add_image(
-                f"validation/generated_images/sample_{sample_idx}_{idx}",
-                img,
-                global_step=self.global_step,
-            )
+        # Get prompt for display
+        log_images = [process_image(img) for img in log_images]
+        log_generate_tensor = pad_to_max_shape(log_images)
+        # [B, C, H, W]
+
+        prompt = validation_samples[0]["prompt"]
 
         # Log control images if available
-        control_images = validation_sample["images"]  # List of PIL images
+        n_controls = len(validation_samples[0]["images"])
 
-        # 遍历控制图像列表并记录到TensorBoard
-        for idx, pil_img in enumerate(control_images):
-            # 将PIL图像转换为Tensor格式 [C, H, W]
-            # 转换PIL图像为numpy数组
-            img_array = np.array(pil_img)
-
-            # 转换为CHW格式用于tensorboard (从HWC转为CHW)
+        def process_control_image(img):
+            if isinstance(img, PIL.Image.Image):
+                img_array = np.array(img)
+            else:
+                img_array = img
             if len(img_array.shape) == 3:
                 img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).float() / 255.0
             else:
                 img_tensor = torch.from_numpy(img_array).unsqueeze(0).float() / 255.0
+            return img_tensor
 
-            # 记录到TensorBoard
-            writer.add_image(
-                f"validation/control_images/sample_{sample_idx}_{idx}",
-                img_tensor,
-                global_step=self.global_step,
+        for i in range(n_controls):
+            control_images = [validation_sample["images"][i] for validation_sample in validation_samples]
+            control_images = [process_control_image(img) for img in control_images]
+            log_image_tensor = pad_to_max_shape(control_images)
+            print("log_image_tensor", log_image_tensor.shape)
+
+            # 使用LoggerManager记录控制图像
+            self.logger_manager.log_images(
+                f"validation/control_{i}",
+                log_image_tensor,
+                step=self.global_step,
+                caption=f"Control {i}",
+                commit=False,
             )
 
-        # Log prompt text
-        writer.add_text(
-            f"validation/prompt/sample_{sample_idx}",
+        self.logger_manager.log_images(
+            "validation/generated_images",
+            log_generate_tensor,
+            step=self.global_step,
+            caption="Generated images",
+            commit=True,
+        )
+
+        # Log prompt text using LoggerManager
+        self.logger_manager.log_text(
+            "validation/prompt",
             prompt,
-            global_step=self.global_step,
+            step=self.global_step,
         )

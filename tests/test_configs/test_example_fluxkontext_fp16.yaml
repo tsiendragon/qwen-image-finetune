@@ -37,7 +37,7 @@ data:
 
 validation:
   enabled: true
-  steps: 100
+  steps: 10
   max_samples: 2
   seed: 42
   dataset:
@@ -60,8 +60,16 @@ validation:
 
 logging:
   output_dir: /tmp/image_edit_lora/  # change the path to your own output path
-  report_to: "tensorboard"
+  report_to: tensorboard
+  # report_to: wandb
+  # report_to: swanlab
   tracker_project_name: faceSegFluxKontextFp16
+  tags:
+    - test
+    - FLuxKontext
+    - FaceSeg
+    - lilong
+  notes: "This is a test configuration for FluxKontext on FaceSeg dataset"
 
 optimizer:
   # class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
