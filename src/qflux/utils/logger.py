@@ -425,9 +425,7 @@ class LoggerManager:
             logging.info(f"[{self.accelerator.process_index}] {self.logger} initialized")
 
     def should_do_logging(self):
-        if self.accelerator and not self.accelerator.is_main_process:
-            return False
-        return True
+        return bool(not self.accelerator or self.accelerator.is_main_process)
 
     def log_scalar(self, name: str, value: float, step: int) -> None:
         """记录标量值"""
