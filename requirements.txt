@@ -3,7 +3,7 @@ diffusers>=0.36.0
 transformers==4.52.4
 pyyaml
 oyaml
-tensorboard
+tensorboardX
 einops
 accelerate
 pydantic
@@ -39,3 +39,6 @@ dotenv
 types-tabulate
 types-PyYAML
 typing-extensions
+# 日志工具
+wandb
+swanlab

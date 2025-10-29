@@ -12,7 +12,9 @@ cd src/
 
 # # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
 # # NCCL_P2P_DISABLE only for RTX4090, not for A100
-
+# export WANDB_MODE=offline && \
+# export NCCL_BLOCKING_WAIT=1 && \
+# export NCCL_DEBUG=WARN && \
 CUDA_VISIBLE_DEVICES=0,2 \
 accelerate launch \
   --num_processes 2 \

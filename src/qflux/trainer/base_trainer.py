@@ -41,6 +41,7 @@ from qflux.scheduler.custom_flowmatch_scheduler import FlowMatchEulerDiscreteSch
 from qflux.trainer.constants import LORA_FILE_BASE_NAME
 from qflux.trainer.validation import ValidationMixin
 from qflux.utils.huggingface import download_lora
+from qflux.utils.logger import LoggerManager
 from qflux.utils.lora_utils import FpsLogger, classify_lora_weight, get_lora_layers, get_lora_state_dict_oom_safe
 from qflux.utils.model_summary import print_model_summary_table
 from qflux.utils.sampling import calculate_shift, retrieve_timesteps
@@ -155,6 +156,9 @@ class BaseTrainer(ValidationMixin, ABC):
 
         # 创建新版本目录
         versioned_dir = os.path.join(project_dir, f"v{next_version}")
+        self.versioned_dir = versioned_dir
+        self.experiment_name = f"v{next_version}"
+
         self.config.logging.output_dir = versioned_dir
         logging.info(f"使用训练版本目录: {versioned_dir}")
 
@@ -500,16 +504,25 @@ class BaseTrainer(ValidationMixin, ABC):
                 return
 
             with self.accelerator.accumulate(self.dit):
+                # print('self.vae device', self.accelerator.process_index, self.vae.device)
+                # print('self.text_encoder device', self.accelerator.process_index, self.text_encoder.device)
+                # print('self.text_encoder_2 device', self.accelerator.process_index, self.text_encoder_2.device)
                 loss = self.training_step(batch)
+                # print('B fwd done', self.accelerator.process_index, loss)
                 self.fps_logger.update(
                     batch_size=self.batch_size * self.accelerator.num_processes,
                     num_tokens=None,
                 )
                 self.accelerator.backward(loss)
+                # print('E bwd done', self.accelerator.process_index)
                 self.clip_gradients()
+                # print('clip_gradients', self.accelerator.process_index)
                 self.optimizer.step()
+                # print('optimizer step', self.accelerator.process_index)
                 self.lr_scheduler.step()
+                # print('optimizer step', self.accelerator.process_index)
                 self.optimizer.zero_grad()
+                # print('sync_gradients', self.accelerator.process_index)
             if self.accelerator.sync_gradients:
                 avg_loss = self.accelerator.gather(loss.detach()).mean()
                 self.train_loss = avg_loss.item() / self.config.train.gradient_accumulation_steps
@@ -554,7 +567,9 @@ class BaseTrainer(ValidationMixin, ABC):
 
     def update_progressbar(self, logs: dict):
         assert self.accelerator is not None
-        self.accelerator.log(logs, step=self.global_step)
+        # 使用LoggerManager记录指标
+        self.logger_manager.log_metrics(logs, step=self.global_step)
+        self.logger_manager.flush()
         logs = {
             "loss": f"{logs['loss']:.3f}",
             "smooth_loss": f"{logs['smooth_loss']:.3f}",
@@ -568,6 +583,10 @@ class BaseTrainer(ValidationMixin, ABC):
 
     def fit(self, train_dataloader):
         """Main training loop implementation."""
+        import torch.multiprocessing as mp
+
+        mp.set_start_method("spawn", force=True)
+
         self.setup_signal_handlers()
         self.setup_accelerator()
         self.load_model()
@@ -598,7 +617,13 @@ class BaseTrainer(ValidationMixin, ABC):
 
         train_dataloader = self.accelerator_prepare(train_dataloader)
         logging.info("***** Running training *****")
-        print_model_summary_table(self.dit)
+        model_summary_info_dict = print_model_summary_table(self.dit)
+        self.logger_manager.log_table(
+            "model_summary",
+            rows=model_summary_info_dict["rows"],
+            columns=model_summary_info_dict["columns"],
+            step=self.global_step,
+        )
 
         self.fps_logger.start()
         self.save_train_config()
@@ -721,11 +746,22 @@ class BaseTrainer(ValidationMixin, ABC):
             logging_dir=self.config.logging.output_dir,
         )
 
+        # 准备日志配置
+        # log_with = self.config.logging.report_to if self.config.logging.report_to != "none" else None
+        # project_name = self.config.logging.tracker_project_name
+        # if self.config.logging.report_to == "swanlab":
+        #     from swanlab.integration.accelerate import SwanLabTracker
+
+        #     tracker = SwanLabTracker(project_name, experiment_name=self.experiment_name)  # 训练可视化
+        #     log_with = tracker
+
+        # logging.info(f"log_with: {log_with}")
+
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
             # mixed_precision=self.config.train.mixed_precision,
             mixed_precision="no",  # ← 关键
-            log_with=self.config.logging.report_to,
+            # log_with=log_with,  # 传入日志工具类型
             project_config=accelerator_project_config,
         )
 
@@ -733,27 +769,9 @@ class BaseTrainer(ValidationMixin, ABC):
         if hasattr(self, "validation_samples") and self.validation_samples:
             self.prepare_validation_embeddings()
 
-        # Initialize tracker with empty project name to avoid subdirectory
-        if self.config.logging.report_to == "tensorboard":
-            # Create a simple config dict with only basic types for TensorBoard
-            try:
-                simple_config = {
-                    "learning_rate": float(self.config.optimizer.init_args.get("lr", 0.0001)),
-                    "batch_size": int(self.config.data.batch_size),
-                    "max_train_steps": int(self.config.train.max_train_steps),
-                    "num_epochs": int(self.config.train.num_epochs),
-                    "gradient_accumulation_steps": int(self.config.train.gradient_accumulation_steps),
-                    "mixed_precision": str(self.config.train.mixed_precision),
-                    "lora_r": int(self.config.model.lora.r),
-                    "lora_alpha": int(self.config.model.lora.lora_alpha),
-                    "model_name": str(self.config.model.pretrained_model_name_or_path),
-                    "checkpointing_steps": int(self.config.train.checkpointing_steps),
-                }
-                self.accelerator.init_trackers("", config=simple_config)
-            except Exception as e:
-                logging.warning(f"Failed to initialize trackers with config: {e}")
-                # Initialize without config if there's an error
-                self.accelerator.init_trackers("")
+        # self.accelerator.init_trackers(project_name, config=simple_config)
+        # 使用LoggerManager
+        self.logger_manager = LoggerManager(self.accelerator, self.config, self.versioned_dir, self.experiment_name)
         logging.info(f"Number of devices used in DDP training: {self.accelerator.num_processes}")
 
         # Set weight data type

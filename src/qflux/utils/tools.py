@@ -9,6 +9,7 @@ import PIL
 import torch
 from blake3 import blake3
 from PIL import Image, ImageOps
+from torch.nn import functional as F  # NOQA
 
 
 Layout = Literal["HW", "CHW", "HWC", "BCHW", "BHWC"]
@@ -393,6 +394,35 @@ def pad_latents_for_multi_res(
         attention_mask[i, :seq_len] = True
 
     return padded_latents, attention_mask
+
+
+def pad_to_max_shape(tensors: list[torch.Tensor], padding_value: int = 0) -> torch.Tensor:
+    """
+    将一组不同形状但维度数一致的张量沿各维右侧填充到最大形状后堆叠。
+    Args:
+        tensors: List[Tensor]，形状可能不同
+        padding_value: 填充值，默认 0
+    Returns:
+        Tensor: 形状为 (N, ...) 的批次张量
+
+    示例:
+    ```python
+    x = [torch.ones(2,3), torch.zeros(4,1)]
+    y = pad_to_max_shape(x, padding_value=0)  # -> (2,4,3)
+    ```
+    """
+    # Find maximum shape
+    max_shape = [max(sizes) for sizes in zip(*[t.shape for t in tensors], strict=False)]
+    padded = []
+    for t in tensors:
+        pad_sizes = []
+        for i in range(len(max_shape) - 1, -1, -1):
+            diff = max_shape[i] - t.shape[i]
+            pad_sizes.extend([0, diff])  # (left, right) per dimension
+        padded_tensor = F.pad(t, pad_sizes, value=padding_value)
+        padded.append(padded_tensor)
+
+    return torch.stack(padded, dim=0)
 
 
 if __name__ == "__main__":

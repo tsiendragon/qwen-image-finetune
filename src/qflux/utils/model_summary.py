@@ -486,7 +486,11 @@ def print_model_summary_table(model: nn.Module, name: str = "model") -> dict[str
     except Exception:
         print(f"\n{title}")
         print(tabulate(rows, headers=["Section", "Metric", "Value"], tablefmt="github"))
-    return stats
+    return {
+        "rows": rows,
+        "columns": ["Section", "Metric", "Value"],
+        "stats": stats,
+    }
 
 
 if __name__ == "__main__":
