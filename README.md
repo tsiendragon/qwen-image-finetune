@@ -7,7 +7,7 @@
 This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**,**Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 
 ## New
-- **🔧 Multi-Logger Support (v3.1.0)**: Added unified logging interface supporting TensorBoard, Weights & Biases, and SwanLab. Switch between logging backends with simple config changes. See [Logging Guide](docs/guide/logging.md) for details.
+- **🔧 Multi-Logger Support (v3.2.0)**: Added unified logging interface supporting TensorBoard, Weights & Biases, and SwanLab. Switch between logging backends with simple config changes. See [Logging Guide](docs/guide/logging.md) for details.
   - Unified `LoggerManager` API for all logging operations
   - Support for TensorBoard (local), wandb (cloud), and SwanLab (cloud)
   - Automatic authentication via `.env` files
