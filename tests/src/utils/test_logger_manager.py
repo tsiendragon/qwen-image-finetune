@@ -87,8 +87,7 @@ class TestTensorBoardLogger:
         from torch.utils.tensorboard import SummaryWriter
 
         writer = SummaryWriter(log_dir=str(tmp_path))
-        logger = TensorBoardLogger(writer)
-        yield logger
+        yield TensorBoardLogger(writer)
         writer.close()
 
     def test_log_scalar(self, tb_logger):
