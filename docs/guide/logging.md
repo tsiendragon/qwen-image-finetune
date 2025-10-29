@@ -24,7 +24,7 @@ logging:
   tracker_project_name: faceSegFluxKontextFp16
   tags:
     - test
-    - FLuxKontext
+    - FluxKontext
     - FaceSeg
     - user
   notes: "This is a test configuration for FluxKontext on FaceSeg dataset"
