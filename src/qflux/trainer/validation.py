@@ -136,10 +136,7 @@ class ValidationMixin:
                 controls_size = sample.controls_size
             else:
                 controls_size = [[img.height, img.width] for img in images]
-            if hasattr(sample, "height"):
-                height = sample.height
-            else:
-                height = images[0].height
+            height = sample.height if hasattr(sample, "height") else images[0].height
             if hasattr(sample, "width"):
                 width = sample.width
             else:
