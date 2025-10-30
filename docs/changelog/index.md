@@ -4,6 +4,7 @@ This document summarizes the key highlights for each released version. Detailed 
 
 ## Version Index
 
+- [3.2.1](./v3.2.1.md) — Bug fixes: scheduler state isolation and directory cleanup improvements.
 - [3.2.0](./v3.2.0.md) — Multi-logger support (TensorBoard/wandb/SwanLab) with unified LoggerManager interface.
 - [3.1.0](./v3.1.0.md) — Validation sampling during training with TensorBoard visualization.
 - [3.0.2](./v3.0.2.md) — Fixed FSDP LoRA checkpoint saving issues and performance benchmarking.
