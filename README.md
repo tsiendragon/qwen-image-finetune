@@ -57,6 +57,14 @@ This repository provides a comprehensive framework for fine-tuning image editing
 But this still got limitations for the randomness of shapes used in training. Next we may add H/W buckets to support real dynamic shapes training.
 
 - **Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/spec/models/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
+
+**⚠️ Important**: Qwen-Image-Edit-Plus (2509) requires the latest version of diffusers. Please install it using:
+
+```bash
+pip install --upgrade "git+https://github.com/huggingface/diffusers.git"
+```
+
+If you don't need Qwen-Image-Edit-Plus (2509) support, you can use the older version from `requirements.txt`.
   <div align="center">
     <table>
       <tr>
@@ -217,9 +225,21 @@ cd qwen-image-finetune
 # Or with custom path and HF token
 ./setup.sh /your/path hf_your_token_here
 ```
+
+**⚠️ Important for Qwen-Image-Edit-Plus (2509) Users**: If you plan to use Qwen-Image-Edit-Plus (2509) model, you need to install the latest version of diffusers from GitHub:
+
+```bash
+pip install --upgrade "git+https://github.com/huggingface/diffusers.git"
+```
+
+If you don't need Qwen-Image-Edit-Plus (2509) support, you can use the older version specified in `requirements.txt` (`diffusers>=0.36.0`).
+
 Refer [`docs/guide/speed_optimization.md`](docs/guide/speed_optimization.md) to install `flash-attn` to accelerate training. It provides the greatest benefit with long prompts or large sequence lengths; for short prompts, the speedup may be limited.
 
 ### Train with Toy Dataset
+
+**⚠️ Important**: All training commands must be executed from the `src/` directory. You need to `cd src/` before running any `python3 -m qflux.main` commands. Otherwise, you will encounter import errors.
+
 1. prepare the datasets or use Hugging Face dataset (**recommended**). Refer `tests/test_configs/test_example_fluxkontext_fp16.yaml`
 
 2. prepare your config. Now suppose you have the config
@@ -227,8 +247,12 @@ Chose your model, optimizer, etc.
 
 3. (Optional) build cache first to speed up training (**recommended**)
 It save the GPU memory since in the training, you dont need image encoder and prompt encoder anymore if you have the cache.
+
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
-python -m src.main --config configs/my_config.yaml --cache
+cd src/
+python3 -m qflux.main --config ../configs/my_config.yaml --cache
 ```
 The GPU devices used in cache are specified in the config as well.
 For example
@@ -247,20 +271,25 @@ cache:
 Here vae encoder and text encoders could use different GPU ids if your GPU memory is not enough.
 
 4. start training
+
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 Prepaare a `accelerate_config` to specify single gpu training or multi-gpu training
 ```bash
 # three gpu training using accelerate
-CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/my_config.yaml
 ```
 
 Or do not use `accelerate_config.yaml` and specify the accelerate parameters in the bash script directly
 Looks like
-```
+```bash
+cd src/
 CUDA_VISIBLE_DEVICES=0,1 \
 accelerate launch \
   --num_processes 2 \
   --mixed_precision bf16 \
-  -m src.main --config $config_file
+  -m qflux.main --config $config_file
 ```
 
 5. resume training
@@ -296,9 +325,13 @@ GPU recommended with the following settings:
 
 
 **Usage Example:**
+
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
 # For FLUX Kontext FP4 training on RTX 4090
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
+cd src/
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config $config_file
 ```
 See doc [docs/configuration.md](docs/configuration.md) for more details about the configs
 
@@ -337,11 +370,14 @@ num_processes: 2
 
 #### Training with RTX4090
 
-```
-Config Exampe
-configs/face_seg_fp4_4090.yaml
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
+```bash
+# Config Example
+# configs/face_seg_fp4_4090.yaml
+cd src/
 NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m src.main --config $config_file
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config $config_file
 ```
 For multi-gpu training, need to set
 ```

@@ -120,7 +120,7 @@ Pre-compute all embeddings before training:
 
 ```bash
 # Cache embeddings using the --cache flag
-CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
+CUDA_VISIBLE_DEVICES=1,2 python -m qflux.main --config configs/my_config.yaml --cache
 ```
 
 This process:
@@ -135,7 +135,7 @@ Launch training normally - the system automatically uses cached embeddings:
 
 ```bash
 # Training automatically detects and uses cache
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m qflux.main --config configs/my_config.yaml
 ```
 
 ### 3. Training Modes
@@ -318,7 +318,7 @@ cache.clear_cache()
 ```bash
 # Clear and rebuild cache
 rm -rf /path/to/cache/*
-CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
+CUDA_VISIBLE_DEVICES=1,2 python -m qflux.main --config configs/my_config.yaml --cache
 ```
 
 ## Implementation Details

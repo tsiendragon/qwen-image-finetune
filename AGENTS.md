@@ -9,8 +9,8 @@
 ## Build, Test, and Development Commands
 - `python -m venv .venv && source .venv/bin/activate` (or `./setup.sh /desired/path hf_token`) prepares a reproducible Python 3.12 environment with CUDA-ready PyTorch.
 - `pip install -r requirements.txt` synchronizes dependencies; rerun after editing `requirements.txt` or `pyproject.toml`.
-- `python -m src.main --config configs/face_seg_flux_kontext_fp16.yaml` runs training with the specified YAML; append `--cache` to precompute embeddings.
-- `CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config …` enables multi-GPU runs via Accelerate.
+- `python -m qflux.main --config configs/face_seg_flux_kontext_fp16.yaml` runs training with the specified YAML; append `--cache` to precompute embeddings.
+- `CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m qflux.main --config …` enables multi-GPU runs via Accelerate.
 - `pytest` (or `pytest tests/trainer/test_flux_kontext_trainer.py`) executes the test suite with live logging configured in `pyproject.toml`.
 
 ## Coding Style & Naming Conventions

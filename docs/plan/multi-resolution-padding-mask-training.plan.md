@@ -239,7 +239,7 @@ def prepare_cached_embeddings(self, batch: dict):
 **如需重新生成缓存以获得最佳性能**：
 ```bash
 # 简单重新运行 cache 模式即可
-python -m src.main --config your_config.yaml --mode cache
+python -m qflux.main --config your_config.yaml --mode cache
 ```
 
 ### 3.2 Collate Function ✅
@@ -2445,10 +2445,10 @@ data:
 
 ```bash
 # 1. 单样本推理一致性
-python -m src.main --config configs/test.yaml --mode predict --batch_size 1
+python -m qflux.main --config configs/test.yaml --mode predict --batch_size 1
 
 # 2. 混合分辨率训练
-python -m src.main --config configs/test.yaml --mode fit --batch_size 4
+python -m qflux.main --config configs/test.yaml --mode fit --batch_size 4
 
 # 3. 检查 loss 是否合理
 # - Loss 不应因 batch 中尺寸组合而剧烈波动
@@ -2464,7 +2464,7 @@ python -m src.main --config configs/test.yaml --mode fit --batch_size 4
 如果你有旧缓存或需要启用多分辨率训练，请重新生成缓存：
 
 ```bash
-python -m src.main --config configs/xxx.yaml --mode cache
+python -m qflux.main --config configs/xxx.yaml --mode cache
 ```
 
 **注意**：旧版本缓存不兼容，必须重新生成
