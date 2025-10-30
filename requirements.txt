@@ -45,3 +45,4 @@ typing-extensions
 # 日志工具
 wandb
 swanlab
+ImageHash
