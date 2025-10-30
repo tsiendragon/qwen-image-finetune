@@ -186,7 +186,7 @@ def sample_image():
 @pytest.fixture
 def mock_config():
     """提供 mock 配置对象"""
-    from src.data.config import ImageProcessorInitArgs
+    from qflux.data.config import ImageProcessorInitArgs
     return ImageProcessorInitArgs(
         target_size=(512, 512),
         process_type="resize"
@@ -495,7 +495,7 @@ def sample_grayscale_image():
 @pytest.fixture
 def mock_processor_config():
     """提供 mock ImageProcessor 配置"""
-    from src.data.config import ImageProcessorInitArgs
+    from qflux.data.config import ImageProcessorInitArgs
     return ImageProcessorInitArgs(
         target_size=(512, 512),
         process_type="resize"
@@ -517,7 +517,7 @@ cat > tests/scheduler/test_custom_flowmatch_scheduler.py << 'EOF'
 """Tests for CustomFlowMatchEulerDiscreteScheduler"""
 import pytest
 import torch
-from src.scheduler.custom_flowmatch_scheduler import (
+from qflux.scheduler.custom_flowmatch_scheduler import (
     CustomFlowMatchEulerDiscreteScheduler,
     calculate_shift
 )
@@ -572,7 +572,7 @@ cat > tests/data/test_cache_manager.py << 'EOF'
 import pytest
 import torch
 from pathlib import Path
-from src.data.cache_manager import EmbeddingCacheManager
+from qflux.data.cache_manager import EmbeddingCacheManager
 
 
 class TestEmbeddingCacheManager:
@@ -703,7 +703,7 @@ This module tests:
 
 import pytest
 import torch
-from src.module import TargetClass
+from qflux.module import TargetClass
 
 
 class TestTargetClass:

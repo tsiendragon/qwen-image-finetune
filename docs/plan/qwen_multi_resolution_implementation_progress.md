@@ -318,8 +318,8 @@ def extract_batch_field(embeddings: dict, key: str, batch_idx: int):
 ### 1. 应用 Patch
 
 ```python
-from src.models.transformer_qwenimage import QwenImageTransformer2DModel
-from src.models.qwen_multi_resolution_patch import patch_qwen_model_for_multi_resolution
+from qflux.models.transformer_qwenimage import QwenImageTransformer2DModel
+from qflux.models.qwen_multi_resolution_patch import patch_qwen_model_for_multi_resolution
 
 # 创建模型
 model = QwenImageTransformer2DModel(...)

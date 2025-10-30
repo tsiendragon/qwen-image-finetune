@@ -7,8 +7,8 @@ This guide covers how to use trained Qwen Image Edit models for inference and im
 ### Basic Inference
 
 ```python
-from src.qwen_image_edit_trainer import QwenImageEditTrainer
-from src.data.config import load_config_from_yaml
+from qflux.qwen_image_edit_trainer import QwenImageEditTrainer
+from qflux.data.config import load_config_from_yaml
 import numpy as np
 from PIL import Image
 
@@ -90,8 +90,8 @@ def predict(
 
 ```python
 # Load and use trained LoRA weights
-from src.qwen_image_edit_trainer import QwenImageEditTrainer
-from src.data.config import load_config_from_yaml
+from qflux.qwen_image_edit_trainer import QwenImageEditTrainer
+from qflux.data.config import load_config_from_yaml
 from PIL import Image
 
 # Load configuration

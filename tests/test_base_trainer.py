@@ -81,14 +81,14 @@ class TestBaseTrainer:
         # Test default case - need to patch getattr to simulate missing attribute
         from unittest.mock import patch
 
-        with patch('src.base_trainer.getattr') as mock_getattr:
+        with patch('qflux.base_trainer.getattr') as mock_getattr:
             mock_getattr.return_value = "unknown"
             result = self.trainer.get_model_type()
             assert result == "unknown"
             mock_getattr.assert_called_once_with(self.mock_config.model, 'model_type', 'unknown')
 
         # Test with model_type in config - directly test the getattr behavior
-        with patch('src.base_trainer.getattr') as mock_getattr:
+        with patch('qflux.base_trainer.getattr') as mock_getattr:
             mock_getattr.return_value = "flux_kontext"
             result = self.trainer.get_model_type()
             assert result == "flux_kontext"
@@ -109,7 +109,7 @@ class TestBaseTrainer:
         """Test model information logging."""
         # Set up the logger to capture logs at the correct level
         import logging
-        caplog.set_level(logging.INFO, logger='src.base_trainer')
+        caplog.set_level(logging.INFO, logger='qflux.base_trainer')
 
         # Mock the get_model_type and get_precision_info methods to return expected values
         from unittest.mock import patch

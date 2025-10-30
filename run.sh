@@ -5,6 +5,7 @@
 # config_file='tests/test_configs/test_example_fluxkontext_fp16_faceseg_multiresolution.yaml'
 # config_file='tests/test_configs/test_example_fluxkontext_multiresolution.yaml'
 config_file='../tests/test_configs/test_example_fluxkontext_fp16.yaml'
+config_file='../tests/test_configs/test_example_qwen_image_edit_fp16.yaml'
 echo "Used config file: $config_file"
 
 cd src/
@@ -15,7 +16,7 @@ cd src/
 # export WANDB_MODE=offline && \
 # export NCCL_BLOCKING_WAIT=1 && \
 # export NCCL_DEBUG=WARN && \
-CUDA_VISIBLE_DEVICES=0,2 \
+CUDA_VISIBLE_DEVICES=0,1 \
 accelerate launch \
   --num_processes 2 \
   --mixed_precision bf16 \

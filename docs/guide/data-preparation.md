@@ -46,7 +46,7 @@ Config example (YAML):
 
 ```
 data:
-  class_path: src.data.dataset.ImageDataset
+  class_path: qflux.data.dataset.ImageDataset
   init_args:
     dataset_path:
       - /path/to/dataset1
@@ -61,7 +61,7 @@ Use the unified Hub dataset interface with lazy loading:
 
 ```
 data:
-  class_path: src.data.dataset.ImageDataset
+  class_path: qflux.data.dataset.ImageDataset
   init_args:
     dataset_path:
       - split: train
@@ -101,7 +101,7 @@ Config example (pointing to CSV file):
 
 ```
 data:
-  class_path: src.data.dataset.ImageDataset
+  class_path: qflux.data.dataset.ImageDataset
   init_args:
     dataset_path:
       - /path/to/train.csv

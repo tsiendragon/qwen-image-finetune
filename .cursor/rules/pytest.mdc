@@ -57,7 +57,7 @@ src/x/y.py → tests/e2e/x/test_y.py          # 需要外部服务
 """模块测试文件"""
 import pytest
 from pathlib import Path
-from src.module import TargetClass  # 更新导入路径
+from qflux.module import TargetClass  # 更新导入路径
 
 class TestTargetClass:
     """TargetClass测试类"""

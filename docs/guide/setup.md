@@ -59,6 +59,12 @@ The `setup.sh` script automatically:
 6. **Configures Hugging Face authentication**
 7. **Installs all dependencies** from requirements.txt
 
+**⚠️ Note**: The setup script installs `diffusers>=0.36.0` from requirements.txt. If you need Qwen-Image-Edit-Plus (2509) support, you must manually upgrade diffusers after setup:
+
+```bash
+pip install --upgrade "git+https://github.com/huggingface/diffusers.git"
+```
+
 ### Script Options
 
 ```bash
@@ -122,6 +128,14 @@ pip install -r requirements.txt
 # Install additional packages for development
 pip install -r requirements-dev.txt  # If available
 ```
+
+**⚠️ Important for Qwen-Image-Edit-Plus (2509) Users**: If you plan to use Qwen-Image-Edit-Plus (2509) model, you need to install the latest version of diffusers from GitHub:
+
+```bash
+pip install --upgrade "git+https://github.com/huggingface/diffusers.git"
+```
+
+If you don't need Qwen-Image-Edit-Plus (2509) support, you can use the older version specified in `requirements.txt` (`diffusers>=0.36.0`).
 
 ### 4. Configure Hugging Face
 

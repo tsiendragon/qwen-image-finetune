@@ -36,12 +36,6 @@ logging:
   output_dir: /tmp/image_edit_lora/  # change the path to your own output path
   report_to: tensorboard
   tracker_project_name: faceSegQwenImageEditPlusFp4
-  sampling:
-    enable: false
-    validation_steps: 100
-    num_samples: 1
-    seed: 42
-    validation_data: null
 
 optimizer:
   class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory

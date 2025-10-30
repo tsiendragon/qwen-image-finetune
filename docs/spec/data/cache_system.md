@@ -120,7 +120,7 @@ Pre-compute all embeddings before training:
 
 ```bash
 # Cache embeddings using the --cache flag
-CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
+CUDA_VISIBLE_DEVICES=1,2 python -m qflux.main --config configs/my_config.yaml --cache
 ```
 
 This process:
@@ -135,7 +135,7 @@ Launch training normally - the system automatically uses cached embeddings:
 
 ```bash
 # Training automatically detects and uses cache
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m qflux.main --config configs/my_config.yaml
 ```
 
 ### 3. Training Modes
@@ -155,7 +155,7 @@ def training_step(self, batch):
 ### EmbeddingCacheManager
 
 ```python
-from src.data.cache_manager import EmbeddingCacheManager
+from qflux.data.cache_manager import EmbeddingCacheManager
 
 # Initialize cache manager
 cache_manager = EmbeddingCacheManager("/path/to/cache")
@@ -191,7 +191,7 @@ data = cache_manager.load_cache(
 )
 
 # Check cache availability for a dataset (metadata files exist)
-from src.data.cache_manager import EmbeddingCacheManager
+from qflux.data.cache_manager import EmbeddingCacheManager
 cache_available = EmbeddingCacheManager.exist("/path/to/cache")
 ```
 
@@ -278,7 +278,7 @@ cache:
 ### 3. Cache Validation
 ```python
 # Check cache status before training
-from src.data.cache_manager import check_cache_exists
+from qflux.data.cache_manager import check_cache_exists
 
 cache_exists = check_cache_exists("/path/to/cache")
 print(f"Cache available: {cache_exists}")
@@ -291,7 +291,7 @@ du -sh /path/to/cache
 
 # Clean cache if needed
 python -c "
-from src.data.cache_manager import EmbeddingCacheManager
+from qflux.data.cache_manager import EmbeddingCacheManager
 cache = EmbeddingCacheManager('/path/to/cache')
 cache.clear_cache()
 "
@@ -318,7 +318,7 @@ cache.clear_cache()
 ```bash
 # Clear and rebuild cache
 rm -rf /path/to/cache/*
-CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
+CUDA_VISIBLE_DEVICES=1,2 python -m qflux.main --config configs/my_config.yaml --cache
 ```
 
 ## Implementation Details

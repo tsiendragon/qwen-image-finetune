@@ -46,6 +46,8 @@ Track ongoing development, documentation, and operations tasks. Update completio
 - [x] Validation sampling during training (v3.1.0)
 - [x] Multi-logger support (TensorBoard/wandb/SwanLab) (v3.2.0)
 - [x] Unified LoggerManager API for all logging operations (v3.2.0)
+- [x] Fix scheduler state pollution between training and validation (v3.2.1)
+- [x] Fix directory cleanup to preserve directory structure (v3.2.1)
 
 ## Notes
 

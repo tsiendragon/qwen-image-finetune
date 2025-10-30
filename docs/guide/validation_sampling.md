@@ -62,10 +62,10 @@ Using the configuration from `test_example_fluxkontext_fp16.yaml`:
 
 ```bash
 # First build cache (optional but recommended)
-python -m src.main --config tests/test_configs/test_example_fluxkontext_fp16.yaml --cache
+python -m qflux.main --config tests/test_configs/test_example_fluxkontext_fp16.yaml --cache
 
 # Start training with validation
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m src.main --config tests/test_configs/test_example_fluxkontext_fp16.yaml
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m qflux.main --config tests/test_configs/test_example_fluxkontext_fp16.yaml
 ```
 
 This will:

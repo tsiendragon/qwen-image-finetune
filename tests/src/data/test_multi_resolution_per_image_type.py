@@ -108,7 +108,7 @@ class TestMultiResolutionPerImageType:
         processor = ImageProcessor(config)
 
         # Mock calculate_best_resolution to avoid import issues
-        with patch("src.utils.images.calculate_best_resolution") as mock_calc:
+        with patch("qflux.utils.images.calculate_best_resolution") as mock_calc:
             mock_calc.side_effect = lambda w, h, area: (int((area**0.5)), int((area**0.5)))
 
             # Create test data
@@ -150,7 +150,7 @@ class TestMultiResolutionPerImageType:
         processor = ImageProcessor(config)
 
         # Mock calculate_best_resolution to avoid import issues
-        with patch("src.utils.images.calculate_best_resolution") as mock_calc:
+        with patch("qflux.utils.images.calculate_best_resolution") as mock_calc:
             mock_calc.side_effect = lambda w, h, area: (int((area**0.5)), int((area**0.5)))
 
             # Create data with 3 additional controls (4 controls total)
@@ -220,7 +220,7 @@ class TestMultiResolutionPerImageType:
         processor = ImageProcessor(config)
 
         # Mock calculate_best_resolution to avoid import issues
-        with patch("src.utils.images.calculate_best_resolution") as mock_calc:
+        with patch("qflux.utils.images.calculate_best_resolution") as mock_calc:
             mock_calc.side_effect = lambda w, h, area: (int((area**0.5)), int((area**0.5)))
 
             data = {

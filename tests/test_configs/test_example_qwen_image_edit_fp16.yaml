@@ -9,7 +9,6 @@ model:
     pretrained_weight: null
     adapter_name: "lora_edit"
 
-
 data:
   class_path: qflux.data.dataset.ImageDataset
   init_args:
@@ -34,14 +33,36 @@ data:
 
 logging:
   output_dir: /tmp/image_edit_lora/  # change the path to your own output path
-  report_to: "tensorboard"
+  # report_to: tensorboard
+  # report_to: wandb
+  report_to: swanlab
   tracker_project_name: faceSegQwenImageEditFp16
-  sampling:
-    enable: false
-    validation_steps: 100
-    num_samples: 1
-    seed: 42
-    validation_data: null
+  tags:
+    - test
+    - QwenImageEdit
+    - FaceSeg
+    - lilong
+  notes: "This is a test configuration for QwenImageEdit on FaceSeg dataset"
+
+
+validation:
+  enabled: true
+  steps: 10
+  max_samples: 2
+  seed: 42
+  samples:
+    - prompt: "change the image from the face to the face segmentation mask"
+      images:
+        - /raid/lilong/data/face_seg/test/control_images/test_person.png
+      controls_size: [[832, 576]]
+      height: 832
+      width: 576
+    - prompt: "change the image from the face to the face segmentation mask"
+      images:
+        - /raid/lilong/data/face_seg/test/control_images/test_male.png
+      controls_size: [[832, 576]]
+      height: 832
+      width: 576
 
 optimizer:
   class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
@@ -55,11 +76,13 @@ lr_scheduler:
   num_cycles: 0.5
   power: 1.0
 
-
 loss:
-  mask_loss: false
-  forground_weight: 2.0
-  background_weight: 1.0
+  class_path: qflux.losses.AttentionMaskMseLoss  # Use attention mask loss for multi-resolution
+  init_args:
+    foreground_weight: 2.0
+    background_weight: 1.0
+    eps: 1e-12
+    reduction: mean
 
 train:
   gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
@@ -79,8 +102,8 @@ resume: null
 
 cache:
   devices:
-    vae: cuda:2
-    text_encoder: cuda:2
+    vae: cuda:0
+    text_encoder: cuda:1
   cache_dir: ${logging.output_dir}/${logging.tracker_project_name}/cache
   use_cache: true
   prompt_empty_drop_keys:

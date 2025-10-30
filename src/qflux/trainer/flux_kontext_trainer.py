@@ -118,7 +118,11 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         # Load tokenizers and scheduler
         self.tokenizer, self.tokenizer_2 = load_flux_kontext_tokenizers(self.config.model.pretrained_model_name_or_path)
+        # Create two schedulers: one for training, one for sampling/validation
         self.scheduler = load_flux_kontext_scheduler(self.config.model.pretrained_model_name_or_path)
+        import copy
+
+        self.sampling_scheduler = copy.deepcopy(self.scheduler)  # Independent scheduler for validation/sampling
 
         # Set VAE-related parameters (following QwenImageEditTrainer pattern)
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) else 8
@@ -916,11 +920,13 @@ class FluxKontextLoraTrainer(BaseTrainer):
             )
         latent_ids = torch.cat([latent_ids, control_ids], dim=0)
         image_seq_len = latents.shape[1]
-        timesteps, num_inference_steps = self.prepare_predict_timesteps(num_inference_steps, image_seq_len)
+        timesteps, num_inference_steps = self.prepare_predict_timesteps(
+            num_inference_steps, image_seq_len, scheduler=self.sampling_scheduler
+        )
         guidance = torch.full([1], embeddings["guidance"], device=dit_device, dtype=torch.float32)
         guidance = guidance.expand(batch_size)
-        assert self.scheduler is not None, "scheduler is not set"
-        self.scheduler.set_begin_index(0)
+        assert self.sampling_scheduler is not None, "sampling_scheduler is not set"
+        self.sampling_scheduler.set_begin_index(0)
         # move all tensors to dit_device
         latent_ids = latent_ids.to(dit_device)
         guidance = guidance.to(dit_device)
@@ -966,7 +972,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                     )[0]
                     neg_noise_pred = neg_noise_pred[:, :image_seq_len]
                     noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
-                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                latents = self.sampling_scheduler.step(noise_pred, t, latents, return_dict=False)[0]
         return latents
 
     def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
@@ -1694,13 +1700,15 @@ class FluxKontextLoraTrainer(BaseTrainer):
 
         # Prepare timesteps (use max image seq len for scheduler)
         max_image_seq_len = max(image_seq_lens)
-        timesteps, num_inference_steps = self.prepare_predict_timesteps(num_inference_steps, max_image_seq_len)
+        timesteps, num_inference_steps = self.prepare_predict_timesteps(
+            num_inference_steps, max_image_seq_len, scheduler=self.sampling_scheduler
+        )
 
         # Prepare guidance
         guidance = torch.full([1], embeddings["guidance"], device=dit_device, dtype=torch.float32)
         guidance = guidance.expand(batch_size)
-        assert self.scheduler is not None, "scheduler is not set"
-        self.scheduler.set_begin_index(0)
+        assert self.sampling_scheduler is not None, "sampling_scheduler is not set"
+        self.sampling_scheduler.set_begin_index(0)
 
         # Move tensors to device
         pooled_prompt_embeds = pooled_prompt_embeds.to(dit_device).to(self.weight_dtype)
@@ -1806,8 +1814,8 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 image_noise_pred = noise_pred[:, :max_image_seq_len]
 
                 # Apply scheduler step on padded tensors (one call for the whole batch)
-                assert self.scheduler is not None, "scheduler is not set"
-                updated_latents_padded = self.scheduler.step(
+                assert self.sampling_scheduler is not None, "sampling_scheduler is not set"
+                updated_latents_padded = self.sampling_scheduler.step(
                     image_noise_pred, t, image_latents_padded, return_dict=False
                 )[0]
 

@@ -92,13 +92,13 @@ model:
 
 # Dataset configuration
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/face_seg"  # Path to your dataset
     caption_dropout_rate: 0.1
     prompt_image_dropout_rate: 0.1
     processor:
-      class_path: "src.data.preprocess.ImageProcessor"
+      class_path: "qflux.data.preprocess.ImageProcessor"
       init_args:
         process_type: center_crop
         target_size: [512, 512]
@@ -218,6 +218,8 @@ train:
 
 ## Training Execution
 
+**⚠️ Important Notice**: All training commands in this guide must be executed from the `src/` directory. Before running any `python3 -m qflux.main` command, you must first navigate to the `src/` directory using `cd src/`. If you run the commands from the project root directory, you will encounter import errors.
+
 ### Automatic Version Management
 
 The framework automatically manages training versions to prevent data loss and enable easy comparison:
@@ -264,16 +266,20 @@ Note: `{tracker_project_name}` comes from your config's `logging.tracker_project
 
 ### Basic Training Workflow
 
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
 # 1. Copy and modify configuration
 cp configs/face_seg_fp4_4090.yaml configs/my_config.yaml
 # Edit my_config.yaml with your parameters
 
 # 2. Pre-compute embeddings (recommended for faster training)
-CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
+cd src/
+CUDA_VISIBLE_DEVICES=1,2 python3 -m qflux.main --config ../configs/my_config.yaml --cache
 
 # 3. Start training (automatically creates new version)
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/my_config.yaml
 
 # 4. Monitor training progress
 tensorboard --logdir output_dir/{tracker_project_name}/ --port 6006
@@ -283,34 +289,45 @@ tensorboard --logdir output_dir/{tracker_project_name}/ --port 6006
 
 ### Single GPU Training
 
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
 # Basic single GPU training
-CUDA_VISIBLE_DEVICES=0 python -m src.main --config configs/my_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=0 python3 -m qflux.main --config ../configs/my_config.yaml
 
 # With accelerate (recommended)
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/my_config.yaml
 ```
 
 ### Multi-GPU Training
+
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
 
 ```bash
 # Configure accelerate for multi-GPU
 accelerate config
 
 # Multi-GPU training
-CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/my_config.yaml
 ```
 
 ### Cache-Accelerated Training
 
 Pre-computing embeddings significantly speeds up training:
 
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
 # Step 1: Cache embeddings
-CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
+cd src/
+CUDA_VISIBLE_DEVICES=1,2 python3 -m qflux.main --config ../configs/my_config.yaml --cache
 
 # Step 2: Training will automatically use cached embeddings
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/my_config.yaml
 ```
 
 **Cache Benefits:**
@@ -424,16 +441,20 @@ train:
 
 #### Basic Training Steps
 
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
 # 1. Choose and copy appropriate configuration
 cp configs/face_seg_flux_kontext_fp16.yaml configs/my_flux_config.yaml
 # Edit my_flux_config.yaml with your dataset path and parameters
 
 # 2. Pre-compute embeddings (recommended for faster training)
-CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_flux_config.yaml --cache
+cd src/
+CUDA_VISIBLE_DEVICES=1,2 python3 -m qflux.main --config ../configs/my_flux_config.yaml --cache
 
 # 3. Start FLUX Kontext LoRA training
-CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_flux_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/my_flux_config.yaml
 
 # 4. Monitor training progress
 tensorboard --logdir output_dir/{tracker_project_name}/ --port 6006
@@ -441,12 +462,15 @@ tensorboard --logdir output_dir/{tracker_project_name}/ --port 6006
 
 #### Multi-GPU Training
 
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
 # Configure accelerate for multi-GPU FLUX training
 accelerate config
 
 # Multi-GPU FLUX Kontext training with device allocation
-CUDA_VISIBLE_DEVICES=0,1,2 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_flux_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=0,1,2 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/my_flux_config.yaml
 ```
 
 ### FLUX Kontext Specific Configurations
@@ -457,7 +481,7 @@ FLUX Kontext uses the same dataset structure as Qwen Image Edit but with differe
 
 ```yaml
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/your_flux_dataset"
     caption_dropout_rate: 0.05
@@ -465,7 +489,7 @@ data:
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
     processor:
-      class_path: "src.data.preprocess.ImageProcessor"
+      class_path: "qflux.data.preprocess.ImageProcessor"
       init_args:
         process_type: center_crop
         target_size: [1024, 1024]
@@ -527,8 +551,8 @@ optimizer:
 
 ```python
 # Inference with trained FLUX Kontext LoRA model
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.data.config import load_config_from_yaml
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.data.config import load_config_from_yaml
 from PIL import Image
 
 # Load configuration
@@ -669,9 +693,12 @@ resume: "/path/to/checkpoint-5-500"  # Path to a specific checkpoint folder
 
 ### Usage
 
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
 # Resume from a specific checkpoint directory
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml --resume "/path/to/checkpoint-5-500"
+cd src/
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/my_config.yaml --resume "/path/to/checkpoint-5-500"
 ```
 
 The framework automatically restores LoRA weights, optimizer state, scheduler state, and training progress (epoch/step count).
@@ -692,7 +719,7 @@ model:
     pretrained_weight: "/path/to/pytorch_lora_weights.safetensors"
 
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/your_dataset"
   batch_size: 2
@@ -704,8 +731,11 @@ train:
 
 ### Usage
 
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
-CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/your_config.yaml
+cd src/
+CUDA_VISIBLE_DEVICES=0 accelerate launch --config_file ../accelerate_config.yaml -m qflux.main --config ../configs/your_config.yaml
 ```
 
 The framework will automatically load the specified LoRA weights before starting training. Ensure that the LoRA rank (`r`) and target modules match those used when the pretrained weights were created.
@@ -822,12 +852,16 @@ Solutions:
 5. Increase training steps
 
 ### Cache Issues
+
+**⚠️ Important**: You must run the command from the `src/` directory. Otherwise, you will encounter import errors.
+
 ```bash
 # Clear corrupted cache
 rm -rf /path/to/cache/*
 
 # Rebuild cache
-CUDA_VISIBLE_DEVICES=1,2 python -m src.main --config configs/my_config.yaml --cache
+cd src/
+CUDA_VISIBLE_DEVICES=1,2 python3 -m qflux.main --config ../configs/my_config.yaml --cache
 ```
 
 ### Version Management

@@ -1,6 +1,6 @@
 # Configuration Guide
 
-This guide documents the up-to-date configuration for Qwen Image Finetune. It reflects the current Pydantic-based schema in `src.data.config` and the trainer behavior.
+This guide documents the up-to-date configuration for Qwen Image Finetune. It reflects the current Pydantic-based schema in `qflux.data.config` and the trainer behavior.
 
 ## Configuration File Structure
 
@@ -27,7 +27,7 @@ model:
 
 # Data Configuration
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path: "/path/to/dataset_or.csv"   # str | [str] | {repo_id, split}
     caption_dropout_rate: 0.0
@@ -38,7 +38,7 @@ data:
     selected_control_indexes: null             # e.g. [1,3]
     prompt_empty_drop_keys: ${cache.prompt_empty_drop_keys}
     processor:
-      class_path: "src.data.preprocess.ImageProcessor"
+      class_path: "qflux.data.preprocess.ImageProcessor"
       init_args:
         process_type: center_crop              # resize | center_padding | right_padding | center_crop | fixed_pixels
         resize_mode: bilinear                  # nearest|linear|bilinear|bicubic|lanczos|area
@@ -142,7 +142,7 @@ loss:
 - `lora.adapter_name`: 适配器名称（如需多适配器场景）
 
 ### data
-- `class_path`: 例如 `src.data.dataset.ImageDataset`（可替换为你实现的 Dataset）
+- `class_path`: 例如 `qflux.data.dataset.ImageDataset`（可替换为你实现的 Dataset）
 - `init_args.dataset_path` 支持：
   - 本地目录，形如包含 `training_images/` 与 `control_images/`
   - CSV 文件路径，包含列：`path_target`, `path_control_*`, `prompt`, 可选 `path_mask`

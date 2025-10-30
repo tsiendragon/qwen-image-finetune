@@ -34,7 +34,7 @@ logging:
 
 | Logger | Value | Description |
 |--------|-------|-------------|
-| TensorBoard | `tensorboard` | Local logging, no authentication required |
+| TensorBoard | `tensorboard`  | Local logging, no authentication required |
 | Weights & Biases | `wandb` | Cloud logging, requires API key |
 | SwanLab | `swanlab` | Cloud logging, requires API key |
 | None | `none` | Disable logging |
@@ -134,6 +134,70 @@ Logged at validation intervals (if enabled):
 - `validation/generated_images`: Generated images
 - `validation/control_{i}`: Control/input images (i = image index)
 - `validation/prompt`: Text prompts used
+
+### Validation Configuration
+
+Validation sampling can be configured in two ways:
+
+#### Method 1: Inline Samples Configuration
+
+Configure validation samples directly in the config file:
+
+```yaml
+validation:
+  enabled: true
+  steps: 10
+  max_samples: 2
+  seed: 42
+  samples:
+    - prompt: "change the image from the face to the face segmentation mask"
+      images:
+        - /raid/lilong/data/face_seg/test/control_images/test_person.png
+      controls_size: [[832, 576]]
+      height: 832
+      width: 576
+    - prompt: "change the image from the face to the face segmentation mask"
+      images:
+        - /raid/lilong/data/face_seg/test/control_images/test_male.png
+      controls_size: [[832, 576]]
+      height: 832
+      width: 576
+```
+
+**Reference**: See `tests/test_configs/test_example_fluxkontext_fp16.yaml` (lines 37-53)
+
+#### Method 2: Dataset-Based Validation
+
+Use a dataset for validation samples:
+
+```yaml
+validation:
+  enabled: true
+  steps: 100
+  max_samples: 2
+  seed: 42
+  dataset:
+    class_path: qflux.data.dataset.ImageDataset
+    init_args:
+      dataset_path:
+        - split: test
+          repo_id: TsienDragon/face_segmentation_20
+      caption_dropout_rate: 0.0
+      prompt_image_dropout_rate: 0.0
+      use_edit_mask: true
+      selected_control_indexes: [1]
+      processor:
+        class_path: qflux.data.preprocess.ImageProcessor
+        init_args:
+          process_type: center_crop
+          resize_mode: bilinear
+          target_size: [832, 576]
+          controls_size: [[832, 576]]
+```
+
+**Reference**: See `tests/test_configs/test_example_fluxkontext_fp16.yaml` (lines 56-73)
+
+**Note**: Only one validation method can be used at a time. Use either `samples` or `dataset`, not both.
 
 ## Distributed Training
 

@@ -35,22 +35,22 @@ pip install -r requirements.txt
 
 **Build cache first (recommended for speed):**
 ```bash
-CUDA_VISIBLE_DEVICES=1 python -m src.main --config configs/my_config.yaml --cache
+CUDA_VISIBLE_DEVICES=1 python -m qflux.main --config configs/my_config.yaml --cache
 ```
 
 **Single GPU training:**
 ```bash
-CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+CUDA_VISIBLE_DEVICES=1 accelerate launch --config_file accelerate_config.yaml -m qflux.main --config configs/my_config.yaml
 ```
 
 **Multi-GPU training:**
 ```bash
-CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+CUDA_VISIBLE_DEVICES=1,2,4 accelerate launch --config_file accelerate_config.yaml -m qflux.main --config configs/my_config.yaml
 ```
 
 **RTX 4090 specific:**
 ```bash
-NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m src.main --config configs/my_config.yaml
+NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 CUDA_VISIBLE_DEVICES=0,1 accelerate launch --config_file accelerate_config.yaml -m qflux.main --config configs/my_config.yaml
 ```
 
 ### Testing
@@ -112,6 +112,6 @@ When updating versions (per `.cursor/rules/general.mdc`):
 ## Dataset Integration
 
 - Supports local datasets and HuggingFace datasets
-- Use `src.utils.hugginface.load_editing_dataset()` for HF datasets
+- Use `qfluxutils.hugginface.load_editing_dataset()` for HF datasets
 - Dataset structure: control images, target images, prompts
 - Supports empty control/image for conditional training
