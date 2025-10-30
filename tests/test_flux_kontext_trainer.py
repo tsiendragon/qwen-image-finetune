@@ -71,7 +71,7 @@ class TestFluxKontextLoraTrainer:
             "transformer": "cuda:0"
         }
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.flux_kontext_trainer.check_cache_exists')
     def test_initialization(self, mock_check_cache):
         """Test trainer initialization."""
         mock_check_cache.return_value = True
@@ -95,13 +95,13 @@ class TestFluxKontextLoraTrainer:
         assert trainer.tokenizer_2 is None
         assert trainer.scheduler is None
 
-    @patch('src.flux_kontext_trainer.load_flux_kontext_scheduler')
-    @patch('src.flux_kontext_trainer.load_flux_kontext_tokenizers')
-    @patch('src.flux_kontext_trainer.load_flux_kontext_transformer')
-    @patch('src.flux_kontext_trainer.load_flux_kontext_t5')
-    @patch('src.flux_kontext_trainer.load_flux_kontext_clip')
-    @patch('src.flux_kontext_trainer.load_flux_kontext_vae')
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.flux_kontext_trainer.load_flux_kontext_scheduler')
+    @patch('qflux.flux_kontext_trainer.load_flux_kontext_tokenizers')
+    @patch('qflux.flux_kontext_trainer.load_flux_kontext_transformer')
+    @patch('qflux.flux_kontext_trainer.load_flux_kontext_t5')
+    @patch('qflux.x.flux_kontext_trainer.load_flux_kontext_clip')
+    @patch('qflux.x.flux_kontext_trainer.load_flux_kontext_vae')
+    @patch('qflux.flux_kontext_trainer.check_cache_exists')
     def test_load_model(self, mock_check_cache, mock_load_vae, mock_load_clip,
                        mock_load_t5, mock_load_transformer, mock_load_tokenizers,
                        mock_load_scheduler):
@@ -153,7 +153,7 @@ class TestFluxKontextLoraTrainer:
         mock_vae.requires_grad_.assert_called_with(False)
         mock_transformer.requires_grad_.assert_called_with(False)
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.x.flux_kontext_trainer.check_cache_exists')
     def test_encode_clip_prompt(self, mock_check_cache):
         """Test CLIP prompt encoding."""
         mock_check_cache.return_value = False
@@ -192,7 +192,7 @@ class TestFluxKontextLoraTrainer:
         assert embeddings.shape == (1, 10, 512)
         assert attention_mask.shape == (1, 10)
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.x.x.flux_kontext_trainer.check_cache_exists')
     def test_encode_t5_prompt(self, mock_check_cache):
         """Test T5 prompt encoding."""
         mock_check_cache.return_value = False
@@ -231,7 +231,7 @@ class TestFluxKontextLoraTrainer:
         assert embeddings.shape == (1, 20, 1024)
         assert attention_mask.shape == (1, 20)
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.x.x.x.x.flux_kontext_trainer.check_cache_exists')
     def test_combine_text_embeddings(self, mock_check_cache):
         """Test text embedding combination."""
         mock_check_cache.return_value = False
@@ -252,7 +252,7 @@ class TestFluxKontextLoraTrainer:
         assert combined_embeds.shape == (2, 10, 1536)  # 512 + 1024
         assert combined_mask.shape == (2, 20)  # Uses longer mask
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.x.x.x.x.x.flux_kontext_trainer.check_cache_exists')
     def test_preprocess_image_for_vae(self, mock_check_cache):
         """Test image preprocessing for VAE."""
         mock_check_cache.return_value = False
@@ -269,7 +269,7 @@ class TestFluxKontextLoraTrainer:
         assert result.min() >= -1.0
         assert result.max() <= 1.0
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.x.x.flux_kontext_trainer.check_cache_exists')
     def test_encode_vae_image(self, mock_check_cache):
         """Test VAE image encoding."""
         mock_check_cache.return_value = False
@@ -295,7 +295,7 @@ class TestFluxKontextLoraTrainer:
         # Verify result shape
         assert result.shape == (1, 16, 8, 8)
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.flux_kontext_trainer.check_cache_exists')
     def test_predict_placeholder(self, mock_check_cache):
         """Test predict method (placeholder implementation)."""
         mock_check_cache.return_value = False
@@ -312,7 +312,7 @@ class TestFluxKontextLoraTrainer:
         assert isinstance(result, np.ndarray)
         assert result.shape == (64, 64, 3)
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.x.flux_kontext_trainer.check_cache_exists')
     def test_set_model_devices_train_mode(self, mock_check_cache):
         """Test model device allocation for training mode."""
         mock_check_cache.return_value = False
@@ -337,7 +337,7 @@ class TestFluxKontextLoraTrainer:
         trainer.text_encoder_2.to.assert_called_with("cuda:0")
         trainer.transformer.to.assert_called_with("cuda:0")
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.flux_kontext_trainer.check_cache_exists')
     def test_set_model_devices_predict_mode(self, mock_check_cache):
         """Test model device allocation for prediction mode."""
         mock_check_cache.return_value = False
@@ -377,7 +377,7 @@ class TestTrainingStep:
         self.mock_config.model.lora.init_lora_weights = "gaussian"
         self.mock_config.model.lora.target_modules = ["to_k", "to_q", "to_v", "to_out.0"]
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.flux_kontext_trainer.check_cache_exists')
     def test_training_step_cached(self, mock_check_cache):
         """Test training step with cached data."""
         mock_check_cache.return_value = False
@@ -408,7 +408,7 @@ class TestTrainingStep:
         trainer._training_step_cached.assert_called_once_with(batch)
         assert loss == torch.tensor(0.5)
 
-    @patch('src.flux_kontext_trainer.check_cache_exists')
+    @patch('qflux.flux_kontext_trainer.check_cache_exists')
     def test_training_step_compute(self, mock_check_cache):
         """Test training step with computation (no cache)."""
         mock_check_cache.return_value = False

@@ -74,7 +74,6 @@ class BaseLogger(ABC):
         if os.path.exists(versioned_dir):
             shutil.rmtree(versioned_dir)
         os.makedirs(versioned_dir, exist_ok=True)
-
         if report_to == "tensorboard":
             # from torch.utils.tensorboard import SummaryWriter
 
@@ -104,6 +103,9 @@ class BaseLogger(ABC):
         # 创建SwanLab logger
         elif report_to == "swanlab":
             workspace = os.environ.get("SWANLAB_WORKSPACE")
+            if not os.path.exists(versioned_dir):
+                logging.info(f"versioned_dir not exists {versioned_dir}, create it")
+                os.makedirs(versioned_dir)
             # 使用SwanLab官方推荐的初始化方式
             swan = swanlab.init(
                 project=project_name,

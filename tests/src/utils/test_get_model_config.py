@@ -3,7 +3,7 @@ from qflux.utils.get_model_config import get_pretrained_model_config, compare_wi
 
 
 class TestGetPretrainedModelConfig:
-    @patch("src.utils.get_model_config.QwenImageTransformer2DModel")
+    @patch("qflux.utils.get_model_config.QwenImageTransformer2DModel")
     def test_get_pretrained_model_config_success(self, mock_model_class):
         """Test successfully getting pretrained model config"""
         # Setup mock model using configure_mock to avoid attribute setting issues
@@ -39,7 +39,7 @@ class TestGetPretrainedModelConfig:
         assert "num_layers" in config_dict
         mock_model_class.from_pretrained.assert_called_once()
 
-    @patch("src.utils.get_model_config.QwenImageTransformer2DModel")
+    @patch("qflux.utils.get_model_config.QwenImageTransformer2DModel")
     def test_get_pretrained_model_config_failure(self, mock_model_class):
         """Test handling of model loading failure"""
         mock_model_class.from_pretrained = Mock(side_effect=Exception("Network error"))
@@ -48,7 +48,7 @@ class TestGetPretrainedModelConfig:
 
         assert config_dict is None
 
-    @patch("src.utils.get_model_config.QwenImageTransformer2DModel")
+    @patch("qflux.utils.get_model_config.QwenImageTransformer2DModel")
     def test_get_pretrained_model_config_saves_json(self, mock_model_class):
         """Test that config is saved to JSON file"""
         # Setup mock model
@@ -75,7 +75,7 @@ class TestGetPretrainedModelConfig:
 
 
 class TestCompareWithLocalConfig:
-    @patch("src.utils.get_model_config.QwenImageTransformer2DModel")
+    @patch("qflux.utils.get_model_config.QwenImageTransformer2DModel")
     def test_compare_with_local_config_success(self, mock_model_class):
         """Test comparing local config with pretrained"""
         # Setup mock local model
@@ -93,7 +93,7 @@ class TestCompareWithLocalConfig:
         assert "patch_size" in call_kwargs
         assert "num_layers" in call_kwargs
 
-    @patch("src.utils.get_model_config.QwenImageTransformer2DModel")
+    @patch("qflux.utils.get_model_config.QwenImageTransformer2DModel")
     def test_compare_with_local_config_failure(self, mock_model_class):
         """Test handling of local model creation failure"""
         mock_model_class.side_effect = Exception("Invalid config")

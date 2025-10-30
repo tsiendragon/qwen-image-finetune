@@ -77,7 +77,7 @@ L = [Σ_b Σ_t a_{b,t} · ℓ̄_{b,t}] / [Σ_b Σ_t a_{b,t} + ε]
 ### Basic Usage
 
 ```python
-from src.losses import AttentionMaskMseLoss
+from qflux.losses import AttentionMaskMseLoss
 
 # Create loss function
 loss_fn = AttentionMaskMseLoss(
@@ -129,7 +129,7 @@ loss = loss_fn(
 ### Functional Interface
 
 ```python
-from src.losses import masked_edit_token_mean_loss
+from qflux.losses import masked_edit_token_mean_loss
 
 loss = masked_edit_token_mean_loss(
     model_pred,
@@ -145,8 +145,8 @@ loss = masked_edit_token_mean_loss(
 ### Multi-Resolution Training Example
 
 ```python
-from src.losses import AttentionMaskMseLoss
-from src.utils.tools import pad_latents_for_multi_res
+from qflux.losses import AttentionMaskMseLoss
+from qflux.utils.tools import pad_latents_for_multi_res
 
 # Create loss function
 loss_fn = AttentionMaskMseLoss(

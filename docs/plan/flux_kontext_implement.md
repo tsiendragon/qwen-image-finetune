@@ -240,7 +240,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
         pipe.to('cpu')
 
         # Separate individual components using flux_kontext_loader
-        from src.models.flux_kontext_loader import (
+        from qflux.models.flux_kontext_loader import (
             load_flux_kontext_vae, load_flux_kontext_clip,
             load_flux_kontext_t5, load_flux_kontext_transformer
         )
@@ -610,7 +610,7 @@ model:
     pretrained_weight: null  # same as QwenImageEditTrainer
 
 data:
-  class_path: "src.data.dataset.ImageDataset"  # same dataset class
+  class_path: "qflux.data.dataset.ImageDataset"  # same dataset class
   init_args:
     dataset_path: "/path/to/flux_dataset/"
     image_size: [1024, 1024]  # Flux typical size

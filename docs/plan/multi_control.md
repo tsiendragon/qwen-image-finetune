@@ -124,7 +124,7 @@ def cache_step(self, data: dict, vae_encoder_device: str, text_encoder_device: s
 ```yaml
 ...
     processor:
-      class_path: src.data.preprocess.ImageProcessor
+      class_path: qflux.data.preprocess.ImageProcessor
       init_args:
         process_type: center_crop
         resize_mode: bilinear

@@ -136,7 +136,7 @@ class TestCompareFluxKontextModels:
     def test_compare_transformer_component(self):
         """Test comparing transformer component"""
         # Mock the loader module entirely
-        with patch("src.models.flux_kontext_loader.load_flux_kontext_transformer") as mock_loader:
+        with patch("qflux.models.flux_kontext_loader.load_flux_kontext_transformer") as mock_loader:
             # Setup mock models
             mock_model = nn.Linear(10, 10)
             mock_loader.return_value = mock_model
@@ -156,7 +156,7 @@ class TestCompareFluxKontextModels:
 
 
 class TestRunFullFluxComparison:
-    @patch("src.utils.model_compare.compare_flux_kontext_models")
+    @patch("qflux.utils.model_compare.compare_flux_kontext_models")
     def test_run_full_comparison(self, mock_compare):
         """Test running full comparison for all components"""
         mock_compare.return_value = {"summary": {"models_identical": True}}
@@ -166,7 +166,7 @@ class TestRunFullFluxComparison:
         assert "transformer" in results
         assert results["transformer"]["summary"]["models_identical"] is True
 
-    @patch("src.utils.model_compare.compare_flux_kontext_models")
+    @patch("qflux.utils.model_compare.compare_flux_kontext_models")
     def test_run_full_comparison_with_errors(self, mock_compare):
         """Test handling errors during comparison"""
         mock_compare.side_effect = Exception("Comparison failed")
@@ -176,7 +176,7 @@ class TestRunFullFluxComparison:
         assert "transformer" in results
         assert "error" in results["transformer"]
 
-    @patch("src.utils.model_compare.compare_flux_kontext_models")
+    @patch("qflux.utils.model_compare.compare_flux_kontext_models")
     def test_run_full_comparison_default_components(self, mock_compare):
         """Test running comparison with default components"""
         mock_compare.return_value = {"summary": {"models_identical": True}}

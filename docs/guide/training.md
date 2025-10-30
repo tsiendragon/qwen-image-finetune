@@ -92,13 +92,13 @@ model:
 
 # Dataset configuration
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/face_seg"  # Path to your dataset
     caption_dropout_rate: 0.1
     prompt_image_dropout_rate: 0.1
     processor:
-      class_path: "src.data.preprocess.ImageProcessor"
+      class_path: "qflux.data.preprocess.ImageProcessor"
       init_args:
         process_type: center_crop
         target_size: [512, 512]
@@ -481,7 +481,7 @@ FLUX Kontext uses the same dataset structure as Qwen Image Edit but with differe
 
 ```yaml
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/your_flux_dataset"
     caption_dropout_rate: 0.05
@@ -489,7 +489,7 @@ data:
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
     processor:
-      class_path: "src.data.preprocess.ImageProcessor"
+      class_path: "qflux.data.preprocess.ImageProcessor"
       init_args:
         process_type: center_crop
         target_size: [1024, 1024]
@@ -551,8 +551,8 @@ optimizer:
 
 ```python
 # Inference with trained FLUX Kontext LoRA model
-from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
-from src.data.config import load_config_from_yaml
+from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+from qflux.data.config import load_config_from_yaml
 from PIL import Image
 
 # Load configuration
@@ -719,7 +719,7 @@ model:
     pretrained_weight: "/path/to/pytorch_lora_weights.safetensors"
 
 data:
-  class_path: "src.data.dataset.ImageDataset"
+  class_path: "qflux.data.dataset.ImageDataset"
   init_args:
     dataset_path: "data/your_dataset"
   batch_size: 2

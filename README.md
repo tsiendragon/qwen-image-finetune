@@ -192,7 +192,7 @@ Here we provided two toy datasets in the huggingface that user can efficiently u
 Quick usage:
 
 ```python
-from src.utils.huggingface import load_editing_dataset
+from qflux.utils.huggingface import load_editing_dataset
 
 dd = load_editing_dataset("TsienDragon/face_segmentation_20")
 sample = dd["train"][0]
@@ -631,8 +631,8 @@ Check this docs for more training guides docs/training.md
 - Use trainer in this repo
 ```python
 # Inference with trained LoRA model
-from src.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
-from src.data.config import load_config_from_yaml
+from qflux.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
+from qflux.data.config import load_config_from_yaml
 from PIL import Image
 
 # Load configuration

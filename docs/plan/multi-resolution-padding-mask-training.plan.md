@@ -94,7 +94,7 @@ AttentionMask = torch.Tensor  # shape: (B, seq_txt + seq_img), bool or float
 data:
   init_args:
     processor:
-      class_path: src.data.preprocess.ImageProcessor
+      class_path: qflux.data.preprocess.ImageProcessor
       init_args:
         process_type: fixed_pixels
         # 存在 multi_resolutions 即自动启用多分辨率
@@ -1657,7 +1657,7 @@ def test_flux_multi_sample_padding():
 ```python
 def test_mask_loss_with_reduction_none():
     """验证 MaskEditLoss 支持 reduction='none'"""
-    from src.loss.edit_mask_loss import MaskEditLoss
+    from qflux.loss.edit_mask_loss import MaskEditLoss
 
     loss_fn = MaskEditLoss(foreground_weight=2.0, background_weight=1.0)
 
@@ -1762,7 +1762,7 @@ def test_padding_token_zero_gradient():
 ```python
 def test_should_use_multi_resolution_mode():
     """验证 _should_use_multi_resolution_mode 判断逻辑"""
-    from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+    from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
 
     # Mock config
     config = type('Config', (), {})()
@@ -1800,7 +1800,7 @@ def test_should_use_multi_resolution_mode():
 ```python
 def test_pad_latents_for_multi_res():
     """验证 latents padding 函数"""
-    from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+    from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
 
     config = type('Config', (), {})()
     trainer = FluxKontextLoraTrainer(config)
@@ -1853,7 +1853,7 @@ def test_mixed_resolution_training_step():
 
     os.environ.setdefault("HF_TOKEN", "dummy")
     with mock.patch("huggingface_hub.login"):
-        from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+        from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
 
     # 构造 minimal config
     config = type('Config', (), {
@@ -1898,7 +1898,7 @@ def test_mixed_resolution_training_step():
 ```python
 def test_same_resolution_fallback():
     """验证同尺寸 batch 自动回退到 shared mode"""
-    from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+    from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
 
     config = type('Config', (), {})()
     trainer = FluxKontextLoraTrainer(config)
@@ -1925,7 +1925,7 @@ def test_same_resolution_fallback():
 ```python
 def test_cache_v1_loading():
     """验证 v1.0 缓存加载兼容性"""
-    from src.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
+    from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
 
     config = type('Config', (), {
         'data': {'default_height': 512, 'default_width': 512}
@@ -1965,7 +1965,7 @@ def test_cache_v2_save_and_load():
     import tempfile
     import os
 
-    from src.data.dataset import ImageEditDataset
+    from qflux.data.dataset import ImageEditDataset
 
     # 构造数据
     cache_data = {

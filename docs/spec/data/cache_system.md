@@ -155,7 +155,7 @@ def training_step(self, batch):
 ### EmbeddingCacheManager
 
 ```python
-from src.data.cache_manager import EmbeddingCacheManager
+from qflux.data.cache_manager import EmbeddingCacheManager
 
 # Initialize cache manager
 cache_manager = EmbeddingCacheManager("/path/to/cache")
@@ -191,7 +191,7 @@ data = cache_manager.load_cache(
 )
 
 # Check cache availability for a dataset (metadata files exist)
-from src.data.cache_manager import EmbeddingCacheManager
+from qflux.data.cache_manager import EmbeddingCacheManager
 cache_available = EmbeddingCacheManager.exist("/path/to/cache")
 ```
 
@@ -278,7 +278,7 @@ cache:
 ### 3. Cache Validation
 ```python
 # Check cache status before training
-from src.data.cache_manager import check_cache_exists
+from qflux.data.cache_manager import check_cache_exists
 
 cache_exists = check_cache_exists("/path/to/cache")
 print(f"Cache available: {cache_exists}")
@@ -291,7 +291,7 @@ du -sh /path/to/cache
 
 # Clean cache if needed
 python -c "
-from src.data.cache_manager import EmbeddingCacheManager
+from qflux.data.cache_manager import EmbeddingCacheManager
 cache = EmbeddingCacheManager('/path/to/cache')
 cache.clear_cache()
 "

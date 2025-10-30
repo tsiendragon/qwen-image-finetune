@@ -54,8 +54,8 @@ Qwen 的 RoPE 实现采用 **sequence concatenation** 模式：
 
 **使用示例**：
 ```python
-from src.models.transformer_qwenimage import QwenImageTransformer2DModel
-from src.models.qwen_multi_resolution_patch import patch_qwen_model_for_multi_resolution
+from qflux.models.transformer_qwenimage import QwenImageTransformer2DModel
+from qflux.models.qwen_multi_resolution_patch import patch_qwen_model_for_multi_resolution
 
 model = QwenImageTransformer2DModel(...)
 patch_qwen_model_for_multi_resolution(model)

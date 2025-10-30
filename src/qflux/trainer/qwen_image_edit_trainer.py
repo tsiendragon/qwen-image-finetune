@@ -116,7 +116,13 @@ class QwenImageEditTrainer(BaseTrainer):
 
         self.processor: Qwen2VLProcessor = pipe.processor
         self.tokenizer: Qwen2Tokenizer = pipe.tokenizer
+        # Create two schedulers: one for training, one for sampling/validation
         self.scheduler: FlowMatchEulerDiscreteScheduler = pipe.scheduler
+        import copy
+
+        self.sampling_scheduler: FlowMatchEulerDiscreteScheduler = copy.deepcopy(
+            self.scheduler
+        )  # Independent scheduler for validation/sampling
         # Initialize image processor (for predict method)
         from diffusers.image_processor import VaeImageProcessor
 
@@ -294,10 +300,11 @@ class QwenImageEditTrainer(BaseTrainer):
             torch.cuda.empty_cache()
             self.vae.cpu()
             torch.cuda.empty_cache()
-            del self.text_encoder
+            # del self.text_encoder
 
-            if not self.config.logging.sampling.enable:
+            if not self.config.validation.enabled:
                 del self.vae
+                del self.text_encoder
             else:
                 self.vae.requires_grad_(False).eval()
 
@@ -508,7 +515,6 @@ class QwenImageEditTrainer(BaseTrainer):
         prompt_embeds_mask = data["prompt_embeds_mask"].detach().cpu()[0]
         empty_prompt_embeds = data["empty_prompt_embeds"].detach().cpu()[0]
         empty_prompt_embeds_mask = data["empty_prompt_embeds_mask"].detach().cpu()[0]
-        # img_shapes = torch.tensor(self._get_image_shapes(data, 1)[0]).to(torch.int32)
         # img_shapes now is calculated in dataset, do not need any more
         cache_embeddings = {
             "image_latents": image_latents,
@@ -535,16 +541,9 @@ class QwenImageEditTrainer(BaseTrainer):
         Prepare cached embeddings from dataloader batch.
         Expects v2.0 cache format with img_shapes field.
         """
-        # Handle edit mask preprocessing
-        # if self.config.loss.mask_loss and "mask" in batch:
-        #     image_height, image_width = batch["image"].shape[2:]
-        #     mask = batch["mask"]
-        #     batch["mask"] = resize_bhw(mask, image_height, image_width)
-        #     batch["mask"] = map_mask_to_latent(batch["mask"])
-
-        # now dataset will have the img_shapes output, no need worry about this
-        if "img_shapes" not in batch:
-            raise ValueError("Cache format error: img_shapes field is missing. Please regenerate cache.")
+        img_shapes = batch["img_shapes"]
+        img_shapes = self.convert_img_shapes_to_latent_space(img_shapes)
+        batch["img_shapes"] = img_shapes
         return batch
 
     def _postprocess_image(self, image_tensor: torch.Tensor) -> np.ndarray:
@@ -552,53 +551,9 @@ class QwenImageEditTrainer(BaseTrainer):
         image = image_tensor.cpu().float()
         image = image.squeeze(2).squeeze(0)  # [C,H,W]
         image = (image / 2 + 0.5).clamp(0, 1)  # Convert from [-1,1] to [0,1]
-        image = image.permute(1, 2, 0).numpy()  # [H,W,C]
-        image = (image * 255).astype(np.uint8)
-        return image
-
-    # def _get_image_shapes(self, embeddings: dict, batch_size: int) -> List[List[Tuple[int, int, int]]]:
-    #     """
-    #     embeddings comes from prepare_embeddings.
-    #     The image shapes is made of, the first one is the target image shape, second is control,
-    # and additional controls
-    #     ```python
-    #     img_shapes = [
-    #             [
-    # (1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2),
-    # (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2),
-    # (1, height_control_1 // self.vae_scale_factor // 2, width_control_1 // self.vae_scale_factor // 2),
-    #             ]
-    #         ]
-    #     ```
-    #     hiehgt_image, width_image, height_control, width_control, height_control_1, width_control_1
-    #     """
-    #     assert "height" in embeddings and "width" in embeddings, "height_image and width_image must be in embeddings"
-    #     img_shapes = []
-    #     height_image = embeddings["height"]
-    #     width_image = embeddings["width"]
-    #     img_shapes.append((1, height_image // self.vae_scale_factor // 2, width_image // self.vae_scale_factor // 2))
-    #     if "height_control" in embeddings and "width_control" in embeddings:
-    #         height_control = embeddings["height_control"]
-    #         width_control = embeddings["width_control"]
-    #         img_shapes.append(
-    #             (1, height_control // self.vae_scale_factor // 2, width_control // self.vae_scale_factor // 2)
-    #         )
-    #         num_additional_controls = (
-    #             embeddings["n_controls"] if isinstance(embeddings["n_controls"], int) else embeddings["n_controls"][0]
-    #         )
-    #         for i in range(num_additional_controls):
-    #             additional_control_key = f"control_{i+1}"
-    #             if additional_control_key in embeddings:
-    #                 height_control_i = embeddings[f"height_control_{i+1}"]
-    #                 width_control_i = embeddings[f"width_control_{i+1}"]
-    #                 img_shapes.append(
-    #                     (
-    #                         1,
-    #                         height_control_i // self.vae_scale_factor // 2,
-    #                         width_control_i // self.vae_scale_factor // 2,
-    #                     )
-    #                 )
-    #     return [img_shapes] * batch_size
+        image_ = image.permute(1, 2, 0).numpy()  # [H,W,C]
+        image_ = (image_ * 255).astype(np.uint8)
+        return image_
 
     def convert_img_shapes_to_latent_space(
         self, img_shapes: list[list[tuple[int, int, int]]]
@@ -828,7 +783,9 @@ class QwenImageEditTrainer(BaseTrainer):
         control_latents = embeddings["control_latents"].to(self.weight_dtype).to(device)
         prompt_embeds = embeddings["prompt_embeds"].to(self.weight_dtype).to(device)
         prompt_embeds_mask = embeddings["prompt_embeds_mask"].to(dtype=torch.int64).to(device)
-        img_shapes = embeddings["img_shapes"]  # must from the cache embeddings
+        img_shapes = embeddings["img_shapes"]
+        print("img_shapes", img_shapes)
+        # img_shapes_latent = self.convert_img_shapes_to_latent_space(img_shapes)
         batch_size = image_latents.shape[0]
         if "edit_mask" in embeddings:  # already has edit_mask in collate function
             edit_mask = embeddings["edit_mask"]
@@ -836,7 +793,8 @@ class QwenImageEditTrainer(BaseTrainer):
             edit_mask = None
 
         # ✅ Use BaseTrainer's multi-resolution detection
-        is_multi_res = self.should_use_multi_resolution_mode(embeddings)
+        is_multi_res = False  # self.should_use_multi_resolution_mode(embeddings)
+        # TODO: implement multi-resolution mode
 
         with torch.no_grad():
             noise = torch.randn_like(image_latents, device=device, dtype=self.weight_dtype)
@@ -1225,7 +1183,9 @@ class QwenImageEditTrainer(BaseTrainer):
         logging.info(f"width: {width_image}")
         logging.info(f"image_seq_len: {image_seq_len}")
 
-        timesteps, num_inference_steps = self.prepare_predict_timesteps(num_inference_steps, image_seq_len)
+        timesteps, num_inference_steps = self.prepare_predict_timesteps(
+            num_inference_steps, image_seq_len, scheduler=self.sampling_scheduler
+        )
 
         self._num_timesteps = len(timesteps)
 
@@ -1244,7 +1204,7 @@ class QwenImageEditTrainer(BaseTrainer):
         )
 
         # 7. 降噪循环 (遵循原始pipeline逻辑)
-        self.scheduler.set_begin_index(0)
+        self.sampling_scheduler.set_begin_index(0)
         self.attention_kwargs: dict[str, Any] = {}
 
         # set to proper device
@@ -1323,7 +1283,7 @@ class QwenImageEditTrainer(BaseTrainer):
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
-                latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                latents = self.sampling_scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():

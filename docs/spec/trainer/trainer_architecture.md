@@ -71,7 +71,7 @@ def load_model(self, text_encoder_device=None):
     pipe.to('cpu')
 
     # Load individual components using custom loaders
-    from src.models.load_model import load_vae, load_qwenvl, load_transformer
+    from qflux.models.load_model import load_vae, load_qwenvl, load_transformer
 
     self.vae = load_vae("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)
     self.text_encoder = load_qwenvl("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)
@@ -320,7 +320,7 @@ def accelerator_prepare(self, train_dataloader):
 ```python
 def quantize_model(self, model, device):
     # FP8 quantization for inference acceleration using BitsAndBytes
-    from src.models.quantize import quantize_model_to_fp8
+    from qflux.models.quantize import quantize_model_to_fp8
     model = quantize_model_to_fp8(
         model,
         engine="bnb",

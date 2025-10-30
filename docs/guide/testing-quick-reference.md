@@ -50,7 +50,7 @@ pytest tests/ --cov=src --cov-report=html
 # 然后打开 htmlcov/index.html
 
 # 检查特定模块覆盖率
-pytest tests/ --cov=src.data --cov-report=term-missing
+pytest tests/ --cov=qflux.data --cov-report=term-missing
 ```
 
 ### 其他有用命令

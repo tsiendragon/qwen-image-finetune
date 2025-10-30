@@ -9,7 +9,7 @@ import os
 # Add the project root to the path so we can import from src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.qflux.utils.lora_compare import compare_lora_weights
+from qflux.qflux.utils.lora_compare import compare_lora_weights
 
 
 def parse_args():

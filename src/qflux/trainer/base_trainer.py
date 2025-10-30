@@ -64,7 +64,8 @@ class BaseTrainer(ValidationMixin, ABC):
         self.optimizer: torch.optim.Optimizer
         self.lr_scheduler: torch.optim.lr_scheduler.LRScheduler
         self.global_step = 0
-        self.scheduler: FlowMatchEulerDiscreteScheduler
+        self.scheduler: FlowMatchEulerDiscreteScheduler  # For training
+        self.sampling_scheduler: FlowMatchEulerDiscreteScheduler  # For validation/sampling
 
         # Common attributes that all trainers should have
         self.weight_dtype = torch.bfloat16
@@ -144,7 +145,13 @@ class BaseTrainer(ValidationMixin, ABC):
             else:
                 logging.info(f"移除无效训练版本: {version_path}")
                 try:
-                    shutil.rmtree(version_path)
+                    # Remove contents of the directory instead of deleting the directory itself
+                    for item in os.listdir(version_path):
+                        item_path = os.path.join(version_path, item)
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
                 except Exception as e:
                     logging.info(f"移除无效训练版本失败: {version_path}, {e}")
 
@@ -1000,20 +1007,35 @@ class BaseTrainer(ValidationMixin, ABC):
         image = image.to(self.weight_dtype)
         return image * 2.0 - 1.0
 
-    def prepare_predict_timesteps(self, num_inference_steps: int, image_seq_len: int) -> tuple[torch.Tensor, int]:
-        """prepare timesteps for prediction"""
-        assert self.scheduler is not None, "scheduler must be initialized"
+    def prepare_predict_timesteps(
+        self,
+        num_inference_steps: int,
+        image_seq_len: int,
+        scheduler: FlowMatchEulerDiscreteScheduler | None = None,
+    ) -> tuple[torch.Tensor, int]:
+        """prepare timesteps for prediction
+
+        Args:
+            num_inference_steps: Number of inference steps
+            image_seq_len: Image sequence length
+            scheduler: Scheduler to use. If None, uses self.sampling_scheduler
+                (for validation/sampling) or self.scheduler (for training)
+        """
+        # Use provided scheduler, or sampling_scheduler for validation, or scheduler for training
+        if scheduler is None:
+            scheduler = getattr(self, "sampling_scheduler", None) or self.scheduler
+        assert scheduler is not None, "scheduler must be initialized"
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         mu = calculate_shift(
             image_seq_len,
-            self.scheduler.config.get("base_image_seq_len", 256),
-            self.scheduler.config.get("max_image_seq_len", 4096),
-            self.scheduler.config.get("base_shift", 0.5),
-            self.scheduler.config.get("max_shift", 1.15),
+            scheduler.config.get("base_image_seq_len", 256),
+            scheduler.config.get("max_image_seq_len", 4096),
+            scheduler.config.get("base_shift", 0.5),
+            scheduler.config.get("max_shift", 1.15),
         )
         device = next(self.dit.parameters()).device
         timesteps, num_inference_steps = retrieve_timesteps(
-            self.scheduler,
+            scheduler,
             num_inference_steps,
             device,
             sigmas=sigmas,

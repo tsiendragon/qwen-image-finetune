@@ -87,7 +87,7 @@ Unified HF Dataset schema:
 Use script `upload_dataset.py` (internally calls `upload_editing_dataset`):
 
 ```python
-from src.utils.hugginface import upload_editing_dataset
+from qflux.utils.hugginface import upload_editing_dataset
 
 upload_editing_dataset(
     root_dir="face_seg",                 # contains train/ and/or test/
@@ -107,7 +107,7 @@ python upload_dataset.py
 For datasets with CSV metadata files, use `upload_editing_dataset_from_csv`:
 
 ```python
-from src.utils.hugginface import upload_editing_dataset_from_csv
+from qflux.utils.hugginface import upload_editing_dataset_from_csv
 
 upload_editing_dataset_from_csv(
     root_dir="/path/to/dataset",         # contains train.csv and/or test.csv
@@ -175,7 +175,7 @@ test/control/sample2.webp,test/control/sample2_control_1.png,Generate character 
 Unified loading interface:
 
 ```python
-from src.utils.hugginface import load_editing_dataset
+from qflux.utils.hugginface import load_editing_dataset
 
 dsd = load_editing_dataset("<org_or_user>/<dataset>")  # returns DatasetDict
 print(dsd)
@@ -217,7 +217,7 @@ train_ds = load_editing_dataset("<org_or_user>/<dataset>", split="train")
 Use `upload_lora_safetensors` function to upload trained LoRA weights to Hugging Face Hub (model repository):
 
 ```python
-from src.utils.hugginface import upload_lora_safetensors
+from qflux.utils.hugginface import upload_lora_safetensors
 
 # Basic upload (LoRA weights file only)
 repo_url = upload_lora_safetensors(
@@ -265,7 +265,7 @@ print(f"Model uploaded to: {repo_url}")
 Use `download_lora` function to download LoRA weights from Hugging Face Hub:
 
 ```python
-from src.utils.hugginface import download_lora
+from qflux.utils.hugginface import download_lora
 
 # Download LoRA weights from specified repository
 local_path = download_lora(

@@ -112,6 +112,6 @@ When updating versions (per `.cursor/rules/general.mdc`):
 ## Dataset Integration
 
 - Supports local datasets and HuggingFace datasets
-- Use `src.utils.hugginface.load_editing_dataset()` for HF datasets
+- Use `qfluxutils.hugginface.load_editing_dataset()` for HF datasets
 - Dataset structure: control images, target images, prompts
 - Supports empty control/image for conditional training
