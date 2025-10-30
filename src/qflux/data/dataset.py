@@ -482,7 +482,7 @@ class ImageDataset(Dataset):
             if data_item["control_mask"] is not None:
                 data["mask"] = np.array(data_item["control_mask"].convert("L"))
 
-            if self.use_cache:
+            if hasattr(self, "cache_manager"):
                 file_hashes = self.get_file_hashes(data)
                 data["file_hashes"] = file_hashes
         else:  # loaded locally
@@ -514,7 +514,8 @@ class ImageDataset(Dataset):
             else:
                 prompt = data_item["caption"]
                 data["prompt"] = prompt
-            file_hashes = self.get_file_hashes(data)
+            if hasattr(self, "cache_manager"):
+                file_hashes = self.get_file_hashes(data)
             data["file_hashes"] = file_hashes
         return data
 

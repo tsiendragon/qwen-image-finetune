@@ -15,8 +15,8 @@ from diffusers.utils import load_image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from qflux.data.config import Config
-from qflux.utils.tools import pad_to_max_shape
+from qflux.data.config import Config, SamplingConfig
+from qflux.utils.tools import instantiate_class, pad_to_max_shape
 
 
 logger = logging.getLogger(__name__)
@@ -85,8 +85,7 @@ class ValidationMixin:
             class_path = dataset_config.class_path
             init_args = dataset_config.init_args
             init_args.use_cache = False
-            from qflux.utils.tools import instantiate_class
-
+            init_args.cache_dir = ""
             dataset = instantiate_class(class_path, init_args)
             validation_samples: list[dict[str, Any]] = []
             for i in range(self.validation_config.max_samples):
@@ -122,7 +121,7 @@ class ValidationMixin:
 
     def _load_from_config_samples(
         self,
-        samples: list[Any],
+        samples: list[SamplingConfig],
     ) -> list[dict[str, Any]]:
         """
         Load validation samples from direct configuration.
@@ -131,14 +130,26 @@ class ValidationMixin:
         validation_samples = []
 
         for sample in samples:
-            images = sample["images"]
+            images = sample.images
             images = [load_image(image).convert("RGB") for image in images]
+            if hasattr(sample, "controls_size"):
+                controls_size = sample.controls_size
+            else:
+                controls_size = [[img.height, img.width] for img in images]
+            if hasattr(sample, "height"):
+                height = sample.height
+            else:
+                height = images[0].height
+            if hasattr(sample, "width"):
+                width = sample.width
+            else:
+                width = images[0].width
             validation_sample = {
-                "prompt": sample["prompt"],
+                "prompt": sample.prompt,
                 "images": images,
-                "controls_size": sample.get("controls_size", [[img.height, img.width] for img in images]),
-                "height": sample.get("height", images[0].height),
-                "width": sample.get("width", images[0].width),
+                "controls_size": controls_size,
+                "height": height,
+                "width": width,
             }
             validation_samples.append(validation_sample)
 

@@ -687,7 +687,7 @@ class ValidationSample(BaseModel):
     height: int | None = None
     width: int | None = None
     negative_prompt: str | None = None
-    guidance_scale: float | None = 3.5
+    guidance_scale: float | None = None
     num_inference_steps: int | None = 20
 
 
