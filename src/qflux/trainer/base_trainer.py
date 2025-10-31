@@ -126,7 +126,10 @@ class BaseTrainer(ValidationMixin, ABC):
         if not os.path.exists(project_dir):
             versioned_dir = os.path.join(project_dir, "v0")
             self.config.logging.output_dir = versioned_dir
+            os.makedirs(versioned_dir, exist_ok=True)
             logging.info(f"创建新的训练版本目录: {versioned_dir}")
+            self.versioned_dir = versioned_dir
+            self.experiment_name = "v0"
             return
 
         # 查找现有版本

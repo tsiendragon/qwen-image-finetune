@@ -28,20 +28,54 @@ data:
         target_size:  [832, 576] # [768, 1344]
         controls_size: [[832, 576]]
 
-  batch_size: 4  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
   num_workers: 2
   shuffle: true
 
 logging:
   output_dir: /tmp/image_edit_lora/  # change the path to your own output path
-  report_to: tensorboard
+  # report_to: tensorboard
+  # report_to: wandb
+  report_to: swanlab
   tracker_project_name: faceSegQwenImageEditPlusFp4
+  tags:
+    - test
+    - QwenImageEditPlus
+    - FaceSeg
+    - lilong
+  notes: "This is a test configuration for QwenImageEditPlus on FaceSeg dataset"
+
+validation:
+  enabled: true
+  steps: 10
+  max_samples: 2
+  seed: 42
+  samples:
+    - prompt: "change the image from the face to the face segmentation mask"
+      images:
+        - /raid/lilong/data/face_seg/test/control_images/test_person.png
+      controls_size: [[832, 576]]
+      height: 832
+      width: 576
+    - prompt: "change the image from the face to the face segmentation mask"
+      images:
+        - /raid/lilong/data/face_seg/test/control_images/test_male.png
+      controls_size: [[832, 576]]
+      height: 832
+      width: 576
+
 
 optimizer:
-  class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  # class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  # init_args:
+  #   lr: 0.0001  # face segmentation task uses smaller learning rate
+  #   betas: [0.9, 0.999]
+  class_path:  prodigyopt.Prodigy # bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
   init_args:
-    lr: 0.0001  # face segmentation task uses smaller learning rate
-    betas: [0.9, 0.999]
+    lr: 1.0
+    use_bias_correction: True
+    safeguard_warmup: True
+    weight_decay: 0.01
 
 lr_scheduler:
   scheduler_type: cosine  # cosine scheduler, better for fine-grained tasks

@@ -65,10 +65,16 @@ validation:
       width: 576
 
 optimizer:
-  class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  # class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  # init_args:
+  #   lr: 0.0001  # face segmentation task uses smaller learning rate
+  #   betas: [0.9, 0.999]
+  class_path:  prodigyopt.Prodigy # bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
   init_args:
-    lr: 0.0001  # face segmentation task uses smaller learning rate
-    betas: [0.9, 0.999]
+    lr: 1.0
+    use_bias_correction: True
+    safeguard_warmup: True
+    weight_decay: 0.01
 
 lr_scheduler:
   scheduler_type: "cosine"  # cosine scheduler, better for fine-grained tasks

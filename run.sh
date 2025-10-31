@@ -6,17 +6,20 @@
 # config_file='tests/test_configs/test_example_fluxkontext_multiresolution.yaml'
 config_file='../tests/test_configs/test_example_fluxkontext_fp16.yaml'
 config_file='../tests/test_configs/test_example_qwen_image_edit_fp16.yaml'
+config_file='../tests/test_configs/test_example_qwen_image_edit_plus_fp16.yaml'
+config_file='../tests/test_configs/test_example_qwen_image_edit_plus_fp4.yaml'
+# config_file='../tests/test_configs/test_example_qwen_image_edit_plus_fp4.yaml'
 echo "Used config file: $config_file"
 
 cd src/
-# python3 -m qflux.main --config $config_file --cache
+python3 -m qflux.main --config $config_file --cache
 
 # # NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
 # # NCCL_P2P_DISABLE only for RTX4090, not for A100
 # export WANDB_MODE=offline && \
 # export NCCL_BLOCKING_WAIT=1 && \
 # export NCCL_DEBUG=WARN && \
-CUDA_VISIBLE_DEVICES=0,1 \
+CUDA_VISIBLE_DEVICES=0,2 \
 accelerate launch \
   --num_processes 2 \
   --mixed_precision bf16 \

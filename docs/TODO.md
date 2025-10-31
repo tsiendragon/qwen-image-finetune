@@ -11,6 +11,7 @@ Track ongoing development, documentation, and operations tasks. Update completio
 - [ ] Customized pipeline based on diffusers pipeline with multi-control compatibility
 - [ ] Online quantization for training and inference
 - [ ] Release character-composition dataset on HuggingFace
+- [ ] Investigate validation DDP hang when samples have mixed resolutions (current workaround: keep validation shapes aligned)
 
 ## Completed
 
