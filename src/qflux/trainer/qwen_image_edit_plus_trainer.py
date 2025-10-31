@@ -1,3 +1,4 @@
+import copy
 import logging
 from typing import Any
 
@@ -67,6 +68,10 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
         self.processor: Qwen2VLProcessor = pipe.processor
         self.tokenizer: Qwen2Tokenizer = pipe.tokenizer
         self.scheduler: FlowMatchEulerDiscreteScheduler = pipe.scheduler
+        self.sampling_scheduler: FlowMatchEulerDiscreteScheduler = copy.deepcopy(
+            self.scheduler
+        )  # Independent scheduler for validation/sampling
+        # Initialize image processor (for predict method)
         # Initialize image processor (for predict method)
         from diffusers.image_processor import VaeImageProcessor
 
@@ -172,14 +177,17 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
             batch["condition_images"] = condition_images
         # condition images resize is not identical to the original qwen-edit-plus. Here it resized two times
         # since we are using the shared images in dataset processor
+        if debug:
+            prompt_embeds, prompt_embeds_mask, model_inputs, hidden_states = self.encode_prompt(
+                prompt=batch["prompt"], image=condition_images, debug=debug
+            )
+            batch["prompt_embeds_model_inputs"] = model_inputs
+            batch["prompt_hidden_states"] = hidden_states
 
-        prompt_embeds, prompt_embeds_mask, model_inputs, hidden_states = self.encode_prompt(
-            prompt=batch["prompt"], image=condition_images, debug=debug
-        )
-        batch["prompt_embeds_model_inputs"] = model_inputs
+        else:
+            prompt_embeds, prompt_embeds_mask = self.encode_prompt(prompt=batch["prompt"], image=condition_images)
         batch["prompt_embeds_mask"] = prompt_embeds_mask
         batch["prompt_embeds"] = prompt_embeds
-        batch["prompt_hidden_states"] = hidden_states
 
         if stage == "cache":
             empty_prompt_embeds, empty_prompt_embeds_mask = self.encode_prompt(

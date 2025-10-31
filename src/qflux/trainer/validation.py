@@ -53,6 +53,8 @@ class ValidationMixin:
         if not validation_samples:
             logger.warning("No validation samples loaded")
             return
+        # Validate that all samples have the same shape for DDP compatibility
+        self._validate_samples_shape_consistency(validation_samples)
         # Store raw samples first - we'll prepare them after accelerator is initialized
         self.validation_samples = validation_samples
         logger.info(f"Loaded {len(self.validation_samples)} validation samples for periodic sampling")
@@ -151,6 +153,58 @@ class ValidationMixin:
             validation_samples.append(validation_sample)
 
         return validation_samples
+
+    def _validate_samples_shape_consistency(self, validation_samples: list[dict[str, Any]]) -> None:
+        """
+        Validate that all validation samples have consistent shapes for DDP compatibility.
+
+        In DDP mode, accelerator.gather() requires all processes to have tensors with
+        identical shapes. This means all validation samples must have the same height
+        and width to avoid deadlock during the gather operation.
+
+        Args:
+            validation_samples: List of validation sample dictionaries
+
+        Raises:
+            ValueError: If samples have inconsistent shapes
+        """
+        if len(validation_samples) <= 1:
+            return
+
+        # Extract shapes from all samples
+        shapes = []
+        for idx, sample in enumerate(validation_samples):
+            height = sample.get("height")
+            width = sample.get("width")
+            shapes.append((height, width, idx))
+
+        # Check if all shapes are identical
+        first_shape = shapes[0][:2]
+        inconsistent_samples = []
+
+        for height, width, idx in shapes[1:]:
+            if (height, width) != first_shape:
+                inconsistent_samples.append((idx, height, width))
+
+        # If inconsistent shapes found, raise detailed error
+        if inconsistent_samples:
+            error_msg = (
+                f"Validation samples have inconsistent shapes which will cause DDP deadlock!\n"
+                f"Sample 0 has shape: height={first_shape[0]}, width={first_shape[1]}\n"
+                f"But the following samples have different shapes:\n"
+            )
+            for idx, height, width in inconsistent_samples:
+                error_msg += f"  - Sample {idx}: height={height}, width={width}\n"
+            error_msg += (
+                "\nFor DDP training, all validation samples MUST have the same height and width.\n"
+                "Please update your validation config to use consistent dimensions across all samples."
+            )
+            raise ValueError(error_msg)
+
+        logger.info(
+            f"Validation shape consistency check passed: "
+            f"all {len(validation_samples)} samples have shape (height={first_shape[0]}, width={first_shape[1]})"
+        )
 
     def tensor2pil(self, tensor: torch.Tensor) -> PIL.Image.Image:
         """
@@ -297,11 +351,18 @@ class ValidationMixin:
             # --- gather（按 rank 顺序拼接到 dim=0）---
             g_lat = self.accelerator.gather(latents.contiguous())  # [W*B, s, d]
             g_idx = self.accelerator.gather(idx.contiguous())  # [W*B, 2]
+            logging.info(f"[{self.accelerator.process_index}] gather latents and idx done")
+            print(f"[{self.accelerator.process_index}] {self.vae.device}, {self.text_encoder.device}")
             if self.accelerator.is_main_process:
+                logging.info(f"[{self.accelerator.process_index}] main process append latents and idx")
                 lat_chunks.append(g_lat.detach().cpu())
                 idx_chunks.append(g_idx.cpu())
-        torch.cuda.synchronize()
+                logging.info(f"[{self.accelerator.process_index}] main process append latents and idx done")
+
+        # torch.cuda.synchronize()
+        logging.info(f"[{self.accelerator.process_index}] next step decode by vae, wait for everyone")
         self.accelerator.wait_for_everyone()
+        logging.info(f"[{self.accelerator.process_index}] next step decode by vae")
 
         # rank0 合并
         if self.accelerator.is_main_process:

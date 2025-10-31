@@ -22,6 +22,7 @@ from tqdm.auto import tqdm
 from transformers import Qwen2_5_VLForConditionalGeneration
 from transformers.models.qwen2.tokenization_qwen2 import Qwen2Tokenizer
 
+from qflux.models.load_model import load_qwenvl, load_vae
 from qflux.models.transformer_qwenimage import QwenImageTransformer2DModel
 
 # calculate_dimensions,
@@ -92,8 +93,6 @@ class QwenImageEditTrainer(BaseTrainer):
         logging.info(f"excution device: {pipe._execution_device}")
 
         # Separate individual components
-
-        from qflux.models.load_model import load_qwenvl, load_vae
 
         self.vae = load_vae("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)  # use original one
         # same to model constructed from vae self.vae = pipe.vae
@@ -784,8 +783,6 @@ class QwenImageEditTrainer(BaseTrainer):
         prompt_embeds = embeddings["prompt_embeds"].to(self.weight_dtype).to(device)
         prompt_embeds_mask = embeddings["prompt_embeds_mask"].to(dtype=torch.int64).to(device)
         img_shapes = embeddings["img_shapes"]
-        print("img_shapes", img_shapes)
-        # img_shapes_latent = self.convert_img_shapes_to_latent_space(img_shapes)
         batch_size = image_latents.shape[0]
         if "edit_mask" in embeddings:  # already has edit_mask in collate function
             edit_mask = embeddings["edit_mask"]

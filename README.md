@@ -116,6 +116,9 @@ Support Multi Controls. The process logic is concat the latent of all control la
 
 Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`](https://huggingface.co/TsienDragon/character-compositing)
 
+## TODO
+- [ ] Resolve validation DDP hang when validation samples use mixed resolutions (current workaround: keep validation shapes aligned). See `docs/TODO.md`.
+
 ## Key Features
 
 - **Dual Model Support**: Complete support for both Qwen-Image-Edit and FLUX Kontext model architectures
