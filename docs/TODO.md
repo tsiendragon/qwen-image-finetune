@@ -49,6 +49,8 @@ Track ongoing development, documentation, and operations tasks. Update completio
 - [x] Unified LoggerManager API for all logging operations (v3.2.0)
 - [x] Fix scheduler state pollution between training and validation (v3.2.1)
 - [x] Fix directory cleanup to preserve directory structure (v3.2.1)
+- [x] DreamOmni2 trainer implementation with cumulative offset support (v3.3.0)
+- [x] VLM prompt optimization for DreamOmni2 trainer (v3.3.0)
 
 ## Notes
 

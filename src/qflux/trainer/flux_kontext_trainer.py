@@ -11,7 +11,7 @@ import PIL
 import torch
 from diffusers import FluxKontextPipeline
 from diffusers.utils.torch_utils import randn_tensor
-from tqdm.rich import tqdm
+from tqdm.auto import tqdm
 
 from qflux.models.flux_kontext_loader import (
     load_flux_kontext_clip,

@@ -151,6 +151,7 @@ class BaseTrainer(ValidationMixin, ABC):
                     # Remove contents of the directory instead of deleting the directory itself
                     for item in os.listdir(version_path):
                         item_path = os.path.join(version_path, item)
+                        print("remove item_path", item_path)
                         if os.path.isdir(item_path):
                             shutil.rmtree(item_path)
                         else:
@@ -507,6 +508,7 @@ class BaseTrainer(ValidationMixin, ABC):
     def train_epoch(self, epoch, train_dataloader):
         for _, batch in enumerate(train_dataloader):
             # 检查是否收到中断信号
+            # print('got batche', batch.keys())
             if self.training_interrupted:
                 logger.info("检测到训练中断信号，保存最后检查点后退出本epoch...")
                 # 立刻做一次"last"保存（即使不是 checkpointing_steps 整除）
@@ -550,9 +552,13 @@ class BaseTrainer(ValidationMixin, ABC):
 
                 # Run validation if needed
                 if self.should_run_validation(self.global_step):
+                    # logging.info("Starting validation at step %d", self.global_step)
                     self.fps_logger.pause()
+                    # logging.info("FPS logger paused, calling run_validation()")
                     self.run_validation()
+                    # logging.info("run_validation() returned, resuming FPS logger")
                     self.fps_logger.resume()
+                    # logging.info("Validation complete, FPS logger resumed")
 
     def setup_progressbar(self):
         self.train_loss = 0.0
@@ -570,9 +576,7 @@ class BaseTrainer(ValidationMixin, ABC):
             desc="fit",
             disable=(not self.accelerator.is_local_main_process),
         )
-
         # if max_train_steps exist, use is None, use num_epochs
-
         self.num_epochs = int(self.config.train.max_train_steps / self.batch_size / self.accelerator.num_processes)
 
     def update_progressbar(self, logs: dict):
@@ -719,30 +723,34 @@ class BaseTrainer(ValidationMixin, ABC):
 
     def predict(
         self,
+        image: PIL.Image.Image | list[PIL.Image.Image],
+        prompt: str | list[str] | None = None,
+        num_inference_steps: int = 20,
         **kwargs,
     ):
         """Inference/prediction method.
         Prepare the data, prepare the embeddings, sample the latents, decode the latents to images.
         """
         self.setup_predict()
-        batch = self.prepare_predict_batch_data(**kwargs)
+        batch = self.prepare_predict_batch_data(
+            image=image, prompt=prompt, num_inference_steps=num_inference_steps, **kwargs
+        )
         embeddings: dict = self.prepare_embeddings(batch, stage="predict")
         target_height = embeddings["height"]
         target_width = embeddings["width"]
         latents = self.sampling_from_embeddings(embeddings)
-        image = self.decode_vae_latent(latents, target_height, target_width)
+        image_ = self.decode_vae_latent(latents, target_height, target_width)
         output_type = kwargs.get("output_type", "pil")
         if output_type == "pil":
-            image = image.detach().permute(0, 2, 3, 1).float().cpu().numpy()
-            image = (image * 255).round().astype("uint8")
-            if image.shape[-1] == 1:
+            image_np = image_.detach().permute(0, 2, 3, 1).float().cpu().numpy()
+            image_np = (image_np * 255).round().astype("uint8")
+            if image_.shape[-1] == 1:
                 # special case for grayscale (single channel) images
-                pil_images = [PIL.Image.fromarray(image.squeeze(), mode="L") for image in image]
+                pil_images = [PIL.Image.fromarray(image_i.squeeze(), mode="L") for image_i in image_np]
             else:
-                pil_images = [PIL.Image.fromarray(image) for image in image]
-
+                pil_images = [PIL.Image.fromarray(image_i) for image_i in image_np]
             return pil_images
-        return image
+        return image_
 
     def setup_accelerator(self):
         """Initialize accelerator and logging configuration"""
@@ -756,17 +764,6 @@ class BaseTrainer(ValidationMixin, ABC):
             logging_dir=self.config.logging.output_dir,
         )
 
-        # 准备日志配置
-        # log_with = self.config.logging.report_to if self.config.logging.report_to != "none" else None
-        # project_name = self.config.logging.tracker_project_name
-        # if self.config.logging.report_to == "swanlab":
-        #     from swanlab.integration.accelerate import SwanLabTracker
-
-        #     tracker = SwanLabTracker(project_name, experiment_name=self.experiment_name)  # 训练可视化
-        #     log_with = tracker
-
-        # logging.info(f"log_with: {log_with}")
-
         self.accelerator = Accelerator(
             gradient_accumulation_steps=self.config.train.gradient_accumulation_steps,
             # mixed_precision=self.config.train.mixed_precision,
@@ -778,8 +775,6 @@ class BaseTrainer(ValidationMixin, ABC):
         # Prepare validation embeddings now that accelerator is initialized
         if hasattr(self, "validation_samples") and self.validation_samples:
             self.prepare_validation_embeddings()
-
-        # self.accelerator.init_trackers(project_name, config=simple_config)
         # 使用LoggerManager
         self.logger_manager = LoggerManager(self.accelerator, self.config, self.versioned_dir, self.experiment_name)
         logging.info(f"Number of devices used in DDP training: {self.accelerator.num_processes}")
@@ -968,8 +963,8 @@ class BaseTrainer(ValidationMixin, ABC):
                 # if the pretrained_weight is a repo-id, add
                 # try as the huggingface repos LORA_FILE_BASE_NAME
                 if pretrained_weight.endswith(".safetensors"):
-                    repo_id = pretrained_weight.split("/")[:2]
-                    filename = pretrained_weight.split("/")[-1]
+                    repo_id = "/".join(pretrained_weight.split("/")[:2])
+                    filename = "/".join(pretrained_weight.split("/")[2:])
                 else:
                     repo_id = pretrained_weight
                     filename = LORA_FILE_BASE_NAME
@@ -980,8 +975,9 @@ class BaseTrainer(ValidationMixin, ABC):
                     pass
 
             sha256 = calculate_sha256_file(pretrained_weight)
-            logging.info(f"sha256 for pretrained_weight: {sha256}")
             lora_type = classify_lora_weight(pretrained_weight)
+            logging.info(f"sha256 for pretrained_weight: {sha256} lora_type {lora_type}")
+
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
                 transformer.load_lora_adapter(pretrained_weight, adapter_name=adapter_name)

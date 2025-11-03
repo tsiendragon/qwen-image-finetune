@@ -1,0 +1,112 @@
+# Simple Multi-Resolution Sampling Test Configuration
+# Optimized for notebook testing with minimal dependencies
+
+model:
+  pretrained_model_name_or_path: lrzjason/flux-kontext-nf4
+  quantize: false
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+    adapter_name: "lora_edit"
+
+data:
+  class_path: qflux.data.dataset.ImageDataset
+  init_args:
+    dataset_path:
+      - split: train
+        repo_id: TsienDragon/figaro_hair_segmentation_1k
+    caption_dropout_rate: 0.0
+    prompt_image_dropout_rate: 0.0
+    use_edit_mask: true
+    selected_control_indexes: [1]
+    processor:
+      class_path: qflux.data.preprocess.ImageProcessor
+      init_args:
+        resize_controls_mask_to_image: true
+        # Multi-resolution support for testing (training format)
+        multi_resolutions:
+          - "300*450"  # First test image
+          - "630*945"  # Second test image
+        max_aspect_ratio: 3.0
+
+  batch_size: 2
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: ./multi_res_test_results/
+  report_to: "tensorboard"
+  tracker_project_name: multiResSamplingTest
+
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 50
+  num_cycles: 0.5
+  power: 1.0
+
+loss:
+  class_path: src.losses.AttentionMaskMseLoss
+  init_args:
+    foreground_weight: 2.0
+    background_weight: 1.0
+    eps: 1e-12
+    reduction: mean
+
+train:
+  gradient_accumulation_steps: 1
+  max_train_steps: 1000
+  checkpointing_steps: 100
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: True
+  low_memory: True
+  fit_device:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+trainer: FluxKontext
+resume: null
+
+cache:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    text_encoder_2: cuda:0
+  cache_dir: ${logging.output_dir}/cache
+  use_cache: true
+  prompt_empty_drop_keys:
+    - prompt_embeds
+    - pooled_prompt_embeds
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    text_encoder_2: cuda:0
+    dit: cuda:0
+
+# Test parameters for notebook
+test:
+  num_inference_steps: 20
+  guidance_scale: 3.5
+  seed: 42
+  save_intermediate: true
+  output_dir: "./multi_res_comparison_results"
+  test_images:
+    - "https://image.tmdb.org/t/p/w300/cn32HNmbpBQqbAnoPBQq2sj3ax5.jpg"
+    - "https://n.sinaimg.cn/ent/transform/775/w630h945/20201127/cee0-kentcvx8062290.jpg"
+  test_prompts:
+    - "把头发改成蓝色"
+    - "把头发改成蓝色"
+  expected_sizes:
+    - [300, 450]
+    - [630, 945]

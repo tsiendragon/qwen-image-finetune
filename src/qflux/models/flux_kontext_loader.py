@@ -181,6 +181,23 @@ def load_flux_kontext_transformer(
     return transformer
 
 
+def load_dreamomni2_transformer(
+    model_path: str,
+    weight_dtype: torch.dtype = torch.bfloat16,
+    device_map: str | None = "cpu",
+    use_pipeline: bool = False,
+):
+    """
+    Load DreamOmni2 transformer.
+    """
+    edit_lora = "TsienDragon/DreamOmni2"
+    transformer = load_flux_kontext_transformer(model_path, weight_dtype, device_map, use_pipeline=use_pipeline)
+    transformer.load_lora_adapter(edit_lora, adapter_name="edit")
+    transformer.fuse_lora("edit")
+    transformer.delete_adapters("edit")
+    return transformer
+
+
 def load_flux_kontext_tokenizers(model_path: str, use_pipeline: bool = False):
     """
     Load Flux Kontext tokenizers (CLIP and T5).

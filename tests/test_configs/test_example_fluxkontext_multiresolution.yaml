@@ -1,0 +1,116 @@
+model:
+  pretrained_model_name_or_path: black-forest-labs/FLUX.1-Kontext-dev
+  # pretrained_model_name_or_path: lrzjason/flux-kontext-nf4
+
+  quantize: false
+  lora:
+    r: 16  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
+    lora_alpha: 16  # LoRA alpha, usually equal to r
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+    adapter_name: "lora_edit"
+
+
+data:
+  class_path: qflux.data.dataset.ImageDataset
+  init_args:
+    dataset_path:
+      - split: train
+        repo_id: TsienDragon/figaro_hair_segmentation_1k
+    caption_dropout_rate: 0.0
+    prompt_image_dropout_rate: 0.0
+    use_edit_mask: true  # if true, dataset output edit mask
+    selected_control_indexes: [1]
+    processor:
+      class_path: qflux.data.preprocess.ImageProcessor
+      init_args:
+        resize_controls_mask_to_image: true
+        multi_resolutions:
+          - 320*320
+          - 512*512
+          - 640*640
+        max_aspect_ratio: 3.0  # Optional: maximum aspect ratio limit
+
+  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: /tmp/image_edit_lora/  # change the path to your own output path
+  tracker_project_name: figaroHairSegFluxKontextMultiRes
+  # report_to: tensorboard
+  # report_to: wandb
+  report_to: swanlab
+  tags:
+    - test
+    - FluxKontext
+    - figaroHairSeg
+    - lilong
+  notes: "This is a test configuration for FluxKontext on figaroHairSeg dataset"
+
+
+optimizer:
+  # class_path:  bitsandbytes.optim.Adam8bit #bitsandbytes.optim.Adam8bit #prodigyopt.Prodigy # bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  # init_args:
+  #   lr: 0.00002  # face segmentation task uses smaller learning rate
+  #   betas: [0.9, 0.999]
+    # lr: 1.0  # face segmentation task uses smaller learning rate
+    # use_bias_correction: True
+    # safeguard_warmup: True
+    # weight_decay: 0.01
+  class_path:  prodigyopt.Prodigy # bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  init_args:
+    lr: 1.0  # face segmentation task uses smaller learning rate
+    use_bias_correction: True
+    safeguard_warmup: True
+    weight_decay: 0.01
+
+lr_scheduler:
+  scheduler_type: "cosine"  # cosine scheduler, better for fine-grained tasks
+  warmup_steps: 50  # increase warmup steps
+  num_cycles: 0.5
+  power: 1.0
+
+
+loss:
+  class_path: qflux.losses.AttentionMaskMseLoss
+  init_args:
+    foreground_weight: 2.0
+    background_weight: 1.0
+    eps: 1e-12
+    reduction: mean
+
+train:
+  gradient_accumulation_steps: 1  # increase gradient accumulation to simulate larger batch size
+  max_train_steps: 10000  # face segmentation data is small, reduce training steps
+  checkpointing_steps: 100  # save checkpoints more frequently
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: False  # enable gradient checkpointing to save memory
+  low_memory: True  # is used low_memory mode, then the model will be loaded on the specified devices
+  # otherwise, the model will be loaded on all the gpus
+  fit_device:
+    vae: cuda:1
+    text_encoder: cuda:1
+
+trainer: FluxKontext
+resume: null
+
+cache:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    text_encoder_2: cuda:0
+  cache_dir: ${logging.output_dir}/${logging.tracker_project_name}/cache
+  use_cache: true
+  prompt_empty_drop_keys:
+    - prompt_embeds
+    - pooled_prompt_embeds
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0 # CLIP
+    text_encoder_2: cuda:0  # T5
+    dit: cuda:3

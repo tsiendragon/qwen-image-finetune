@@ -15,7 +15,7 @@ from diffusers.utils import load_image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from qflux.data.config import Config, SamplingConfig
+from qflux.data.config import Config, ValidationSample
 from qflux.utils.tools import instantiate_class, pad_to_max_shape
 
 
@@ -74,15 +74,12 @@ class ValidationMixin:
         """
         # Load from direct samples list
         if hasattr(self.validation_config, "samples") and self.validation_config.samples is not None:
-            print("load validation datasets", self.validation_config.samples)
+            logger.info(f"Loading validation datasets from {len(self.validation_config.samples)} configured samples")
             return self._load_from_config_samples(self.validation_config.samples)
 
         # Load from dataset configuration
         if hasattr(self.validation_config, "dataset") and self.validation_config.dataset is not None:
-            print(
-                "load validation datasets from dataset configuration",
-                self.validation_config.dataset,
-            )
+            logger.info(f"Loading validation datasets from dataset configuration: {self.validation_config.dataset}")
             dataset_config = self.validation_config.dataset
             class_path = dataset_config.class_path
             init_args = dataset_config.init_args
@@ -123,7 +120,7 @@ class ValidationMixin:
 
     def _load_from_config_samples(
         self,
-        samples: list[SamplingConfig],
+        samples: list[ValidationSample],
     ) -> list[dict[str, Any]]:
         """
         Load validation samples from direct configuration.
@@ -132,8 +129,8 @@ class ValidationMixin:
         validation_samples = []
 
         for sample in samples:
-            images = sample.images
-            images = [load_image(image).convert("RGB") for image in images]
+            images_ = sample.images
+            images = [load_image(image).convert("RGB") for image in images_]
             if hasattr(sample, "controls_size"):
                 controls_size = sample.controls_size
             else:
@@ -242,12 +239,19 @@ class ValidationMixin:
             return  # Already prepared
 
         # Prepare validation embeddings for this process's samples
-
+        has_prompt_enhancer = False
+        if hasattr(self, "use_vlm_prompt_enhancer") and hasattr(self, "vlm_model"):
+            if self.use_vlm_prompt_enhancer and self.vlm_model is not None:
+                has_prompt_enhancer = True
+        if has_prompt_enhancer:
+            origin_device = self.vlm_model.device
+            self.vlm_model.to(device)
+        print("has_prompt_enhancer", has_prompt_enhancer)
         for i, sample in tqdm(enumerate(self.validation_samples), desc="Preparing validation samples"):
             # Process sample to match predict_batch format
             batch = self._prepare_validation_sample(sample)
-
             # Get embeddings
+
             embeddings = self.prepare_embeddings(batch, stage="predict")
 
             # Move embeddings to CPU to save GPU memory
@@ -262,6 +266,9 @@ class ValidationMixin:
             save_dir = f"/tmp/validation_embeddings/{self.config.logging.tracker_project_name}"
             os.makedirs(save_dir, exist_ok=True)
             torch.save(cpu_embeddings, os.path.join(save_dir, f"{i}.pth"))
+        if has_prompt_enhancer:
+            self.vlm_model.to(origin_device)
+            print("vlm_model device after enhance ", self.vlm_model.device)
         # unload vae and text encoders
         if hasattr(self, "vae"):
             self.vae.to("cpu")
@@ -352,7 +359,6 @@ class ValidationMixin:
             g_lat = self.accelerator.gather(latents.contiguous())  # [W*B, s, d]
             g_idx = self.accelerator.gather(idx.contiguous())  # [W*B, 2]
             logging.info(f"[{self.accelerator.process_index}] gather latents and idx done")
-            print(f"[{self.accelerator.process_index}] {self.vae.device}, {self.text_encoder.device}")
             if self.accelerator.is_main_process:
                 logging.info(f"[{self.accelerator.process_index}] main process append latents and idx")
                 lat_chunks.append(g_lat.detach().cpu())
@@ -382,6 +388,7 @@ class ValidationMixin:
                 log_images.append(images)
                 log_validation_samples.append(validation_sample)
             self._log_validation_images(log_images, log_validation_samples)
+            logging.info(f"[{self.accelerator.process_index}] validation images logged successfully")
             logging.info(f"[{self.accelerator.process_index}] unload vae to cpu")
         if self.config.cache.use_cache:
             # in cache model, can unload vae to cpu
@@ -439,7 +446,7 @@ class ValidationMixin:
             control_images = [validation_sample["images"][i] for validation_sample in validation_samples]
             control_images = [process_control_image(img) for img in control_images]
             log_image_tensor = pad_to_max_shape(control_images)
-            print("log_image_tensor", log_image_tensor.shape)
+            logger.debug(f"Control {i} image tensor shape: {log_image_tensor.shape}")
 
             # 使用LoggerManager记录控制图像
             self.logger_manager.log_images(
@@ -464,3 +471,8 @@ class ValidationMixin:
             prompt,
             step=self.global_step,
         )
+
+        # Explicitly flush logger to ensure all operations complete
+        logging.info(f"[{self.accelerator.process_index}] flushing logger after validation")
+        self.logger_manager.flush()
+        logging.info(f"[{self.accelerator.process_index}] logger flushed successfully")

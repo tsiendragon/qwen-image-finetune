@@ -64,6 +64,7 @@ class DeviceConfig(BaseModel):
     text_encoder: DeviceLike | None = None
     text_encoder_2: DeviceLike | None = None
     dit: DeviceLike | None = None
+    prompt_enhancer: DeviceLike | None = None  # VLM model for prompt optimization
 
     # 设备规范化（字符串/torch.device -> torch.device）
     @field_validator(
@@ -72,6 +73,7 @@ class DeviceConfig(BaseModel):
         "text_encoder",
         "text_encoder_2",
         "dit",
+        "prompt_enhancer",
         mode="after",
     )
     @classmethod
@@ -84,6 +86,7 @@ class DeviceConfig(BaseModel):
         "text_encoder_2",
         "dit",
         "vae_encoder",
+        "prompt_enhancer",
         when_used="always",  # 只在 JSON 导出时生效；若想在 Python dict 也转字符串，用 "always"
     )
     def _ser_dev(self, v: DeviceLike | None):
@@ -344,12 +347,12 @@ class LoraConfig(BaseModel):
             raise ValueError("target_modules must be non-empty")
         return v
 
-    @field_validator("pretrained_weight")
-    @classmethod
-    def _check_weight_path(cls, v: str | None) -> str | None:
-        if v is not None and not os.path.exists(v):
-            raise ValueError(f"pretrained_weight path not found: {v}")
-        return v
+    # @field_validator("pretrained_weight")
+    # @classmethod
+    # def _check_weight_path(cls, v: str | None) -> str | None:
+    #     if v is not None and not os.path.exists(v):
+    #         raise ValueError(f"pretrained_weight path not found: {v}")
+    #     return v
 
     @field_validator("adapter_name")
     @classmethod
@@ -365,6 +368,7 @@ class ModelConfig(BaseModel):
     pretrained_embeddings: dict | None = None  # if want to load different embeeding model vs main model (dit)
     lora: LoraConfig = Field(default_factory=LoraConfig)
     quantize: bool = False
+    use_vlm_prompt_enhancer: bool = False  # Enable VLM-based prompt enhancement (DreamOmni2 trainer)
 
 
 # ----------------------------
@@ -595,6 +599,7 @@ class TrainerKind(str, Enum):
     QwenImageEdit = "QwenImageEdit"
     QwenImageEditPlus = "QwenImageEditPlus"
     FluxKontext = "FluxKontext"
+    DreamOmni2 = "DreamOmni2"
 
 
 class TrainConfig(BaseModel):

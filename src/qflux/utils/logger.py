@@ -1,6 +1,5 @@
 import logging
 import os
-import shutil
 from abc import ABC, abstractmethod
 from typing import Any, Union
 
@@ -71,8 +70,6 @@ class BaseLogger(ABC):
 
         # 创建TensorBoard logger
         project_name = config.logging.tracker_project_name
-        if os.path.exists(versioned_dir):
-            shutil.rmtree(versioned_dir)
         os.makedirs(versioned_dir, exist_ok=True)
         if report_to == "tensorboard":
             # from torch.utils.tensorboard import SummaryWriter
@@ -104,7 +101,10 @@ class BaseLogger(ABC):
         elif report_to == "swanlab":
             workspace = os.environ.get("SWANLAB_WORKSPACE")
             if not os.path.exists(versioned_dir):
-                logging.warning(f"versioned_dir does not exist: {versioned_dir}. This may indicate an earlier failure. Creating it now.")
+                logging.warning(
+                    f"versioned_dir does not exist: {versioned_dir}. "
+                    "This may indicate an earlier failure. Creating it now."
+                )
                 os.makedirs(versioned_dir)
             # 使用SwanLab官方推荐的初始化方式
             swan = swanlab.init(
@@ -384,7 +384,8 @@ class SwanLabLogger(BaseLogger):
         self.swan.log({name: swanlab.Image(npimg, caption=caption)}, step=step)
 
     def log_text(self, name: str, text: str, step: int) -> None:
-        self.swan.log({name: text}, step=step)
+        pass
+        # self.swan.log({name: swanlab.Text(text)}, step=step)
 
     def log_table(self, name: str, rows: list[dict[str, Any]], columns: list[str], step: int) -> None:
         # SwanLab支持直接记录表格数据

@@ -1,0 +1,99 @@
+# Multi-Resolution Sampling Test Configuration
+# This config is specifically designed for testing multi-resolution sampling comparison
+
+model:
+  # Use the quantized model for faster inference
+  pretrained_model_name_or_path: lrzjason/flux-kontext-nf4
+  quantize: false
+  lora:
+    r: 16  # LoRA rank
+    lora_alpha: 16  # LoRA alpha
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+    adapter_name: "lora_edit"
+
+data:
+  class_path: qflux.data.dataset.ImageDataset
+  init_args:
+    dataset_path:
+      - split: train
+        repo_id: TsienDragon/figaro_hair_segmentation_1k
+    caption_dropout_rate: 0.0
+    prompt_image_dropout_rate: 0.0
+    use_edit_mask: true  # Enable edit mask for hair editing
+    selected_control_indexes: [1]
+    processor:
+      class_path: qflux.data.preprocess.ImageProcessor
+      init_args:
+        resize_controls_mask_to_image: true
+        # Enable multi-resolution support for testing
+        multi_resolutions:
+          - 300*450  # First test image resolution
+          - 630*945  # Second test image resolution
+          - 512*512  # Additional resolution for variety
+        max_aspect_ratio: 3.0  # Allow various aspect ratios
+
+  batch_size: 2  # Test with batch size 2 for multi-resolution comparison
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: ./multi_res_test_results/  # Local output directory for test results
+  report_to: "tensorboard"
+  tracker_project_name: multiResSamplingTest
+
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit  # 8bit Adam for memory efficiency
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 50
+  num_cycles: 0.5
+  power: 1.0
+
+loss:
+  class_path: qflux.losses.AttentionMaskMseLoss  # Use attention mask loss for multi-resolution
+  init_args:
+    foreground_weight: 2.0
+    background_weight: 1.0
+    eps: 1e-12
+    reduction: mean
+
+train:
+  gradient_accumulation_steps: 1
+  max_train_steps: 1000  # Reduced for testing
+  checkpointing_steps: 100
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: True
+  low_memory: True
+  fit_device:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+trainer: FluxKontext
+resume: null
+
+# Cache configuration for multi-resolution testing
+cache:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    text_encoder_2: cuda:0
+  cache_dir: ${logging.output_dir}/cache
+  use_cache: true
+  prompt_empty_drop_keys:
+    - prompt_embeds
+    - pooled_prompt_embeds
+
+# Prediction configuration optimized for multi-resolution testing
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0  # CLIP
+    text_encoder_2: cuda:0  # T5
+    dit: cuda:0

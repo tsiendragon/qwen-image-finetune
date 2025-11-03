@@ -4,6 +4,7 @@ This document summarizes the key highlights for each released version. Detailed 
 
 ## Version Index
 
+- [3.3.0](./v3.3.0.md) — DreamOmni2 trainer support with cumulative offset positioning and VLM prompt optimization.
 - [3.2.1](./v3.2.1.md) — Bug fixes: scheduler state isolation and directory cleanup improvements.
 - [3.2.0](./v3.2.0.md) — Multi-logger support (TensorBoard/wandb/SwanLab) with unified LoggerManager interface.
 - [3.1.0](./v3.1.0.md) — Validation sampling during training with TensorBoard visualization.

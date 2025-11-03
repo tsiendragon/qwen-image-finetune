@@ -4,9 +4,15 @@
 
 ## Overview
 
-This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**,**Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
+This repository provides a comprehensive framework for fine-tuning image editing tasks. The framework supports **FLUX Kontext**, **DreamOmni2**, **Qwen-Image-Edit**, and **Qwen-Image-Edit-2509** model architectures. Our implementation focuses on efficient training through LoRA (Low-Rank Adaptation) and features an optimized embedding cache system that achieves 2-3x training acceleration.
 
 ## New
+- **🚀 DreamOmni2 Trainer Support (v3.3.0)**: Full support for DreamOmni2 LoRA fine-tuning with cumulative offset positioning for multi-image conditioning. Features include VLM-based prompt optimization and proper spatial relationship encoding through cumulative offsets. See [CHANGELOG:v3.3.0](docs/changelog/v3.3.0.md) for details.
+  - Cumulative offset support for multi-image position encoding (RoPE)
+  - Optional VLM prompt optimization using Qwen2.5-VL model
+  - Compatible with existing Flux Kontext training pipeline
+  - Example config: `tests/test_configs/test_dreamomni2_fp16.yaml`
+
 - **🔧 Multi-Logger Support (v3.2.0)**: Added unified logging interface supporting TensorBoard, Weights & Biases, and SwanLab. Switch between logging backends with simple config changes. See [Logging Guide](docs/guide/logging.md) for details.
   - Unified `LoggerManager` API for all logging operations
   - Support for TensorBoard (local), wandb (cloud), and SwanLab (cloud)
@@ -121,7 +127,7 @@ Pretrain Model is provided in  [Huggingface `TsienDragon/character-compositing`]
 
 ## Key Features
 
-- **Dual Model Support**: Complete support for both Qwen-Image-Edit and FLUX Kontext model architectures
+- **Multi-Model Support**: Complete support for Qwen-Image-Edit, FLUX Kontext, DreamOmni2, and Qwen-Image-Edit-2509 model architectures
 - **Multi-Resolution Mixed Training**: Train with multiple resolution candidates (e.g., 320x320, 512x512, 640x640) in a single session with intelligent aspect-ratio-aware selection
 - **Multi-Precision Training**: FP16, FP8, and FP4 quantization levels for different hardware requirements
 - **Efficient Fine-tuning**: LoRA-based parameter-efficient fine-tuning with minimal memory footprint
@@ -169,14 +175,14 @@ Comprehensive documentation is organized in the `docs/` directory:
   - [Debug Guide](docs/guide/debug.md) — Troubleshooting and debugging
 
 - **[Technical Specifications](docs/spec/)** — Detailed module specifications
-  - [Models](docs/spec/models/) — Architecture specs for FLUX Kontext, Qwen-Image-Edit, and Qwen-Image-Edit-Plus
+  - [Models](docs/spec/models/) — Architecture specs for FLUX Kontext, DreamOmni2, Qwen-Image-Edit, and Qwen-Image-Edit-Plus
   - [Losses](docs/spec/losses/) — Loss function implementations and design rationale
   - [Data](docs/spec/data/) — Data loading and caching system specifications
   - [Trainer](docs/spec/trainer/) — Training loop and trainer architecture
 
 - **[Changelog](docs/changelog/)** — Version history and release notes
   - [Changelog Overview](docs/changelog/index.md) — Summary of all releases
-  - [Latest: v3.1.0](docs/changelog/v3.1.0.md) — Validation sampling visualization
+  - [Latest: v3.3.0](docs/changelog/v3.3.0.md) — DreamOmni2 trainer support
 
 - **[Development Plans](docs/plan/)** — Roadmap and feature planning
   - [Plan Index](docs/plan/index.md) — Active and completed initiatives
