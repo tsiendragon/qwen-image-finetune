@@ -222,6 +222,10 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Inference outputs (keep example scripts but not generated images)
+inference_examples/inference_output*.png
+inference_examples/inference_output*.jpg
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
