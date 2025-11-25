@@ -511,6 +511,7 @@ class ImageDataset(Dataset):
             if self.data_key_exist(data_item, "caption") and data_item["dataset_type"] == "local":
                 with open(data_item["caption"], encoding="utf-8") as f:
                     prompt = f.read().strip()
+                data["prompt"] = prompt
             else:
                 prompt = data_item["caption"]
                 data["prompt"] = prompt
