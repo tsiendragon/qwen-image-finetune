@@ -738,8 +738,14 @@ class BaseTrainer(ValidationMixin, ABC):
         embeddings: dict = self.prepare_embeddings(batch, stage="predict")
         target_height = embeddings["height"]
         target_width = embeddings["width"]
-        latents = self.sampling_from_embeddings(embeddings)
-        image_ = self.decode_vae_latent(latents, target_height, target_width)
+        result = self.sampling_from_embeddings(embeddings)
+        # Handle both single return value and tuple return (for Flux2LoraTrainer)
+        if isinstance(result, tuple) and len(result) == 2:
+            latents, latent_ids = result
+        else:
+            latents = result
+            latent_ids = None
+        image_ = self.decode_vae_latent(latents, target_height, target_width, latent_ids)
         output_type = kwargs.get("output_type", "pil")
         if output_type == "pil":
             image_np = image_.detach().permute(0, 2, 3, 1).float().cpu().numpy()
@@ -1074,8 +1080,15 @@ class BaseTrainer(ValidationMixin, ABC):
         return batch
 
     @abstractmethod
-    def decode_vae_latent(self, latents: torch.Tensor, target_height: int, target_width: int) -> torch.Tensor:
-        """Decode VAE latent vectors to RGB images. In range [0,1]"""
+    def decode_vae_latent(self, latents: torch.Tensor, target_height: int, target_width: int, latent_ids: torch.Tensor | None = None) -> torch.Tensor:
+        """Decode VAE latent vectors to RGB images. In range [0,1]
+
+        Args:
+            latents: Latent vectors to decode
+            target_height: Target image height
+            target_width: Target image width
+            latent_ids: Optional position IDs for latents (used by Flux2LoraTrainer)
+        """
         pass
 
     @abstractmethod

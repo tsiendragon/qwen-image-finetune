@@ -975,7 +975,7 @@ class FluxKontextLoraTrainer(BaseTrainer):
                 latents = self.sampling_scheduler.step(noise_pred, t, latents, return_dict=False)[0]
         return latents
 
-    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int, latent_ids: torch.Tensor | None = None) -> torch.Tensor:
         latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
         # latents after unpack torch.Size([1, 16, 106, 154])
         latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor

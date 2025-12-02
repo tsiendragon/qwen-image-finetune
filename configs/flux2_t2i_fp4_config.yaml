@@ -1,0 +1,82 @@
+# FLUX.2 Text-to-Image (T2I) Training Configuration - FP4/INT4
+# Mode: Pure text-conditioned generation without reference images
+# VRAM Estimate: ~24GB on RTX 4090
+
+trainer: Flux2
+
+model:
+  pretrained_model_name_or_path: "diffusers/FLUX.2-dev-bnb-4bit"
+  quantize: False  # Already pre-quantized
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+
+data:
+  class_path: "qflux.data.dataset.ImageDataset"
+  init_args:
+    dataset_path:
+      - split: train
+        repo_id: TsienDragon/face_segmentation_20
+    caption_dropout_rate: 0.05
+    prompt_image_dropout_rate: 0.0  # T2I mode: no prompt image dropout
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    cache_drop_rate: 0.1
+    processor:
+      class_path: "qflux.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [832, 576]
+  batch_size: 2
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/raid/lilong/data/experiment/flux2-t2i_fp4/"
+  report_to: "tensorboard"
+  tracker_project_name: "flux2_t2i_face_seg_fp4"
+
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 50
+
+train:
+  gradient_accumulation_steps: 1
+  max_train_steps: 6000
+  num_epochs: 100
+  checkpointing_steps: 100
+  checkpoints_total_limit: 20
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: True
+  low_memory: True
+
+cache:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+  cache_dir: "/raid/lilong/data/experiment/flux2-t2i_fp4/cache"
+  use_cache: true
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
+
+resume: null
+
+validation:
+  enabled: false
+  validation_steps: 200
+  num_validation_samples: 4
+

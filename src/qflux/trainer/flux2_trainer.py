@@ -75,8 +75,11 @@ class Flux2LoraTrainer(BaseTrainer):
         self._current_timestep = None
         self._interrupt = False
 
-        # System message for Mistral3
-        self.system_message = "You are a helpful assistant."
+        # System message for Mistral3 (matches original Flux2Pipeline)
+        self.system_message = (
+            "You are an AI that reasons about image descriptions. You give structured responses "
+            "focusing on object relationships, object attribution and actions without speculation."
+        )
 
     def get_pipeline_class(self):
         """Return Flux2Pipeline for LoRA saving."""
@@ -254,6 +257,7 @@ class Flux2LoraTrainer(BaseTrainer):
         prompt: str | list[str],
         device: torch.device | None = None,
         max_sequence_length: int = 512,
+        hidden_states_layers: tuple[int, ...] = (10, 20, 30),
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode prompts using Mistral3.
@@ -264,43 +268,84 @@ class Flux2LoraTrainer(BaseTrainer):
             prompt: Text prompt or list of prompts
             device: Device to place embeddings on
             max_sequence_length: Maximum sequence length
+            hidden_states_layers: Tuple of layer indices to extract hidden states from (default: (10, 20, 30))
 
         Returns:
-            prompt_embeds: [B, seq, D]
+            prompt_embeds: [B, seq, num_layers * hidden_dim]
             text_ids: [seq, 4]  # Note: 4 dims, not 3 like FluxKontext
         """
         prompt = [prompt] if isinstance(prompt, str) else prompt
         device = device or self.text_encoder.device
 
-        # Format prompts for Mistral3
-        formatted = self._format_text_input(prompt)
+        # Format prompts for Mistral3 (returns list of message lists)
+        messages_batch = self._format_text_input(prompt)
 
         with torch.inference_mode():
-            # Tokenize with processor (PixtralProcessor accepts messages parameter)
-            model_inputs = self.tokenizer(
-                messages=formatted,
-                padding=True,
+            # Process all messages at once using apply_chat_template with tokenize=True
+            # This matches the original Flux2Pipeline implementation
+            inputs = self.tokenizer.apply_chat_template(
+                messages_batch,
+                add_generation_prompt=False,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                padding="max_length",
                 truncation=True,
                 max_length=max_sequence_length,
-                return_tensors="pt",
-            ).to(device)
-
-            # Get embeddings from Mistral3
-            outputs = self.text_encoder(
-                input_ids=model_inputs.input_ids,
-                attention_mask=model_inputs.attention_mask,
-                output_hidden_states=True,
             )
 
-            # Extract hidden states from last layer
-            prompt_embeds = outputs.hidden_states[-1]
-            prompt_embeds = prompt_embeds.to(dtype=self.weight_dtype)
+            # Move to device
+            input_ids = inputs["input_ids"].to(device)
+            attention_mask = inputs["attention_mask"].to(device)
 
-            # Create text IDs [seq, 4] for FLUX.2
-            seq_len = prompt_embeds.shape[1]
-            text_ids = torch.zeros(seq_len, 4, device=device, dtype=self.weight_dtype)
+            # Forward pass through the model
+            outputs = self.text_encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                use_cache=False,
+            )
+
+            # Only use outputs from intermediate layers and stack them
+            # This matches the original Flux2Pipeline._get_mistral_3_small_prompt_embeds implementation
+            out = torch.stack([outputs.hidden_states[k] for k in hidden_states_layers], dim=1)
+            out = out.to(dtype=self.weight_dtype, device=device)
+
+            batch_size, num_channels, seq_len, hidden_dim = out.shape
+            prompt_embeds = out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, num_channels * hidden_dim)
+
+            # Create text IDs using _prepare_text_ids (matches original Flux2Pipeline)
+            text_ids = self._prepare_text_ids(prompt_embeds)
+            text_ids = text_ids.to(device)
 
         return prompt_embeds, text_ids
+
+    @staticmethod
+    def _prepare_text_ids(x: torch.Tensor, t_coord: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        Prepare text position IDs.
+        Matches original Flux2Pipeline._prepare_text_ids implementation.
+
+        Args:
+            x: Prompt embeddings [B, L, D]
+            t_coord: Optional time coordinates
+
+        Returns:
+            text_ids: [B, L, 4]
+        """
+        B, L, _ = x.shape
+        out_ids = []
+
+        for i in range(B):
+            t = torch.arange(1) if t_coord is None else t_coord[i]
+            h = torch.arange(1)
+            w = torch.arange(1)
+            l_coords = torch.arange(L)
+
+            coords = torch.cartesian_prod(t, h, w, l_coords)
+            out_ids.append(coords)
+
+        return torch.stack(out_ids)
 
     def prepare_latents(
         self,
@@ -313,6 +358,7 @@ class Flux2LoraTrainer(BaseTrainer):
     ):
         """
         Prepare latents for training/inference.
+        Matches original Flux2Pipeline.prepare_latents implementation.
 
         Args:
             image: Input image tensor or None
@@ -323,15 +369,17 @@ class Flux2LoraTrainer(BaseTrainer):
             dtype: Data type
 
         Returns:
-            latents: Random noise latents
+            latents: Random noise latents [B, H*W, C]
             image_latents: Encoded image latents (if image provided)
-            latent_ids: Position IDs for target latents
+            latent_ids: Position IDs for target latents [B, H*W, 4]
             image_ids: Position IDs for image latents
         """
-        # VAE applies compression, account for packing
+        # VAE applies 8x compression, account for packing
         height = 2 * (int(height) // (self.vae_scale_factor * 2))
         width = 2 * (int(width) // (self.vae_scale_factor * 2))
-        shape = (batch_size, num_channels_latents, height, width)
+
+        # Shape with patchify (*4) and half dimensions
+        shape = (batch_size, num_channels_latents * 4, height // 2, width // 2)
         device = next(self.vae.parameters()).device
 
         image_latents = None
@@ -343,36 +391,99 @@ class Flux2LoraTrainer(BaseTrainer):
                 image_latents = self._encode_vae_image(image)
 
             image_latent_height, image_latent_width = image_latents.shape[2:]
-            image_latents = self._pack_latents(
-                image_latents,
-                batch_size,
-                num_channels_latents,
-                image_latent_height,
-                image_latent_width,
-            )
-            image_ids = self._prepare_latent_image_ids(
-                batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
-            )
+            # Use _prepare_latent_ids for image latents
+            image_ids = self._prepare_latent_ids(image_latents)
+            image_ids = image_ids.to(device)
+            # Pack image latents
+            image_latents = self._pack_latents_simple(image_latents)
 
         # Create random noise latents
-        latent_ids = self._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
         latents = randn_tensor(shape, device=device, dtype=dtype)
-        latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
+
+        # Prepare latent IDs before packing
+        latent_ids = self._prepare_latent_ids(latents)
+        latent_ids = latent_ids.to(device)
+
+        # Pack latents: [B, C, H, W] -> [B, H*W, C]
+        latents = self._pack_latents_simple(latents)
 
         return latents, image_latents, latent_ids, image_ids
 
-    def _encode_vae_image(self, image: torch.Tensor) -> torch.Tensor:
-        """Encode image through VAE."""
-        image_latents = self.vae.encode(image)
-        image_latents = image_latents.latent_dist.mode()
+    @staticmethod
+    def _prepare_latent_ids(latents: torch.Tensor) -> torch.Tensor:
+        """
+        Generates 4D position coordinates (T, H, W, L) for latent tensors.
+        Matches original Flux2Pipeline._prepare_latent_ids implementation.
 
-        # Apply VAE normalization
-        if hasattr(self.vae.config, "scaling_factor"):
-            image_latents = image_latents * self.vae.config.scaling_factor
-        if hasattr(self.vae.config, "shift_factor"):
-            image_latents = image_latents - self.vae.config.shift_factor
+        Args:
+            latents: Latent tensor of shape (B, C, H, W)
+
+        Returns:
+            Position IDs tensor of shape (B, H*W, 4)
+        """
+        batch_size, _, height, width = latents.shape
+
+        t = torch.arange(1)  # [0] - time dimension
+        h = torch.arange(height)
+        w = torch.arange(width)
+        l_dim = torch.arange(1)  # [0] - layer dimension
+
+        # Create position IDs: (H*W, 4)
+        latent_ids = torch.cartesian_prod(t, h, w, l_dim)
+
+        # Expand to batch: (B, H*W, 4)
+        latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
+
+        return latent_ids
+
+    @staticmethod
+    def _pack_latents_simple(latents: torch.Tensor) -> torch.Tensor:
+        """
+        Pack latents: (batch_size, num_channels, height, width) -> (batch_size, height * width, num_channels)
+        Matches original Flux2Pipeline._pack_latents implementation.
+        """
+        batch_size, num_channels, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels, height * width).permute(0, 2, 1)
+        return latents
+
+    def _encode_vae_image(self, image: torch.Tensor) -> torch.Tensor:
+        """
+        Encode image through VAE with FLUX.2 specific processing.
+        Matches original Flux2Pipeline._encode_vae_image implementation.
+        """
+        if image.ndim != 4:
+            raise ValueError(f"Expected image dims 4, got {image.ndim}.")
+
+        # Encode image
+        image_latents = self.vae.encode(image).latent_dist.mode()
+
+        # Patchify latents (FLUX.2 specific)
+        image_latents = self._patchify_latents(image_latents)
+
+        # Apply batch_norm normalization (FLUX.2 specific)
+        latents_bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(image_latents.device, image_latents.dtype)
+        latents_bn_std = torch.sqrt(self.vae.bn.running_var.view(1, -1, 1, 1) + self.vae.config.batch_norm_eps)
+        image_latents = (image_latents - latents_bn_mean) / latents_bn_std
 
         return image_latents
+
+    @staticmethod
+    def _patchify_latents(latents: torch.Tensor) -> torch.Tensor:
+        """
+        Patchify latents into 2x2 patches.
+        Matches original Flux2Pipeline._patchify_latents implementation.
+
+        Args:
+            latents: [B, C, H, W]
+
+        Returns:
+            Patchified latents [B, C*4, H//2, W//2]
+        """
+        batch_size, num_channels_latents, height, width = latents.shape
+        latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
+        latents = latents.permute(0, 1, 3, 5, 2, 4)
+        latents = latents.reshape(batch_size, num_channels_latents * 4, height // 2, width // 2)
+        return latents
 
     def prepare_embeddings(self, batch: dict, stage: str = "fit") -> dict:
         """
@@ -630,21 +741,27 @@ class Flux2LoraTrainer(BaseTrainer):
         prompt_embeds = embeddings["prompt_embeds"].to(device)
         text_ids = embeddings["text_ids"].to(device)
 
-        # Calculate timesteps using FLUX.2 specific mu
+        # Calculate timesteps using FLUX.2 specific mu (matches original Flux2Pipeline)
         image_seq_len = latents.shape[1]
         mu = compute_empirical_mu(image_seq_len, num_inference_steps)
+
+        # Prepare sigmas (matches original Flux2Pipeline)
+        sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
+        if hasattr(self.sampling_scheduler.config, "use_flow_sigmas") and self.sampling_scheduler.config.use_flow_sigmas:
+            sigmas = None
+
         timesteps, num_inference_steps = retrieve_timesteps(
             self.sampling_scheduler,
             num_inference_steps,
             device,
+            sigmas=sigmas,
             mu=mu,
         )
 
-        # Guidance
+        # Guidance (matches original Flux2Pipeline implementation)
         guidance_scale = embeddings.get("guidance", 2.5)
-        guidance = None
-        if self.dit.config.guidance_embeds:
-            guidance = torch.full([batch_size], guidance_scale, device=device, dtype=torch.float32)
+        guidance = torch.full([1], guidance_scale, device=device, dtype=torch.float32)
+        guidance = guidance.expand(latents.shape[0])
 
         # Denoising loop
         self.sampling_scheduler.set_begin_index(0)
@@ -655,13 +772,16 @@ class Flux2LoraTrainer(BaseTrainer):
 
         with torch.inference_mode():
             for t in tqdm(timesteps, desc="FLUX.2 Sampling"):
-                # Prepare model input
+                # Prepare model input (matches original Flux2Pipeline)
+                latent_model_input = latents.to(self.dit.dtype)
+                latent_image_ids = latent_ids
+
                 if condition_latents is not None:
-                    hidden_states = torch.cat([latents, condition_latents], dim=1)
-                    img_ids = torch.cat([latent_ids, condition_ids], dim=0)
-                else:
-                    hidden_states = latents
-                    img_ids = latent_ids
+                    latent_model_input = torch.cat([latents, condition_latents], dim=1).to(self.dit.dtype)
+                    latent_image_ids = torch.cat([latent_ids, condition_ids], dim=1)
+
+                hidden_states = latent_model_input
+                img_ids = latent_image_ids
 
                 timestep = t.expand(batch_size).to(latents.dtype)
 
@@ -701,30 +821,38 @@ class Flux2LoraTrainer(BaseTrainer):
                 # Scheduler step
                 latents = self.sampling_scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
-        return latents
+        return latents, latent_ids
 
-    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int, latent_ids: torch.Tensor | None = None) -> torch.Tensor:
         """
         Decode latents using FLUX.2 VAE with batch_norm denormalization.
+
+        Args:
+            latents: Packed latents from transformer [B, seq, C]
+            height: Target image height
+            width: Target image width
+            latent_ids: Position IDs for latents [seq, 4] (required for FLUX.2)
         """
         latents = latents.to(self.vae.device, dtype=self.weight_dtype)
 
-        # Unpack latents
-        latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
+        if latent_ids is None:
+            # Fallback to simple unpacking if latent_ids not provided
+            latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
+        else:
+            # Use position IDs to unpack latents (matches original Flux2Pipeline)
+            latent_ids = latent_ids.to(self.vae.device)
+            latents = self._unpack_latents_with_ids(latents, latent_ids)
 
         # FLUX.2 specific: batch_norm inverse transform
         if hasattr(self.vae, "bn"):
-            bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-            bn_var = self.vae.bn.running_var.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-            eps = getattr(self.vae.config, "batch_norm_eps", 1e-5)
-            bn_std = torch.sqrt(bn_var + eps)
-            latents = latents * bn_std + bn_mean
+            latents_bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            latents_bn_std = torch.sqrt(
+                self.vae.bn.running_var.view(1, -1, 1, 1) + self.vae.config.batch_norm_eps
+            ).to(latents.device, latents.dtype)
+            latents = latents * latents_bn_std + latents_bn_mean
 
-        # Apply inverse scaling
-        if hasattr(self.vae.config, "shift_factor"):
-            latents = latents + self.vae.config.shift_factor
-        if hasattr(self.vae.config, "scaling_factor"):
-            latents = latents / self.vae.config.scaling_factor
+        # Unpatchify latents (unpack 2x2 patches)
+        latents = self._unpatchify_latents(latents)
 
         # VAE decode
         with torch.inference_mode():
@@ -833,8 +961,64 @@ class Flux2LoraTrainer(BaseTrainer):
         return latents
 
     @staticmethod
+    @staticmethod
+    def _unpack_latents_with_ids(x: torch.Tensor, x_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Unpack latents using position IDs to scatter tokens into place.
+        Matches original Flux2Pipeline._unpack_latents_with_ids implementation.
+
+        Args:
+            x: Packed latents [B, seq, C]
+            x_ids: Position IDs [seq, 4] or [B, seq, 4]
+
+        Returns:
+            Unpacked latents [B, C, H, W]
+        """
+        x_list = []
+        # Handle both [seq, 4] and [B, seq, 4] cases
+        if x_ids.ndim == 2:
+            x_ids = x_ids.unsqueeze(0).expand(x.shape[0], -1, -1)
+
+        for data, pos in zip(x, x_ids):
+            _, ch = data.shape
+            h_ids = pos[:, 1].to(torch.int64)
+            w_ids = pos[:, 2].to(torch.int64)
+
+            h = torch.max(h_ids) + 1
+            w = torch.max(w_ids) + 1
+
+            flat_ids = h_ids * w + w_ids
+
+            out = torch.zeros((h * w, ch), device=data.device, dtype=data.dtype)
+            out.scatter_(0, flat_ids.unsqueeze(1).expand(-1, ch), data)
+
+            # Reshape from (H * W, C) to (C, H, W)
+            out = out.view(h, w, ch).permute(2, 0, 1)
+            x_list.append(out)
+
+        return torch.stack(x_list, dim=0)
+
+    @staticmethod
+    def _unpatchify_latents(latents: torch.Tensor) -> torch.Tensor:
+        """
+        Unpatchify latents: unpack 2x2 patches.
+        Matches original Flux2Pipeline._unpatchify_latents implementation.
+
+        Args:
+            latents: [B, C, H, W] where C is divisible by 4
+
+        Returns:
+            Unpacked latents [B, C//4, H*2, W*2]
+        """
+        batch_size, num_channels_latents, height, width = latents.shape
+        latents = latents.reshape(batch_size, num_channels_latents // (2 * 2), 2, 2, height, width)
+        latents = latents.permute(0, 1, 4, 2, 5, 3)
+        latents = latents.reshape(batch_size, num_channels_latents // (2 * 2), height * 2, width * 2)
+        return latents
+
+    @staticmethod
     def _unpack_latents(latents: torch.Tensor, height: int, width: int, vae_scale_factor: int) -> torch.Tensor:
-        """Unpack latents from transformer output."""
+        """Unpack latents from transformer output (fallback method)."""
         batch_size, num_patches, channels = latents.shape
         height = 2 * (int(height) // (vae_scale_factor * 2))
         width = 2 * (int(width) // (vae_scale_factor * 2))

@@ -1288,7 +1288,7 @@ class QwenImageEditTrainer(BaseTrainer):
         self._current_timestep = None
         return latents
 
-    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int, latent_ids: torch.Tensor | None = None) -> torch.Tensor:
         # 8. decode final latents
         latents = latents.to(self.vae.device, dtype=self.weight_dtype)
         latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
