@@ -1,0 +1,862 @@
+"""
+FLUX.2 LoRA Trainer Implementation
+Supporting both Text-to-Image (T2I) and Image-to-Image (I2I) modes.
+
+Key differences from FluxKontext:
+- Single text encoder: Mistral3 (VLM) instead of CLIP + T5
+- No pooled_prompt_embeds
+- text_ids shape: [seq, 4] instead of [seq, 3]
+- VAE with batch_norm architecture
+- Uses compute_empirical_mu() for timestep shift
+"""
+
+import copy
+import gc
+import logging
+
+import numpy as np
+import PIL
+import torch
+from diffusers.utils.torch_utils import randn_tensor
+from tqdm.auto import tqdm
+
+from qflux.models.flux2_loader import (
+    compute_empirical_mu,
+    load_flux2_scheduler,
+    load_flux2_text_encoder,
+    load_flux2_tokenizer,
+    load_flux2_transformer,
+    load_flux2_vae,
+)
+from qflux.trainer.base_trainer import BaseTrainer
+from qflux.utils.images import make_image_devisible, make_image_shape_devisible
+from qflux.utils.sampling import retrieve_timesteps
+
+
+logger = logging.getLogger(__name__)
+
+
+class Flux2LoraTrainer(BaseTrainer):
+    """
+    FLUX.2 LoRA Trainer supporting both T2I and I2I modes.
+
+    Inherits from BaseTrainer to ensure consistent interface.
+
+    Modes:
+    - T2I (Text-to-Image): Pure text-conditioned generation without reference images
+    - I2I (Image-to-Image): Generation with optional condition/reference image
+
+    The mode is automatically detected based on batch data:
+    - If 'control' or 'condition_image' is present and not None -> I2I mode
+    - Otherwise -> T2I mode
+    """
+
+    def __init__(self, config):
+        """Initialize FLUX.2 trainer with configuration."""
+        super().__init__(config)
+
+        # FLUX.2 specific components (single text encoder unlike FluxKontext)
+        self.vae = None  # AutoencoderKLFlux2
+        self.text_encoder = None  # Mistral3ForConditionalGeneration (single VLM)
+        self.tokenizer = None  # PixtralProcessor
+        self.dit = None  # Flux2Transformer2DModel
+        self.scheduler = None  # FlowMatchEulerDiscreteScheduler
+
+        # Note: No text_encoder_2, tokenizer_2 (unlike FluxKontext)
+
+        # VAE parameters
+        self.vae_scale_factor = None
+        self.latent_channels = None
+
+        # FLUX.2 specific attributes
+        self.num_channels_latents = None
+        self._guidance_scale = 1.0
+        self._attention_kwargs = None
+        self._current_timestep = None
+        self._interrupt = False
+
+        # System message for Mistral3
+        self.system_message = "You are a helpful assistant."
+
+    def get_pipeline_class(self):
+        """Return Flux2Pipeline for LoRA saving."""
+        from diffusers import Flux2Pipeline
+
+        return Flux2Pipeline
+
+    def load_model(self):
+        """
+        Load and separate components from Flux2Pipeline.
+        Follows QwenImageEditTrainer/FluxKontextLoraTrainer patterns.
+        """
+        logging.info("Loading FLUX.2 components...")
+
+        model_path = self.config.model.pretrained_model_name_or_path
+        pretrains = self.config.model.pretrained_embeddings
+
+        # Load VAE
+        if pretrains is not None and "vae" in pretrains:
+            self.vae = load_flux2_vae(pretrains["vae"], weight_dtype=self.weight_dtype).to("cpu")
+            logging.info(f"Loaded VAE from {pretrains['vae']}")
+        else:
+            self.vae = load_flux2_vae(model_path, weight_dtype=self.weight_dtype).to("cpu")
+
+        # Load text encoder (single Mistral3)
+        if pretrains is not None and "text_encoder" in pretrains:
+            self.text_encoder = load_flux2_text_encoder(pretrains["text_encoder"], weight_dtype=self.weight_dtype).to(
+                "cpu"
+            )
+            logging.info(f"Loaded text encoder from {pretrains['text_encoder']}")
+        else:
+            self.text_encoder = load_flux2_text_encoder(model_path, weight_dtype=self.weight_dtype).to("cpu")
+
+        # Load tokenizer
+        self.tokenizer = load_flux2_tokenizer(model_path)
+
+        # Load transformer
+        self.dit = load_flux2_transformer(model_path, weight_dtype=self.weight_dtype).to("cpu")
+
+        # Load scheduler (with copy for sampling)
+        self.scheduler = load_flux2_scheduler(model_path)
+        self.sampling_scheduler = copy.deepcopy(self.scheduler)
+
+        # Set VAE parameters
+        self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if self.vae else 8
+        self.latent_channels = self.vae.config.latent_channels if self.vae else 16
+        self.num_channels_latents = self.dit.config.in_channels // 4 if self.dit else 16
+
+        # Set models to eval mode
+        self.text_encoder.requires_grad_(False).eval()
+        self.vae.requires_grad_(False).eval()
+        self.dit.requires_grad_(False).eval()
+
+        # Image processor
+        from diffusers.image_processor import VaeImageProcessor
+
+        self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor * 2)
+
+        torch.cuda.empty_cache()
+        logging.info(f"FLUX.2 components loaded. VAE scale factor: {self.vae_scale_factor}")
+
+    def setup_model_device_train_mode(self, stage="fit", cache=False):
+        """Set model device allocation and train mode."""
+        if stage == "fit":
+            assert hasattr(self, "accelerator"), "accelerator must be set before setting model devices"
+
+        if self.cache_exist and self.use_cache and stage == "fit":
+            # Cache mode with training: only need transformer
+            self.text_encoder.cpu()
+            self.text_encoder.requires_grad_(False).eval()
+            torch.cuda.empty_cache()
+            self.vae.cpu()
+            torch.cuda.empty_cache()
+
+            if not self.config.validation.enabled:
+                del self.vae
+                del self.text_encoder
+            else:
+                self.vae.requires_grad_(False).eval()
+
+            gc.collect()
+            self.dit.to(self.accelerator.device)
+            self.dit.requires_grad_(False)
+            self.dit.train()
+            for name, param in self.dit.named_parameters():
+                if "lora" in name:
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+
+        elif stage == "fit":
+            # Non-cache mode: need all encoders
+            self.vae.to(self.accelerator.device)
+            self.text_encoder.to(self.accelerator.device)
+            self.dit.to(self.accelerator.device)
+            self.vae.decoder.to("cpu")
+
+            self.vae.requires_grad_(False).eval()
+            self.text_encoder.requires_grad_(False).eval()
+            self.dit.requires_grad_(False)
+            self.dit.train()
+            for name, param in self.dit.named_parameters():
+                if "lora" in name:
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+
+        elif stage == "cache":
+            # Cache mode: need encoders, don't need transformer
+            self.vae = self.vae.to(self.config.cache.devices.vae, non_blocking=True)
+            self.vae.decoder.to("cpu")
+            self.text_encoder = self.text_encoder.to(self.config.cache.devices.text_encoder, non_blocking=True)
+
+            torch.cuda.synchronize()
+            self.dit.cpu()
+            torch.cuda.empty_cache()
+            del self.dit
+            gc.collect()
+            self.vae.requires_grad_(False).eval()
+            self.text_encoder.requires_grad_(False).eval()
+            logging.info("Cache mode device setting complete")
+
+        elif stage == "predict":
+            # Predict mode: allocate to different GPUs according to configuration
+            devices = self.config.predict.devices
+            self.vae.to(devices.vae)
+            self.text_encoder.to(devices.text_encoder)
+            self.dit.to(devices.dit)
+            self.vae.requires_grad_(False).eval()
+            self.text_encoder.requires_grad_(False).eval()
+            self.dit.requires_grad_(False).eval()
+
+    def _detect_mode(self, batch: dict) -> str:
+        """
+        Detect T2I or I2I mode from batch data.
+
+        Returns:
+            "t2i" if no condition image, "i2i" if condition image present
+        """
+        # Check for condition image (can be 'control' or 'condition_image')
+        has_condition = False
+        for key in ["control", "condition_image"]:
+            if key in batch and batch[key] is not None:
+                has_condition = True
+                break
+        return "i2i" if has_condition else "t2i"
+
+    def _format_text_input(self, prompts: list[str], system_message: str | None = None):
+        """
+        Format prompts into conversation format for Mistral3.
+
+        Args:
+            prompts: List of text prompts
+            system_message: System message for the conversation
+
+        Returns:
+            List of formatted conversation dictionaries
+        """
+        if system_message is None:
+            system_message = self.system_message
+
+        # Remove [IMG] tokens to avoid validation issues
+        cleaned_txt = [prompt.replace("[IMG]", "") for prompt in prompts]
+
+        return [
+            [
+                {"role": "system", "content": [{"type": "text", "text": system_message}]},
+                {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            ]
+            for prompt in cleaned_txt
+        ]
+
+    def encode_prompt(
+        self,
+        prompt: str | list[str],
+        device: torch.device | None = None,
+        max_sequence_length: int = 512,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Encode prompts using Mistral3.
+
+        Unlike FluxKontext which uses CLIP+T5, FLUX.2 uses single Mistral3 VLM.
+
+        Args:
+            prompt: Text prompt or list of prompts
+            device: Device to place embeddings on
+            max_sequence_length: Maximum sequence length
+
+        Returns:
+            prompt_embeds: [B, seq, D]
+            text_ids: [seq, 4]  # Note: 4 dims, not 3 like FluxKontext
+        """
+        prompt = [prompt] if isinstance(prompt, str) else prompt
+        device = device or self.text_encoder.device
+
+        # Format prompts for Mistral3
+        formatted = self._format_text_input(prompt)
+
+        with torch.inference_mode():
+            # Tokenize with processor (PixtralProcessor accepts messages parameter)
+            model_inputs = self.tokenizer(
+                messages=formatted,
+                padding=True,
+                truncation=True,
+                max_length=max_sequence_length,
+                return_tensors="pt",
+            ).to(device)
+
+            # Get embeddings from Mistral3
+            outputs = self.text_encoder(
+                input_ids=model_inputs.input_ids,
+                attention_mask=model_inputs.attention_mask,
+                output_hidden_states=True,
+            )
+
+            # Extract hidden states from last layer
+            prompt_embeds = outputs.hidden_states[-1]
+            prompt_embeds = prompt_embeds.to(dtype=self.weight_dtype)
+
+            # Create text IDs [seq, 4] for FLUX.2
+            seq_len = prompt_embeds.shape[1]
+            text_ids = torch.zeros(seq_len, 4, device=device, dtype=self.weight_dtype)
+
+        return prompt_embeds, text_ids
+
+    def prepare_latents(
+        self,
+        image: torch.Tensor | None,
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+    ):
+        """
+        Prepare latents for training/inference.
+
+        Args:
+            image: Input image tensor or None
+            batch_size: Batch size
+            num_channels_latents: Number of latent channels
+            height: Image height
+            width: Image width
+            dtype: Data type
+
+        Returns:
+            latents: Random noise latents
+            image_latents: Encoded image latents (if image provided)
+            latent_ids: Position IDs for target latents
+            image_ids: Position IDs for image latents
+        """
+        # VAE applies compression, account for packing
+        height = 2 * (int(height) // (self.vae_scale_factor * 2))
+        width = 2 * (int(width) // (self.vae_scale_factor * 2))
+        shape = (batch_size, num_channels_latents, height, width)
+        device = next(self.vae.parameters()).device
+
+        image_latents = None
+        image_ids = None
+
+        if image is not None:
+            image = image.to(device=device, dtype=dtype)
+            with torch.inference_mode():
+                image_latents = self._encode_vae_image(image)
+
+            image_latent_height, image_latent_width = image_latents.shape[2:]
+            image_latents = self._pack_latents(
+                image_latents,
+                batch_size,
+                num_channels_latents,
+                image_latent_height,
+                image_latent_width,
+            )
+            image_ids = self._prepare_latent_image_ids(
+                batch_size, image_latent_height // 2, image_latent_width // 2, device, dtype
+            )
+
+        # Create random noise latents
+        latent_ids = self._prepare_latent_image_ids(batch_size, height // 2, width // 2, device, dtype)
+        latents = randn_tensor(shape, device=device, dtype=dtype)
+        latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
+
+        return latents, image_latents, latent_ids, image_ids
+
+    def _encode_vae_image(self, image: torch.Tensor) -> torch.Tensor:
+        """Encode image through VAE."""
+        image_latents = self.vae.encode(image)
+        image_latents = image_latents.latent_dist.mode()
+
+        # Apply VAE normalization
+        if hasattr(self.vae.config, "scaling_factor"):
+            image_latents = image_latents * self.vae.config.scaling_factor
+        if hasattr(self.vae.config, "shift_factor"):
+            image_latents = image_latents - self.vae.config.shift_factor
+
+        return image_latents
+
+    def prepare_embeddings(self, batch: dict, stage: str = "fit") -> dict:
+        """
+        Prepare embeddings supporting both T2I and I2I modes.
+
+        Args:
+            batch: Input batch with image, prompt, and optional condition_image/control
+            stage: "fit", "cache", or "predict"
+
+        Returns:
+            Updated batch with all embeddings
+        """
+        # Detect mode
+        mode = self._detect_mode(batch)
+        batch["mode"] = mode
+
+        # === Common: Text encoding ===
+        prompt_embeds, text_ids = self.encode_prompt(
+            prompt=batch["prompt"],
+            max_sequence_length=512,
+        )
+        batch["prompt_embeds"] = prompt_embeds
+        batch["text_ids"] = text_ids
+
+        # Empty prompt for cache mode
+        if stage == "cache":
+            empty_embeds, _ = self.encode_prompt(prompt=[""])
+            batch["empty_prompt_embeds"] = empty_embeds
+
+        # === Target image encoding (always needed for training) ===
+        if "image" in batch:
+            image = self._preprocess_image(batch["image"])
+            batch["image"] = image
+            batch["height"] = image.shape[2]
+            batch["width"] = image.shape[3]
+
+            _, image_latents, latent_ids, _ = self.prepare_latents(
+                image=image,
+                batch_size=image.shape[0],
+                num_channels_latents=self.num_channels_latents,
+                height=batch["height"],
+                width=batch["width"],
+                dtype=self.weight_dtype,
+            )
+            batch["image_latents"] = image_latents
+            batch["latent_ids"] = latent_ids
+
+        # === Condition image encoding (I2I mode only) ===
+        condition_key = "control" if "control" in batch else "condition_image"
+        if mode == "i2i" and condition_key in batch and batch[condition_key] is not None:
+            condition = self._preprocess_image(batch[condition_key])
+            batch[condition_key] = condition
+            batch["condition_height"] = condition.shape[2]
+            batch["condition_width"] = condition.shape[3]
+
+            _, condition_latents, _, condition_ids = self.prepare_latents(
+                image=condition,
+                batch_size=condition.shape[0],
+                num_channels_latents=self.num_channels_latents,
+                height=batch["condition_height"],
+                width=batch["condition_width"],
+                dtype=self.weight_dtype,
+            )
+            # Mark condition latents with domain ID = 1
+            if condition_ids is not None:
+                condition_ids[..., 0] = 1
+            batch["condition_latents"] = condition_latents
+            batch["condition_ids"] = condition_ids
+        else:
+            batch["condition_latents"] = None
+            batch["condition_ids"] = None
+
+        # === Negative prompt (predict mode) ===
+        if stage == "predict" and "negative_prompt" in batch and batch.get("true_cfg_scale", 1.0) > 1.0:
+            neg_embeds, neg_ids = self.encode_prompt(batch["negative_prompt"])
+            batch["negative_prompt_embeds"] = neg_embeds
+            batch["negative_text_ids"] = neg_ids
+
+        return batch
+
+    def _preprocess_image(self, image: torch.Tensor) -> torch.Tensor:
+        """Preprocess image to [-1, 1] range."""
+        if image.max() > 1.0:
+            image = image / 255.0
+        return image * 2.0 - 1.0
+
+    def prepare_cached_embeddings(self, batch: dict) -> dict:
+        """
+        Load cached embeddings for both T2I and I2I modes.
+        """
+        mode = batch.get("mode", "t2i")
+        batch["mode"] = mode
+
+        # Common processing
+        if "text_ids" in batch and batch["text_ids"].dim() > 2:
+            batch["text_ids"] = batch["text_ids"][0]
+
+        # I2I mode: load condition cache
+        if mode == "i2i" and "condition_ids" in batch and batch["condition_ids"] is not None:
+            if batch["condition_ids"].dim() > 2:
+                batch["condition_ids"] = batch["condition_ids"][0]
+        else:
+            batch["condition_latents"] = None
+            batch["condition_ids"] = None
+
+        return batch
+
+    def cache_step(self, data: dict):
+        """
+        Cache embeddings for both T2I and I2I modes.
+        """
+        mode = data.get("mode", "t2i")
+
+        # Common cache items
+        cache_embeddings = {
+            "image_latents": data["image_latents"].detach().cpu()[0],
+            "prompt_embeds": data["prompt_embeds"].detach().cpu()[0],
+            "text_ids": data["text_ids"].detach().cpu(),
+            "empty_prompt_embeds": data["empty_prompt_embeds"].detach().cpu()[0],
+            "mode": mode,
+        }
+
+        map_keys = {
+            "image_latents": "image_hash",
+            "prompt_embeds": "prompt_hash",
+            "text_ids": "prompt_hash",
+            "empty_prompt_embeds": "prompt_hash",
+        }
+
+        # I2I mode: add condition cache
+        if mode == "i2i" and data.get("condition_latents") is not None:
+            cache_embeddings["condition_latents"] = data["condition_latents"].detach().cpu()[0]
+            cache_embeddings["condition_ids"] = data["condition_ids"].detach().cpu()
+            map_keys["condition_latents"] = "control_hash"
+            map_keys["condition_ids"] = "control_hash"
+
+        self.cache_manager.save_cache_embedding(cache_embeddings, map_keys, data["file_hashes"])
+
+    def _compute_loss(self, embeddings: dict) -> torch.Tensor:
+        """
+        Compute flow matching loss for both T2I and I2I modes.
+
+        The key difference is whether condition_latents are concatenated.
+        """
+        device = self.accelerator.device
+        mode = embeddings.get("mode", "t2i")
+
+        # Extract common embeddings
+        image_latents = embeddings["image_latents"].to(device)
+        prompt_embeds = embeddings["prompt_embeds"].to(device)
+        text_ids = embeddings["text_ids"].to(device)
+
+        # Handle latent_ids - may need to generate if not cached
+        if "latent_ids" in embeddings and embeddings["latent_ids"] is not None:
+            latent_ids = embeddings["latent_ids"].to(device)
+        else:
+            # Generate latent IDs from image shape
+            batch_size = image_latents.shape[0]
+            seq_len = image_latents.shape[1]
+            # Estimate height/width from sequence length
+            hw = int(np.sqrt(seq_len))
+            latent_ids = self._prepare_latent_image_ids(batch_size, hw, hw, device, self.weight_dtype)
+
+        batch_size = image_latents.shape[0]
+
+        with torch.no_grad():
+            # Sample noise
+            noise = torch.randn_like(image_latents, device=device, dtype=self.weight_dtype)
+
+            # Sample timestep (uniform)
+            t = torch.rand((batch_size,), device=device, dtype=self.weight_dtype)
+            t_ = t.view(-1, 1, 1)
+
+            # Create noisy input
+            noisy_model_input = (1.0 - t_) * image_latents + t_ * noise
+
+            # === Mode-specific input preparation ===
+            if mode == "i2i" and embeddings.get("condition_latents") is not None:
+                # I2I: Concatenate with condition latents
+                condition_latents = embeddings["condition_latents"].to(device)
+                condition_ids = embeddings["condition_ids"].to(device)
+
+                hidden_states = torch.cat([noisy_model_input, condition_latents], dim=1)
+                img_ids = torch.cat([latent_ids, condition_ids], dim=0)
+            else:
+                # T2I: Only noisy latents
+                hidden_states = noisy_model_input
+                img_ids = latent_ids
+
+        # Prepare guidance
+        guidance = None
+        if self.dit.config.guidance_embeds:
+            guidance = torch.ones((batch_size,), device=device, dtype=self.weight_dtype)
+
+        # Forward pass
+        model_pred = self.dit(
+            hidden_states=hidden_states.to(self.weight_dtype),
+            timestep=t,
+            guidance=guidance,
+            encoder_hidden_states=prompt_embeds.to(self.weight_dtype),
+            txt_ids=text_ids,
+            img_ids=img_ids,
+            joint_attention_kwargs={},
+            return_dict=False,
+        )[0]
+
+        # Extract prediction for target latents only
+        model_pred = model_pred[:, : image_latents.size(1)]
+
+        # Compute loss
+        target = noise - image_latents
+
+        # Use edit_mask if available
+        edit_mask = embeddings.get("edit_mask")
+        if edit_mask is not None:
+            edit_mask = edit_mask.to(self.weight_dtype).to(device)
+
+        loss = self.forward_loss(model_pred, target, weighting=None, edit_mask=edit_mask)
+
+        return loss
+
+    def sampling_from_embeddings(self, embeddings: dict) -> torch.Tensor:
+        """
+        Run denoising loop for both T2I and I2I modes.
+        """
+        mode = embeddings.get("mode", "t2i")
+        device = self.dit.device
+
+        num_inference_steps = embeddings.get("num_inference_steps", 50)
+        batch_size = embeddings["prompt_embeds"].shape[0]
+        height = embeddings.get("height", 1024)
+        width = embeddings.get("width", 1024)
+
+        # Create initial noise latents
+        latents, _, latent_ids, _ = self.prepare_latents(
+            image=None,
+            batch_size=batch_size,
+            num_channels_latents=self.num_channels_latents,
+            height=height,
+            width=width,
+            dtype=self.weight_dtype,
+        )
+        latents = latents.to(device)
+        latent_ids = latent_ids.to(device)
+
+        # Prepare condition (I2I mode)
+        if mode == "i2i" and embeddings.get("condition_latents") is not None:
+            condition_latents = embeddings["condition_latents"].to(device)
+            condition_ids = embeddings["condition_ids"].to(device)
+        else:
+            condition_latents = None
+            condition_ids = None
+
+        # Prepare text embeddings
+        prompt_embeds = embeddings["prompt_embeds"].to(device)
+        text_ids = embeddings["text_ids"].to(device)
+
+        # Calculate timesteps using FLUX.2 specific mu
+        image_seq_len = latents.shape[1]
+        mu = compute_empirical_mu(image_seq_len, num_inference_steps)
+        timesteps, num_inference_steps = retrieve_timesteps(
+            self.sampling_scheduler,
+            num_inference_steps,
+            device,
+            mu=mu,
+        )
+
+        # Guidance
+        guidance_scale = embeddings.get("guidance", 2.5)
+        guidance = None
+        if self.dit.config.guidance_embeds:
+            guidance = torch.full([batch_size], guidance_scale, device=device, dtype=torch.float32)
+
+        # Denoising loop
+        self.sampling_scheduler.set_begin_index(0)
+
+        # Check for true CFG
+        true_cfg_scale = embeddings.get("true_cfg_scale", 1.0)
+        do_cfg = true_cfg_scale > 1.0 and "negative_prompt_embeds" in embeddings
+
+        with torch.inference_mode():
+            for t in tqdm(timesteps, desc="FLUX.2 Sampling"):
+                # Prepare model input
+                if condition_latents is not None:
+                    hidden_states = torch.cat([latents, condition_latents], dim=1)
+                    img_ids = torch.cat([latent_ids, condition_ids], dim=0)
+                else:
+                    hidden_states = latents
+                    img_ids = latent_ids
+
+                timestep = t.expand(batch_size).to(latents.dtype)
+
+                # Forward
+                noise_pred = self.dit(
+                    hidden_states=hidden_states,
+                    timestep=timestep / 1000,
+                    guidance=guidance,
+                    encoder_hidden_states=prompt_embeds,
+                    txt_ids=text_ids,
+                    img_ids=img_ids,
+                    joint_attention_kwargs={},
+                    return_dict=False,
+                )[0]
+
+                # Extract target prediction
+                noise_pred = noise_pred[:, : latents.size(1)]
+
+                # Apply CFG if needed
+                if do_cfg:
+                    neg_embeds = embeddings["negative_prompt_embeds"].to(device)
+                    neg_ids = embeddings.get("negative_text_ids", text_ids).to(device)
+
+                    neg_noise_pred = self.dit(
+                        hidden_states=hidden_states,
+                        timestep=timestep / 1000,
+                        guidance=guidance,
+                        encoder_hidden_states=neg_embeds,
+                        txt_ids=neg_ids,
+                        img_ids=img_ids,
+                        joint_attention_kwargs={},
+                        return_dict=False,
+                    )[0]
+                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
+                    noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
+
+                # Scheduler step
+                latents = self.sampling_scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+
+        return latents
+
+    def decode_vae_latent(self, latents: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        """
+        Decode latents using FLUX.2 VAE with batch_norm denormalization.
+        """
+        latents = latents.to(self.vae.device, dtype=self.weight_dtype)
+
+        # Unpack latents
+        latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
+
+        # FLUX.2 specific: batch_norm inverse transform
+        if hasattr(self.vae, "bn"):
+            bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            bn_var = self.vae.bn.running_var.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            eps = getattr(self.vae.config, "batch_norm_eps", 1e-5)
+            bn_std = torch.sqrt(bn_var + eps)
+            latents = latents * bn_std + bn_mean
+
+        # Apply inverse scaling
+        if hasattr(self.vae.config, "shift_factor"):
+            latents = latents + self.vae.config.shift_factor
+        if hasattr(self.vae.config, "scaling_factor"):
+            latents = latents / self.vae.config.scaling_factor
+
+        # VAE decode
+        with torch.inference_mode():
+            image = self.vae.decode(latents, return_dict=False)[0]
+
+        image = self.image_processor.postprocess(image, output_type="pt")
+        return image
+
+    def prepare_predict_batch_data(
+        self,
+        image: PIL.Image.Image | list[PIL.Image.Image] | None = None,
+        prompt: str | list[str] | None = None,
+        negative_prompt: str | list[str] | None = None,
+        num_inference_steps: int = 50,
+        height: int | None = None,
+        width: int | None = None,
+        guidance_scale: float = 2.5,
+        true_cfg_scale: float = 1.0,
+        weight_dtype: torch.dtype = torch.bfloat16,
+        **kwargs,
+    ) -> dict:
+        """
+        Prepare batch data for prediction.
+
+        Args:
+            image: Condition image (None for T2I mode, PIL Image for I2I mode)
+            prompt: Text prompt
+            negative_prompt: Negative prompt for CFG
+            num_inference_steps: Number of denoising steps
+            height: Output height (if None, uses condition image height or 1024)
+            width: Output width (if None, uses condition image width or 1024)
+            guidance_scale: Guidance scale
+            true_cfg_scale: True CFG scale (>1.0 to enable CFG)
+            weight_dtype: Data type
+
+        Returns:
+            Batch dictionary for prepare_embeddings
+        """
+        self.weight_dtype = weight_dtype
+
+        if isinstance(prompt, str):
+            prompt = [prompt]
+
+        data = {"prompt": prompt}
+
+        # Determine mode based on image presence
+        if image is not None:
+            # I2I mode
+            if isinstance(image, PIL.Image.Image):
+                image = [image]
+
+            # Process condition images
+            condition_images = []
+            for img in image:
+                img = make_image_devisible(img, self.vae_scale_factor)
+                img_tensor = self.preprocessor.preprocess({"control": img})["control"]
+                condition_images.append(img_tensor)
+
+            condition = torch.stack(condition_images, dim=0)
+            data["control"] = condition
+
+            # Use condition image size if not specified
+            if height is None:
+                height = condition.shape[2]
+            if width is None:
+                width = condition.shape[3]
+        else:
+            # T2I mode - use default or specified size
+            height = height or 1024
+            width = width or 1024
+
+        # Ensure divisibility
+        width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
+
+        data["height"] = height
+        data["width"] = width
+        data["num_inference_steps"] = num_inference_steps
+        data["guidance"] = guidance_scale
+        data["true_cfg_scale"] = true_cfg_scale
+        data["n_controls"] = 0  # FLUX.2 doesn't use multiple controls
+
+        # Negative prompt
+        if negative_prompt is not None:
+            if isinstance(negative_prompt, str):
+                negative_prompt = [negative_prompt]
+            data["negative_prompt"] = negative_prompt
+
+        logging.info(f"Prepared predict batch: mode={'i2i' if image else 't2i'}, size={width}x{height}")
+
+        return data
+
+    # === Static helper methods ===
+
+    @staticmethod
+    def _pack_latents(
+        latents: torch.Tensor,
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+    ) -> torch.Tensor:
+        """Pack latents for transformer input."""
+        latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
+        latents = latents.permute(0, 2, 4, 1, 3, 5)
+        latents = latents.reshape(batch_size, (height // 2) * (width // 2), num_channels_latents * 4)
+        return latents
+
+    @staticmethod
+    def _unpack_latents(latents: torch.Tensor, height: int, width: int, vae_scale_factor: int) -> torch.Tensor:
+        """Unpack latents from transformer output."""
+        batch_size, num_patches, channels = latents.shape
+        height = 2 * (int(height) // (vae_scale_factor * 2))
+        width = 2 * (int(width) // (vae_scale_factor * 2))
+        latents = latents.view(batch_size, height // 2, width // 2, channels // 4, 2, 2)
+        latents = latents.permute(0, 3, 1, 4, 2, 5)
+        latents = latents.reshape(batch_size, channels // (2 * 2), height, width)
+        return latents
+
+    @staticmethod
+    def _prepare_latent_image_ids(
+        batch_size: int, height: int, width: int, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """
+        Prepare latent image IDs for position encoding.
+
+        Returns:
+            latent_image_ids: [height * width, 4] for FLUX.2
+        """
+        # FLUX.2 uses 4-dim IDs: [domain, h_pos, w_pos, extra]
+        latent_image_ids = torch.zeros(height, width, 4, device=device, dtype=dtype)
+        latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(height, device=device)[:, None]
+        latent_image_ids[..., 2] = latent_image_ids[..., 2] + torch.arange(width, device=device)[None, :]
+
+        latent_image_ids = latent_image_ids.reshape(height * width, 4)
+        return latent_image_ids

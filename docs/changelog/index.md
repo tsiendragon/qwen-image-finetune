@@ -4,6 +4,7 @@ This document summarizes the key highlights for each released version. Detailed 
 
 ## Version Index
 
+- [3.3.1](./v3.3.1.md) — Fixed Flux2LoraTrainer tokenizer parameter issue for T2I prediction.
 - [3.3.0](./v3.3.0.md) — DreamOmni2 trainer support with cumulative offset positioning and VLM prompt optimization.
 - [3.2.1](./v3.2.1.md) — Bug fixes: scheduler state isolation and directory cleanup improvements.
 - [3.2.0](./v3.2.0.md) — Multi-logger support (TensorBoard/wandb/SwanLab) with unified LoggerManager interface.
