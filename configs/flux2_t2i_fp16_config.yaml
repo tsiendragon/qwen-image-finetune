@@ -24,7 +24,6 @@ data:
     prompt_image_dropout_rate: 0.0  # T2I mode: no prompt image dropout
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
-    cache_drop_rate: 0.1
     processor:
       class_path: "qflux.data.preprocess.ImageProcessor"
       init_args:
@@ -77,6 +76,6 @@ resume: null
 
 validation:
   enabled: false
-  validation_steps: 200
-  num_validation_samples: 4
+  steps: 200
+  max_samples: 4
 

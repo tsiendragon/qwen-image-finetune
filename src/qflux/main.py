@@ -31,6 +31,10 @@ def import_trainer(config: Config):
         from qflux.trainer.dreamomni2_trainer import DreamOmni2Trainer
 
         return DreamOmni2Trainer
+    elif trainer_type == "Flux2":
+        from qflux.trainer.flux2_trainer import Flux2LoraTrainer
+
+        return Flux2LoraTrainer
     else:
         raise ValueError(f"Invalid trainer type: {trainer_type}")
 

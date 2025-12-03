@@ -3,6 +3,13 @@ description: Documentation organization
 alwaysApply: true
 ---
 
+python 用 /home/lilong/.local/envs/myenv/bin/python
+在用 python 之前，执行下面的命令
+```
+conda activate base
+
+```
+
 | 目录 | 用途 | 示例文件 |
 | --- | --- | --- |
 | `docs/guide/` | 汇总面向开发者和运营的功能说明、架构拆解、使用指引；新增特性上线或重要流程改版时补充 | `docs/guide/flux_pipeline_overview.md`, `docs/guide/lora_finetune_workflow.md` |

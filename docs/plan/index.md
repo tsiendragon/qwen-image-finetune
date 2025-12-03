@@ -4,6 +4,7 @@ This index summarizes active and upcoming initiatives. Each entry links to a det
 
 | Plan | Description | Status | Details |
 | --- | --- | --- | --- |
+| FLUX.2 LoRA Trainer | Implement FLUX.2 trainer with T2I and I2I dual mode support | Planning | [flux2_trainer_plan.md](./flux2_trainer_plan.md) |
 | Multi-Logger Integration | Add support for SwanLab alongside TensorBoard and W&B | Planning | [multi_logger_integration.md](./multi_logger_integration.md) |
 | Validation Sampling During Training | Add validation sampling with TensorBoard visualization | Planning | [validation_sampling_during_training.md](./validation_sampling_during_training.md) |
 | FSDP Memory Optimization | Implement FSDP to reduce memory usage for FluxKontext BF16 training | In progress | [fsdp_memory_optimization.md](./fsdp_memory_optimization.md) |

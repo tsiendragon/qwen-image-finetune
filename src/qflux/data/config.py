@@ -600,6 +600,7 @@ class TrainerKind(str, Enum):
     QwenImageEditPlus = "QwenImageEditPlus"
     FluxKontext = "FluxKontext"
     DreamOmni2 = "DreamOmni2"
+    Flux2 = "Flux2"
 
 
 class TrainConfig(BaseModel):

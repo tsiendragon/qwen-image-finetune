@@ -75,11 +75,10 @@ class Flux2LoraTrainer(BaseTrainer):
         self._current_timestep = None
         self._interrupt = False
 
-        # System message for Mistral3 (matches original Flux2Pipeline)
-        self.system_message = (
-            "You are an AI that reasons about image descriptions. You give structured responses "
-            "focusing on object relationships, object attribution and actions without speculation."
-        )
+        # System message for Mistral3 (matches original Flux2Pipeline exactly)
+        # Note: The original has a newline between "object" and "attribution"
+        self.system_message = """You are an AI that reasons about image descriptions. You give structured responses focusing on object relationships, object
+attribution and actions without speculation."""
 
     def get_pipeline_class(self):
         """Return Flux2Pipeline for LoRA saving."""
@@ -468,6 +467,90 @@ class Flux2LoraTrainer(BaseTrainer):
         return image_latents
 
     @staticmethod
+    def _prepare_image_ids(
+        image_latents: list[torch.Tensor],  # [(1, C, H, W), (1, C, H, W), ...]
+        scale: int = 10,
+    ) -> torch.Tensor:
+        """
+        Generates 4D time-space coordinates (T, H, W, L) for a sequence of image latents.
+        Matches original Flux2Pipeline._prepare_image_ids implementation.
+
+        Args:
+            image_latents: A list of image latent feature tensors, typically of shape (1, C, H, W).
+            scale: A factor used to define the time separation (T-coordinate) between latents.
+
+        Returns:
+            The combined coordinate tensor. Shape: (1, N_total, 4)
+        """
+        if not isinstance(image_latents, list):
+            raise ValueError(f"Expected `image_latents` to be a list, got {type(image_latents)}.")
+
+        # create time offset for each reference image
+        t_coords = [scale + scale * t for t in torch.arange(0, len(image_latents))]
+        t_coords = [t.view(-1) for t in t_coords]
+
+        image_latent_ids = []
+        for x, t in zip(image_latents, t_coords):
+            x = x.squeeze(0)
+            _, height, width = x.shape
+
+            x_ids = torch.cartesian_prod(t, torch.arange(height), torch.arange(width), torch.arange(1))
+            image_latent_ids.append(x_ids)
+
+        image_latent_ids = torch.cat(image_latent_ids, dim=0)
+        image_latent_ids = image_latent_ids.unsqueeze(0)
+
+        return image_latent_ids
+
+    def prepare_image_latents(
+        self,
+        images: list[torch.Tensor],
+        batch_size: int,
+        generator: torch.Generator,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Prepare image latents for I2I mode.
+        Matches original Flux2Pipeline.prepare_image_latents implementation.
+
+        Args:
+            images: List of preprocessed image tensors
+            batch_size: Batch size
+            generator: Random generator
+            device: Device to use
+            dtype: Data type
+
+        Returns:
+            Tuple of (image_latents, image_latent_ids)
+        """
+        image_latents = []
+        for image in images:
+            image = image.to(device=device, dtype=dtype)
+            image_latent = self._encode_vae_image(image=image)
+            image_latents.append(image_latent)  # (1, 128, H//16, W//16)
+
+        image_latent_ids = self._prepare_image_ids(image_latents)
+
+        # Pack each latent and concatenate
+        packed_latents = []
+        for latent in image_latents:
+            # latent: (1, 128, H, W)
+            packed = self._pack_latents_simple(latent)  # (1, H*W, 128)
+            packed = packed.squeeze(0)  # (H*W, 128) - remove batch dim
+            packed_latents.append(packed)
+
+        # Concatenate all reference tokens along sequence dimension
+        image_latents = torch.cat(packed_latents, dim=0)  # (N*H*W, 128)
+        image_latents = image_latents.unsqueeze(0)  # (1, N*H*W, 128)
+
+        image_latents = image_latents.repeat(batch_size, 1, 1)
+        image_latent_ids = image_latent_ids.repeat(batch_size, 1, 1)
+        image_latent_ids = image_latent_ids.to(device)
+
+        return image_latents, image_latent_ids
+
+    @staticmethod
     def _patchify_latents(latents: torch.Tensor) -> torch.Tensor:
         """
         Patchify latents into 2x2 patches.
@@ -547,9 +630,9 @@ class Flux2LoraTrainer(BaseTrainer):
                 width=batch["condition_width"],
                 dtype=self.weight_dtype,
             )
-            # Mark condition latents with domain ID = 1
+            # Mark condition latents with domain ID = 10 (matches Flux2Pipeline._prepare_image_ids with scale=10)
             if condition_ids is not None:
-                condition_ids[..., 0] = 1
+                condition_ids[..., 0] = 10
             batch["condition_latents"] = condition_latents
             batch["condition_ids"] = condition_ids
         else:
@@ -565,9 +648,20 @@ class Flux2LoraTrainer(BaseTrainer):
         return batch
 
     def _preprocess_image(self, image: torch.Tensor) -> torch.Tensor:
-        """Preprocess image to [-1, 1] range."""
+        """Preprocess image to [-1, 1] range.
+
+        Handles images in various ranges:
+        - [0, 255]: normalize to [0, 1] then scale to [-1, 1]
+        - [0, 1]: scale to [-1, 1]
+        - [-1, 1]: return as-is (already preprocessed by VaeImageProcessor)
+        """
+        # Already in [-1, 1] range (from VaeImageProcessor)
+        if image.min() < 0:
+            return image
+        # [0, 255] range
         if image.max() > 1.0:
             image = image / 255.0
+        # [0, 1] range -> [-1, 1]
         return image * 2.0 - 1.0
 
     def prepare_cached_embeddings(self, batch: dict) -> dict:
@@ -877,6 +971,8 @@ class Flux2LoraTrainer(BaseTrainer):
         """
         Prepare batch data for prediction.
 
+        Uses VaeImageProcessor for image preprocessing to match Flux2Pipeline behavior.
+
         Args:
             image: Condition image (None for T2I mode, PIL Image for I2I mode)
             prompt: Text prompt
@@ -904,28 +1000,39 @@ class Flux2LoraTrainer(BaseTrainer):
             if isinstance(image, PIL.Image.Image):
                 image = [image]
 
-            # Process condition images
+            # Get original image dimensions for size calculation
+            orig_width, orig_height = image[0].size
+
+            # Use original image size if not specified
+            if height is None:
+                height = orig_height
+            if width is None:
+                width = orig_width
+
+            # Ensure divisibility (match Pipeline behavior: vae_scale_factor * 2)
+            multiple_of = self.vae_scale_factor * 2
+            width = (width // multiple_of) * multiple_of
+            height = (height // multiple_of) * multiple_of
+
+            # Process condition images using VaeImageProcessor (matches Flux2Pipeline)
+            # VaeImageProcessor.preprocess returns [-1, 1] range tensor
             condition_images = []
             for img in image:
-                img = make_image_devisible(img, self.vae_scale_factor)
-                img_tensor = self.preprocessor.preprocess({"control": img})["control"]
-                condition_images.append(img_tensor)
+                processed = self.image_processor.preprocess(
+                    img, height=height, width=width, resize_mode="crop"
+                )
+                condition_images.append(processed)
 
-            condition = torch.stack(condition_images, dim=0)
+            # Stack and squeeze to get [B, C, H, W]
+            condition = torch.cat(condition_images, dim=0)
             data["control"] = condition
-
-            # Use condition image size if not specified
-            if height is None:
-                height = condition.shape[2]
-            if width is None:
-                width = condition.shape[3]
         else:
             # T2I mode - use default or specified size
             height = height or 1024
             width = width or 1024
 
-        # Ensure divisibility
-        width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
+            # Ensure divisibility
+            width, height = make_image_shape_devisible(width, height, self.vae_scale_factor)
 
         data["height"] = height
         data["width"] = width

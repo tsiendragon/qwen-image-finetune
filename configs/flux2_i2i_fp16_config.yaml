@@ -24,7 +24,6 @@ data:
     prompt_image_dropout_rate: 0.05  # I2I mode: supports dropout
     cache_dir: ${cache.cache_dir}
     use_cache: ${cache.use_cache}
-    cache_drop_rate: 0.1
     # I2I mode: dataset should have control field for condition image
     processor:
       class_path: "qflux.data.preprocess.ImageProcessor"
@@ -79,6 +78,6 @@ resume: null
 
 validation:
   enabled: false
-  validation_steps: 200
-  num_validation_samples: 4
+  steps: 200
+  max_samples: 4
 
