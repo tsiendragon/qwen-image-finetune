@@ -23,6 +23,10 @@ def import_trainer(config: Config):
         from qflux.trainer.flux_kontext_trainer import FluxKontextLoraTrainer
 
         return FluxKontextLoraTrainer
+    elif trainer_type == "Flux2Klein":
+        from qflux.trainer.flux2_klein_trainer import Flux2KleinLoraTrainer
+
+        return Flux2KleinLoraTrainer
     elif trainer_type == "QwenImageEditPlus":
         from qflux.trainer.qwen_image_edit_plus_trainer import QwenImageEditPlusTrainer
 
