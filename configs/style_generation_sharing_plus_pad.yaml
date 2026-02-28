@@ -1,0 +1,108 @@
+trainer: QwenImageEditPlus
+
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit-2509"
+  quantize: false
+  lora:
+    r: 32  # LoRA rank, can be adjusted(8, 16, 32), larger r means more parameters
+    lora_alpha: 32  # LoRA alpha, usually equal to r
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+
+
+data:
+  class_path: "qflux.data.dataset.ImageDataset"
+  init_args:
+    dataset_path:
+      - /home/azureuser/style_generation_sharing_padded
+    caption_dropout_rate: 0.01  
+    prompt_image_dropout_rate: 0.01
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    # cache_drop_rate: 0.1  # 10% probability of using empty prompt for training
+    processor:
+      class_path: "qflux.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: resize
+        target_size: [1024, 1024]
+        controls_size: [[1024, 1024]]
+  batch_size: 2  # adjust batch size according to the available memory, can be set to 1, 2, 4
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "style_generation_sharing_padded"
+  report_to: "tensorboard"
+  tracker_project_name: "style_generation_sharing_padded"
+
+  # Sampling during training configuration
+  # sampling:
+  #   enable: false              # Enable/disable sampling functionality
+  #   validation_steps: 200      # Run validation sampling every N training steps
+  #   num_samples: 4            # Number of samples to generate and log per validation
+  #   seed: 42                  # Seed for reproducible sampling
+  #   validation_data: null     # Path to validation dataset or list of control-prompt pairs
+    # Examples:
+    # validation_data: "/path/to/validation/dataset"  # Single dataset path
+    # validation_data:                                # List of control-prompt pairs
+    #   - control: "/path/to/control1.jpg"
+    #     prompt: "A beautiful landscape"
+    #   - control: "/path/to/control2.jpg"
+    #     prompt: "A modern building"
+
+optimizer:
+  class_path: torch.optim.AdamW # bitsandbytes.optim.Adam8bit  # 8bit Adam optimizer to save memory
+  init_args:
+    lr: 0.0005  # face segmentation task uses smaller learning rate
+    betas: [0.9, 0.999]
+  # if memory is sufficient, you can also use standard AdamW:
+  # class_path: "torch.optim.AdamW"
+  # init_args:
+  #   lr: 0.0001
+  #   weight_decay: 0.01
+  #   betas: [0.9, 0.999]
+  #   eps: 1e-8
+
+lr_scheduler:
+  scheduler_type: "cosine"  # cosine scheduler, better for fine-grained tasks
+  warmup_steps: 50  # increase warmup steps
+  num_cycles: 0.5
+  power: 1.0
+
+train:
+  gradient_accumulation_steps: 4  # increase gradient accumulation to simulate larger batch size
+  max_train_steps: 10000 
+  num_epochs: 10 
+  checkpointing_steps: 1000  # save checkpoints more frequently
+  checkpoints_total_limit: 20
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: True  # enable gradient checkpointing to save memory
+
+cache:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0  # if there is only one card, put them on cuda:0
+  cache_dir: "style_generation_sharing_padded/cache"
+  use_cache: true
+  prompt_empty_drop_keys:
+    - empty_prompt_embeds
+    - empty_prompt_embeds_mask
+
+# predict:
+#   devices:
+#     vae: cuda:0
+#     text_encoder: cuda:0
+#     dit: cuda:1
+
+# training resume setting
+resume: null
+
+# validation setting (optional)
+# validation:
+#   enabled: false  # if there is a validation set, enable it
+#   validation_steps: 200
+#   num_validation_samples: 4
+
+# 48.6 GB used for traning with batchsize 2, speed 18.35s/it, on A100
