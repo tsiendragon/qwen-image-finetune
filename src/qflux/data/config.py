@@ -370,6 +370,7 @@ class ModelConfig(BaseModel):
     quantize: bool = False
     use_vlm_prompt_enhancer: bool = False  # Enable VLM-based prompt enhancement (DreamOmni2 trainer)
     full_finetune: bool = False  # True = train all DIT params; False = LoRA only
+    distilled_guidance_scale: float | None = None  # HunyuanImage distilled guidance (None = use model default)
 
 
 # ----------------------------
@@ -603,6 +604,12 @@ class TrainerKind(str, Enum):
     FluxKontext = "FluxKontext"
     DreamOmni2 = "DreamOmni2"
     Flux2Klein = "Flux2Klein"
+    ZImageT2I = "ZImageT2I"
+    HunyuanImageT2I = "HunyuanImageT2I"
+    HunyuanImageIT2I = "HunyuanImageIT2I"
+    OvisImageT2I = "OvisImageT2I"
+    LongCatImageT2I = "LongCatImageT2I"
+    LongCatImageEdit = "LongCatImageEdit"
 
 
 class TrainConfig(BaseModel):

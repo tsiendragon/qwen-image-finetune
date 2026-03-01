@@ -1,0 +1,109 @@
+# =============================================================================
+# hunyuanvideo-community/HunyuanImage-2.1-Refiner-Diffusers — IT2I LoRA fine-tuning
+# =============================================================================
+# Fine-tunes the HunyuanImage Refiner with LoRA adapters.
+# Architecture: HunyuanImageTransformer2DModel + AutoencoderKLHunyuanImageRefiner (3D causal)
+# Text encoder: Qwen2.5-VL-7B (Llama-style template, single encoder — no ByT5)
+# Scheduler: FlowMatchEulerDiscreteScheduler
+# Distilled variant: 4 inference steps recommended.
+# Latents: 5D (B, latent_channels, 1, H//16, W//16) with token interleaving
+#
+# Model: https://huggingface.co/hunyuanvideo-community/HunyuanImage-2.1-Refiner-Diffusers
+#
+# Dataset format:
+#   training_images/sample_001.{png,txt}   ← target image + caption
+#   (Optional for editing: provide 'control' images for paired source→target training)
+#
+# For self-refinement: 'image' is used as both source and target.
+# For paired editing:  dataset provides both 'image' (target) and 'control' (source).
+#
+# Commands:
+#   Step 1 – build embedding cache:
+#     CUDA_VISIBLE_DEVICES=0 python -m qflux.main \
+#         --config configs/hunyuan_image_it2i_lora_with_cache.yaml --cache
+#
+#   Step 2 – train:
+#     CUDA_VISIBLE_DEVICES=0 accelerate launch \
+#         --config_file accelerate_config.yaml \
+#         -m qflux.main --config configs/hunyuan_image_it2i_lora_with_cache.yaml
+# =============================================================================
+
+trainer: HunyuanImageIT2I
+
+model:
+  pretrained_model_name_or_path: "hunyuanvideo-community/HunyuanImage-2.1-Refiner-Diffusers"
+  # For offline use:
+  # pretrained_model_name_or_path: "/your/model/dir/HunyuanImage-2.1-Refiner-Diffusers"
+
+  # Distilled guidance scale (passed to transformer as guidance embedding * 1000)
+  distilled_guidance_scale: 3.25
+
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+
+  quantize: false
+
+data:
+  class_path: "qflux.data.dataset.ImageDataset"
+  init_args:
+    dataset_path: "/path/to/your/local/dataset"
+    caption_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    processor:
+      class_path: "qflux.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [1024, 1024]
+  batch_size: 1
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/path/to/output/hunyuanimage-it2i-lora"
+  report_to: "tensorboard"
+  tracker_project_name: "hunyuanimage_it2i_lora"
+
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "constant"
+  warmup_steps: 100
+
+train:
+  gradient_accumulation_steps: 4
+  max_train_steps: 5000
+  num_epochs: 10
+  checkpointing_steps: 500
+  checkpoints_total_limit: 5
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+
+cache:
+  use_cache: true
+  cache_dir: "/path/to/cache/hunyuanimage-it2i"
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
+
+resume: null
+
+validation:
+  enabled: false
+  steps: 500
+  max_samples: 4

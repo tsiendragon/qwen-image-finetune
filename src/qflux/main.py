@@ -39,6 +39,30 @@ def import_trainer(config: Config):
         from qflux.trainer.dreamomni2_trainer import DreamOmni2Trainer
 
         return DreamOmni2Trainer
+    elif trainer_type == "ZImageT2I":
+        from qflux.trainer.zimage_t2i_trainer import ZImageT2ITrainer
+
+        return ZImageT2ITrainer
+    elif trainer_type == "HunyuanImageT2I":
+        from qflux.trainer.hunyuan_image_t2i_trainer import HunyuanImageT2ITrainer
+
+        return HunyuanImageT2ITrainer
+    elif trainer_type == "HunyuanImageIT2I":
+        from qflux.trainer.hunyuan_image_it2i_trainer import HunyuanImageIT2ITrainer
+
+        return HunyuanImageIT2ITrainer
+    elif trainer_type == "OvisImageT2I":
+        from qflux.trainer.ovis_image_t2i_trainer import OvisImageT2ITrainer
+
+        return OvisImageT2ITrainer
+    elif trainer_type == "LongCatImageT2I":
+        from qflux.trainer.longcat_image_t2i_trainer import LongCatImageT2ITrainer
+
+        return LongCatImageT2ITrainer
+    elif trainer_type == "LongCatImageEdit":
+        from qflux.trainer.longcat_image_edit_trainer import LongCatImageEditTrainer
+
+        return LongCatImageEditTrainer
     else:
         raise ValueError(f"Invalid trainer type: {trainer_type}")
 

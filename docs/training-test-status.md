@@ -117,6 +117,207 @@ Update this file after each test run. Add notes with GPU model, date, and any is
 
 ---
 
+## Z-Image（`ZImageT2ITrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：S3-DiT（单流 6B DiT），Qwen3 文本编码器，可变长度 prompt embeddings，
+Timestep 反转约定（0=噪声，1=干净），输出取反（`noise_pred = -model_output`）。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `zimage_t2i_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `zimage_t2i_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 推理 / Sampling
+
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| base model sampling (无 LoRA) | ⬜ 未测试 | `guidance_scale=0.0` for Turbo |
+| Z-Image + LoRA sampling | ⬜ 未测试 | |
+| CFG sampling (`guidance_scale > 0`) | ⬜ 未测试 | 非 Turbo 用法 |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_zimage_t2i_vs_diffusers.py` | 与官方 `ZImagePipeline` 对比：权重、embeddings、端到端输出 | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_zimage_t2i_fp16.yaml` | Z-Image 测试配置文件 | ✅ 已创建 |
+
+---
+
+## HunyuanImage T2I（`HunyuanImageT2ITrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：MMDiT（20 双流 + 40 单流块），双文本编码器（Qwen2.5-VL-7B + ByT5），
+`AutoencoderKLHunyuanImage`（`spatial_compression_ratio=32`），蒸馏变体（8 步推理），
+`distilled_guidance_scale * 1000` 作为 guidance embedding，sigma ∈ [0, 1] 直接作为 timestep。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `hunyuan_image_t2i_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `hunyuan_image_t2i_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 推理 / Sampling
+
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| base model sampling (无 LoRA) | ⬜ 未测试 | `distilled_guidance_scale=3.25`，~8 步 |
+| HunyuanImage + LoRA sampling | ⬜ 未测试 | |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_hunyuan_image_t2i_vs_diffusers.py` | 与官方 `HunyuanImagePipeline` 对比：权重（4模块）、双编码器 embeddings（Qwen+ByT5）、端到端输出 | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_hunyuan_image_t2i_fp16.yaml` | HunyuanImage 测试配置文件 | ✅ 已创建 |
+
+---
+
+## HunyuanImage IT2I（`HunyuanImageIT2ITrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：与 T2I 共用 `HunyuanImageTransformer2DModel`，但使用 `AutoencoderKLHunyuanImageRefiner`
+（3D 因果 VAE，`spatial_compression_ratio=16`），单 Qwen 文本编码器（Llama-style 模板，`drop_idx=36`，
+`max_len=256`，无 ByT5），5D latents `(B, C, 1, H//16, W//16)` + token interleaving，
+model input = `cat([noisy_target, cond_source], dim=1)`（双通道拼接），蒸馏变体（4 步推理）。
+
+数据集格式：`image`（目标图像） + `control`（可选源图像；缺失时退化为自精炼）。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `hunyuan_image_it2i_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `hunyuan_image_it2i_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 推理 / Sampling
+
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| base model sampling (无 LoRA) | ⬜ 未测试 | `distilled_guidance_scale=3.25`，~4 步 |
+| IT2I + LoRA sampling | ⬜ 未测试 | |
+| 自精炼模式（无 `control` 图像） | ⬜ 未测试 | source == target |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_hunyuan_image_it2i_vs_diffusers.py` | 与官方 `HunyuanImageRefinerPipeline` 对比：权重（3模块）、Qwen embeddings、端到端输出（共享 source image） | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_hunyuan_image_it2i_fp16.yaml` | HunyuanImage IT2I 测试配置文件 | ✅ 已创建 |
+
+---
+
+## Ovis-Image T2I（`OvisImageT2ITrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：FLUX-like MMDiT，packed 2×2 patch latents，Qwen3 文本编码器，
+`apply_chat_template(enable_thinking=False)` + 丢弃前 28 个系统前缀 token，
+`last_hidden_state`，`num_channels_latents = in_channels // 4`，
+text_ids `[0, i, i]`，img_ids `[0, row, col]`，`t / 1000` 作为 timestep。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `ovis_image_t2i_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `ovis_image_t2i_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 推理 / Sampling
+
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| base model sampling (无 LoRA) | ⬜ 未测试 | `guidance_scale=0.0` for distilled |
+| Ovis-Image + LoRA sampling | ⬜ 未测试 | |
+| CFG sampling (`guidance_scale > 1`) | ⬜ 未测试 | |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_ovis_image_t2i_vs_diffusers.py` | 与官方 `OvisImagePipeline` 对比：权重、Qwen3 embeddings、端到端输出 | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_ovis_image_t2i_fp16.yaml` | Ovis-Image 测试配置文件 | ✅ 已创建 |
+
+---
+
+## LongCat-Image T2I（`LongCatImageT2ITrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：FLUX-like MMDiT，packed 2×2 patch latents，Qwen2.5-VL 文本编码器（纯文本模式），
+prefix/suffix 模板包裹，`hidden_states[-1]` 提取内容切片，`split_quotation` 对引号文本逐字符分词，
+3D RoPE 位置编码（modality_id：text=0, image=1；img_ids offset=512），
+`guidance=None` 传给 transformer，`t / 1000` 作为 timestep。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `longcat_image_t2i_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `longcat_image_t2i_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 推理 / Sampling
+
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| base model sampling (无 LoRA) | ⬜ 未测试 | |
+| LongCat-Image + LoRA sampling | ⬜ 未测试 | |
+| CFG sampling (`guidance_scale > 1`) | ⬜ 未测试 | |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_longcat_image_t2i_vs_diffusers.py` | 与官方 `LongCatImagePipeline` 对比：权重、prefix/suffix embeddings、端到端输出 | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_longcat_image_t2i_fp16.yaml` | LongCat-Image 测试配置文件 | ✅ 已创建 |
+
+---
+
+## LongCat-Image-Edit（`LongCatImageEditTrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：FLUX-like MMDiT，packed 2×2 patch latents，Qwen2.5-VL 多模态文本编码器，
+源图像以半分辨率通过 Qwen2VLProcessor 注入 prompt（扩展图像 token），
+`hidden_states[-1][:, prefix_len:-suffix_len]`（prefix_len = `<|vision_start|>` 的位置），
+源图像以全分辨率通过 VAE 编码（使用 `mode()`，`(lat - shift) * scale`），
+`latent_model_input = cat([noisy_target, source_latents], dim=1)`（token 维度拼接），
+img_ids：目标 modality_id=1，源 modality_id=2，偏移量 = seq_len，
+model output sliced to `[:, :image_seq_len]`，`guidance=None`。
+
+数据集格式：`image`（目标/编辑后） + `control`（源/编辑前） + `prompt`（编辑指令）。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `longcat_image_edit_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `longcat_image_edit_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 推理 / Sampling
+
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| base model sampling (无 LoRA) | ⬜ 未测试 | |
+| LongCat-Image-Edit + LoRA sampling | ⬜ 未测试 | |
+| CFG sampling (`guidance_scale > 1`) | ⬜ 未测试 | |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_longcat_image_edit_vs_diffusers.py` | 与官方 `LongCatImageEditPipeline` 对比：权重、VAE源编码、多模态 embeddings、端到端输出 | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_longcat_image_edit_fp16.yaml` | LongCat-Image-Edit 测试配置文件 | ✅ 已创建 |
+
+---
+
 ## FLUX Kontext（`FluxKontextLoraTrainer`）
 
 

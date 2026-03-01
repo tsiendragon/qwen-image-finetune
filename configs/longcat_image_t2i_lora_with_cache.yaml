@@ -1,0 +1,102 @@
+# =============================================================================
+# meituan-longcat/LongCat-Image — Text-to-Image LoRA fine-tuning (with embedding cache)
+# =============================================================================
+# Fine-tunes the LongCat-Image MMDiT with LoRA adapters.
+# No control/reference image is used; the model generates images from text only.
+#
+# Model: https://huggingface.co/meituan-longcat/LongCat-Image
+# Architecture: FLUX-like MMDiT with packed 2×2 patch latents, Qwen2.5-VL text encoder
+#               with prefix/suffix template and split_quotation for OCR rendering
+#
+# Commands:
+#   Step 1 – build embedding cache:
+#     CUDA_VISIBLE_DEVICES=0 python -m qflux.main \
+#         --config configs/longcat_image_t2i_lora_with_cache.yaml --cache
+#
+#   Step 2 – train:
+#     CUDA_VISIBLE_DEVICES=0 accelerate launch \
+#         --config_file accelerate_config.yaml \
+#         -m qflux.main --config configs/longcat_image_t2i_lora_with_cache.yaml
+#
+# Dataset layout (images + captions, no control images needed):
+#   training_images/sample_001.{png,txt}
+# =============================================================================
+
+trainer: LongCatImageT2I
+
+model:
+  pretrained_model_name_or_path: "meituan-longcat/LongCat-Image"
+  # For offline use, point to a local copy:
+  # pretrained_model_name_or_path: "/your/model/dir/LongCat-Image"
+
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+
+  quantize: false
+
+data:
+  class_path: "qflux.data.dataset.ImageDataset"
+  init_args:
+    dataset_path: "/path/to/your/local/dataset"
+    # Expected layout:
+    #   training_images/sample_001.{png,txt}   ← target image + caption
+    caption_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    processor:
+      class_path: "qflux.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [1024, 1024]
+  batch_size: 1
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/path/to/output/longcat-image-t2i-lora"
+  report_to: "tensorboard"
+  tracker_project_name: "longcat_image_t2i_lora"
+
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "constant"
+  warmup_steps: 100
+
+train:
+  gradient_accumulation_steps: 4
+  max_train_steps: 5000
+  num_epochs: 10
+  checkpointing_steps: 500
+  checkpoints_total_limit: 5
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+
+cache:
+  use_cache: true
+  cache_dir: "/path/to/cache/longcat-image-t2i"
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
+
+resume: null
+
+validation:
+  enabled: false
+  steps: 500
+  max_samples: 4
