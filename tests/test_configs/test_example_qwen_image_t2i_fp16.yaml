@@ -1,0 +1,69 @@
+trainer: QwenImageT2I
+
+model:
+  pretrained_model_name_or_path: Qwen/Qwen-Image
+  quantize: false
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: gaussian
+    target_modules: [to_k, to_q, to_v, to_out.0]
+    pretrained_weight: null
+    adapter_name: lora_t2i
+
+data:
+  class_path: qflux.data.dataset.ImageDataset
+  init_args:
+    dataset_path: null
+    caption_dropout_rate: 0.0
+    processor:
+      class_path: qflux.data.preprocess.ImageProcessor
+      init_args:
+        process_type: center_crop
+        target_size: [1024, 1024]
+  batch_size: 1
+  num_workers: 1
+  shuffle: false
+
+logging:
+  output_dir: /tmp/qwen_t2i_test/
+  report_to: tensorboard
+  tracker_project_name: qwen_t2i_test
+
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: constant
+  warmup_steps: 0
+
+train:
+  gradient_accumulation_steps: 1
+  max_train_steps: 100
+  checkpointing_steps: 50
+  max_grad_norm: 1.0
+  mixed_precision: bf16
+  gradient_checkpointing: false
+
+resume: null
+
+cache:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+  cache_dir: /tmp/qwen_t2i_test/cache
+  use_cache: false
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
+
+validation:
+  enabled: false
+  steps: 50
+  max_samples: 1

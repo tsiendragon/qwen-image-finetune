@@ -136,7 +136,9 @@ Edit `accelerate_config.yaml`:
 1. Inherit from `BaseTrainer` in `src/trainer/base_trainer.py`
 2. Implement required abstract methods
 3. Add trainer import case in `src/main.py:import_trainer()`
-4. Set `train.trainer` in config YAML
+4. Add the new `TrainerKind` value to `src/qflux/data/config.py`
+5. Set `train.trainer` in config YAML
+6. **Create test scripts** (mandatory — see "Testing Requirements for New Models" below)
 
 **Cache system usage:**
 - Always run with `--cache` mode first to build embeddings cache
@@ -147,6 +149,36 @@ Edit `accelerate_config.yaml`:
 - Set `model.quantize: true` in config for FP4/FP8
 - Use pre-quantized model paths (e.g., `ovedrive/qwen-image-edit-4bit`)
 - Quantization applies to base model, LoRA adapters remain in higher precision
+
+## Testing Requirements for New Models
+
+**Every new model / trainer must ship with the following test artifacts before merging to `main`:**
+
+### 1. Test config (`tests/test_configs/`)
+Create `test_example_<model_name>_fp16.yaml` with:
+- Minimal dataset (can be `null` / a small public HF dataset)
+- `predict.devices` pointing to `cuda:0`
+- LoRA rank 16, `pretrained_weight: null`
+
+### 2. Diffusers comparison test (`tests/e2e/test_<model_name>_vs_diffusers.py`)
+Verifies our trainer matches the official diffusers pipeline **without pre-saved reference files** (the pipeline is the ground truth).  Required test cases:
+- `test_component_weights_match_pipeline` — VAE / text_encoder / transformer parameter equality
+- `test_prompt_embeddings_match_pipeline` — `encode_prompt()` output matches pipeline
+- `test_end_to_end_output_matches_pipeline` — same fixed noise + same embeddings → same decoded image (rtol ≤ 5 %)
+
+For image-editing models also include:
+- `test_vae_encoding_matches_pipeline` — `_encode_vae_image()` output matches pipeline VAE
+
+### 3. Sampling / integration test (`tests/e2e/test_<model_name>_sampling.py`) *(optional until reference data is uploaded)*
+Verifies that `setup_predict()` → `prepare_predict_batch_data()` → `prepare_embeddings()` → `sampling_from_embeddings()` → `decode_vae_latent()` runs end-to-end and produces a valid image tensor.  Can compare against a pre-saved `.pt` reference stored on HuggingFace (see `tests/resources_config.yaml`).
+
+### 4. Update `docs/training-test-status.md`
+Add a row for the new model in the relevant table, initially marked `⬜ 未测试`.
+
+**Pattern reference:**
+- Edit model test: `tests/e2e/test_qwen_image_edit_plus_vs_diffusers.py`
+- T2I model test: `tests/e2e/test_qwen_image_t2i_vs_diffusers.py`
+- Sampling test: `tests/e2e/test_qwen_image_edit_plus_sampling.py`
 
 ## Git Workflow
 
