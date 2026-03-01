@@ -614,6 +614,7 @@ class TrainerKind(str, Enum):
     SanaSprintT2I = "SanaSprintT2I"
     BriaFiboT2I = "BriaFiboT2I"
     BriaFiboEdit = "BriaFiboEdit"
+    HiDreamI1T2I = "HiDreamI1T2I"
 
 
 class TrainConfig(BaseModel):

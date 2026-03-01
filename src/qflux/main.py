@@ -79,6 +79,10 @@ def import_trainer(config: Config):
         from qflux.trainer.bria_fibo_edit_trainer import BriaFiboEditTrainer
 
         return BriaFiboEditTrainer
+    elif trainer_type == "HiDreamI1T2I":
+        from qflux.trainer.hidream_i1_t2i_trainer import HiDreamI1T2ITrainer
+
+        return HiDreamI1T2ITrainer
     else:
         raise ValueError(f"Invalid trainer type: {trainer_type}")
 
