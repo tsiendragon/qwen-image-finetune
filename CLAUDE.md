@@ -148,6 +148,21 @@ Edit `accelerate_config.yaml`:
 - Use pre-quantized model paths (e.g., `ovedrive/qwen-image-edit-4bit`)
 - Quantization applies to base model, LoRA adapters remain in higher precision
 
+## Git Workflow
+
+**Branch strategy:**
+- Push all unverified changes (new features, bug fixes, configs, docs) to the `dev` branch.
+- Do **not** push directly to `main`.
+- PRs from `dev` → `main` are created manually on GitHub by the user after training/testing has been verified.
+
+**Default push target:** `dev`
+
+```bash
+git push origin dev   # always push here unless explicitly told otherwise
+```
+
+**When to push to main:** Never directly. Only via a GitHub PR, after the user confirms verification.
+
 ## Version Management
 
 When updating versions (per `.cursor/rules/general.mdc`):
@@ -155,7 +170,7 @@ When updating versions (per `.cursor/rules/general.mdc`):
 2. Add changes to `docs/CHANGELOG.md`
 3. Update `docs/TODO.md`
 4. Update README.md if new features
-5. Commit and push changes
+5. Commit and push to `dev`
 
 ## Dataset Integration
 
