@@ -610,6 +610,8 @@ class TrainerKind(str, Enum):
     OvisImageT2I = "OvisImageT2I"
     LongCatImageT2I = "LongCatImageT2I"
     LongCatImageEdit = "LongCatImageEdit"
+    ChromaT2I = "ChromaT2I"
+    SanaSprintT2I = "SanaSprintT2I"
 
 
 class TrainConfig(BaseModel):

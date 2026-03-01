@@ -318,6 +318,74 @@ model output sliced to `[:, :image_seq_len]`，`guidance=None`。
 
 ---
 
+## Chroma T2I（`ChromaT2ITrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：FLUX-like ChromaTransformer2DModel，packed 2×2 patch latents，T5EncoderModel 文本编码器
+（google/t5-v1_1-xxl，max_length=512），`attention_mask`（bool）传给 transformer，
+text_ids 全零（FLUX 约定），img_ids `[0, row, col]`，
+`num_channels_latents = in_channels // 4`，`t / 1000` 作为 timestep，
+`guidance_scale=0.0` 默认（蒸馏/无分类器引导）。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `chroma_t2i_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `chroma_t2i_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 推理 / Sampling
+
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| base model sampling (无 LoRA) | ⬜ 未测试 | `guidance_scale=0.0` for distilled |
+| Chroma + LoRA sampling | ⬜ 未测试 | |
+| CFG sampling (`guidance_scale > 1`) | ⬜ 未测试 | |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_chroma_t2i_vs_diffusers.py` | 与官方 `ChromaPipeline` 对比：权重、T5 embeddings + attention_mask、端到端输出 | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_chroma_t2i_fp16.yaml` | Chroma 测试配置文件 | ✅ 已创建 |
+
+---
+
+## Sana Sprint T2I（`SanaSprintT2ITrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：SanaTransformer2DModel，4D latents（非 packed），AutoencoderDC（`vae_scale_factor=32`），
+Gemma2 文本编码器（max_length=300，select_index=[BOS]+最后299个 token），
+`DPMSolverMultistepScheduler`，SCM 时间步变换（`scm_t = sin(t)/(cos(t)+sin(t))`），
+`lmi = (noisy/sigma_data) * sqrt(scm_t²+(1-scm_t)²)`，SCM 一致训练目标，
+`guidance = distilled_guidance_scale * ones(B)`（蒸馏引导嵌入）。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `sana_sprint_t2i_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `sana_sprint_t2i_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 推理 / Sampling
+
+| 场景 | 状态 | 备注 |
+|------|------|------|
+| base model sampling (无 LoRA) | ⬜ 未测试 | `guidance_scale=5.0`，~20 步 DPM |
+| Sana Sprint + LoRA sampling | ⬜ 未测试 | |
+| CFG sampling (`guidance_scale > 1`) | ⬜ 未测试 | |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_sana_sprint_t2i_vs_diffusers.py` | 与官方 `SanaSprintPipeline` 对比：权重、Gemma2 embeddings + attention_mask、端到端输出（SCM 推理） | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_sana_sprint_t2i_fp16.yaml` | Sana Sprint 测试配置文件 | ✅ 已创建 |
+
+---
+
 ## FLUX Kontext（`FluxKontextLoraTrainer`）
 
 

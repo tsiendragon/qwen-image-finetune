@@ -63,6 +63,14 @@ def import_trainer(config: Config):
         from qflux.trainer.longcat_image_edit_trainer import LongCatImageEditTrainer
 
         return LongCatImageEditTrainer
+    elif trainer_type == "ChromaT2I":
+        from qflux.trainer.chroma_t2i_trainer import ChromaT2ITrainer
+
+        return ChromaT2ITrainer
+    elif trainer_type == "SanaSprintT2I":
+        from qflux.trainer.sana_sprint_t2i_trainer import SanaSprintT2ITrainer
+
+        return SanaSprintT2ITrainer
     else:
         raise ValueError(f"Invalid trainer type: {trainer_type}")
 
