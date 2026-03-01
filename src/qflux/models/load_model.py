@@ -19,14 +19,20 @@ def load_vae(pretrained_model_name_or_path, weight_dtype):
 
 
 def load_qwenvl(pretrained_model_name_or_path, weight_dtype):
+    """Load the Qwen2.5-VL text encoder.
+
+    pretrained_model_name_or_path: path to the text encoder model.
+        - For online use: "Qwen/Qwen2.5-VL-7B-Instruct" (HuggingFace model ID)
+        - For offline use: "/local/path/to/Qwen2.5-VL-7B-Instruct"
+    """
     from transformers import Qwen2_5_VLForConditionalGeneration
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        "Qwen/Qwen2.5-VL-7B-Instruct",
-        torch_dtype=weight_dtype,  # CPU 用 fp32
+        pretrained_model_name_or_path,
+        torch_dtype=weight_dtype,
         use_safetensors=True,
         attn_implementation="flash_attention_2",
-    )  # 默认就在 CPU；稳妥可再
+    )
     logging.info(f"loaded qwen_vl from {pretrained_model_name_or_path} with weight_dtype {weight_dtype}")
     return model
 

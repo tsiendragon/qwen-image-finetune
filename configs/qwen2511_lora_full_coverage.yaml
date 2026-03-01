@@ -1,0 +1,119 @@
+# =============================================================================
+# Qwen/Qwen-Image-Edit-2511 — "Full-coverage" LoRA fine-tuning
+# =============================================================================
+# This config trains LoRA adapters on ALL linear projection layers in the
+# DIT transformer (not just attention), which approximates full-parameter
+# fine-tuning while keeping the LoRA structure intact.
+#
+# NOTE ON TRUE FULL-PARAMETER FINE-TUNING:
+#   The current trainer always uses LoRA (via PEFT add_adapter). True full-
+#   parameter fine-tuning (i.e. updating ALL weights without LoRA) is not
+#   supported by config alone — it requires modifying setup_model_device_train_mode()
+#   in the trainer to remove the "only enable lora_ params" filter.
+#   This config is the closest practical alternative within the existing framework.
+#
+# Compared to the standard LoRA config:
+#   target_modules: "all-linear"  → covers attention + MLP + projection layers
+#   r: 64                         → higher rank = more expressive, more VRAM
+#   lora_alpha: 64
+#
+# VRAM: significantly more than standard LoRA. Use cache mode + gradient
+# checkpointing + batch_size=1 to reduce memory pressure.
+#
+# Commands (same as with-cache workflow):
+#   Step 1:
+#     CUDA_VISIBLE_DEVICES=0 python -m qflux.main \
+#         --config configs/qwen2511_lora_full_coverage.yaml --cache
+#   Step 2:
+#     CUDA_VISIBLE_DEVICES=0 accelerate launch \
+#         --config_file accelerate_config.yaml \
+#         -m qflux.main --config configs/qwen2511_lora_full_coverage.yaml
+# =============================================================================
+
+trainer: QwenImageEditPlus
+
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit-2511"
+  # pretrained_model_name_or_path: "/path/to/local/Qwen-Image-Edit-2511"
+  quantize: false
+  lora:
+    r: 64                             # high rank for broader coverage
+    lora_alpha: 64
+    init_lora_weights: "gaussian"
+    target_modules: "all-linear"      # all linear layers in the transformer
+    pretrained_weight: null
+
+data:
+  class_path: "qflux.data.dataset.ImageDataset"
+  init_args:
+    # ── Option A: local dataset ──────────────────────────────────────────────
+    dataset_path: "/path/to/your/local/dataset"
+
+    # ── Option B: HuggingFace dataset ───────────────────────────────────────
+    # dataset_path:
+    #   - split: train
+    #     repo_id: TsienDragon/face_segmentation_20
+
+    caption_dropout_rate: 0.05
+    prompt_image_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    cache_drop_rate: 0.1
+    processor:
+      class_path: "qflux.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [1024, 1024]
+        controls_size: [[1024, 1024]]
+  batch_size: 1
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/path/to/output/qwen2511-lora-full-coverage"
+  report_to: "tensorboard"
+  tracker_project_name: "qwen2511_lora_full_coverage"
+
+optimizer:
+  # Standard AdamW to handle larger number of LoRA params
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 0.00005                       # lower lr for full-coverage LoRA
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 100
+  num_cycles: 0.5
+  power: 1.0
+
+train:
+  gradient_accumulation_steps: 4     # accumulate to simulate larger batch
+  max_train_steps: 6000
+  num_epochs: 100
+  checkpointing_steps: 200
+  checkpoints_total_limit: 10
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+
+cache:
+  use_cache: true
+  cache_dir: "/path/to/cache/qwen2511-lora-full-coverage"
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
+
+resume: null
+
+validation:
+  enabled: false
+  steps: 200
+  max_samples: 4

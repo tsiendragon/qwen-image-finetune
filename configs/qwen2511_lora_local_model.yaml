@@ -1,0 +1,121 @@
+# =============================================================================
+# Qwen/Qwen-Image-Edit-2511 — LoRA fine-tuning with LOCAL model (fully offline)
+# =============================================================================
+# Use this when the training machine has no internet access.
+# Download the model and data on a machine with internet, then copy to the
+# training machine.
+#
+# How to download the model beforehand:
+#   pip install huggingface_hub
+#   huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
+#       --local-dir /your/model/dir/Qwen-Image-Edit-2511
+#   huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct \
+#       --local-dir /your/model/dir/Qwen2.5-VL-7B-Instruct
+#
+# NOTE: The text encoder (Qwen2.5-VL-7B-Instruct) is loaded from a hardcoded
+# path inside load_model.py. If using a local copy, also update
+# src/qflux/models/load_model.py → load_qwenvl() to point to the local path.
+# (See the TODO comment inside that file.)
+#
+# Commands (same as with-cache workflow, just no internet needed):
+#   Step 1 – build cache:
+#     CUDA_VISIBLE_DEVICES=0 python -m qflux.main \
+#         --config configs/qwen2511_lora_local_model.yaml --cache
+#
+#   Step 2 – train:
+#     CUDA_VISIBLE_DEVICES=0 accelerate launch \
+#         --config_file accelerate_config.yaml \
+#         -m qflux.main --config configs/qwen2511_lora_local_model.yaml
+# =============================================================================
+
+trainer: QwenImageEditPlus
+
+model:
+  # Point to the locally downloaded model folder:
+  pretrained_model_name_or_path: "/your/model/dir/Qwen-Image-Edit-2511"
+  # Text encoder is a separate model (Qwen2.5-VL-7B-Instruct).
+  # Set pretrained_embeddings.text_encoder to use a local copy for offline training.
+  pretrained_embeddings:
+    text_encoder: "/your/model/dir/Qwen2.5-VL-7B-Instruct"
+  quantize: false
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null           # or "/path/to/existing/lora.safetensors"
+
+data:
+  class_path: "qflux.data.dataset.ImageDataset"
+  init_args:
+    # Local dataset (required for fully offline training):
+    dataset_path: "/your/local/dataset"
+    # Expected layout:
+    #   /your/local/dataset/
+    #     training_images/
+    #       sample_001.png      ← target image to generate
+    #       sample_001.txt      ← text prompt / caption
+    #     control_images/
+    #       sample_001.png      ← control / reference image (same stem)
+    #       sample_001_mask.png ← optional edit mask
+    caption_dropout_rate: 0.05
+    prompt_image_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    cache_drop_rate: 0.1
+    processor:
+      class_path: "qflux.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [1024, 1024]
+        controls_size: [[1024, 1024]]
+  batch_size: 1
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/your/output/dir/qwen2511-lora-local"
+  report_to: "tensorboard"
+  tracker_project_name: "qwen2511_lora_local"
+
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 50
+  num_cycles: 0.5
+  power: 1.0
+
+train:
+  gradient_accumulation_steps: 1
+  max_train_steps: 6000
+  num_epochs: 100
+  checkpointing_steps: 200
+  checkpoints_total_limit: 10
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+
+cache:
+  use_cache: true
+  cache_dir: "/your/cache/dir/qwen2511-lora-local"
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
+
+resume: null
+
+validation:
+  enabled: false
+  steps: 200
+  max_samples: 4

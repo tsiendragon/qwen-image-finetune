@@ -94,9 +94,14 @@ class QwenImageEditTrainer(BaseTrainer):
 
         # Separate individual components
 
-        self.vae = load_vae("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)  # use original one
-        # same to model constructed from vae self.vae = pipe.vae
-        self.text_encoder = load_qwenvl("Qwen/Qwen-Image-Edit", weight_dtype=self.weight_dtype)  # use original one
+        self.vae = load_vae(self.config.model.pretrained_model_name_or_path, weight_dtype=self.weight_dtype)
+        # Resolve text encoder path: use pretrained_embeddings.text_encoder if set (for offline/local use),
+        # otherwise fall back to the HuggingFace model ID bundled with the pipeline.
+        _text_encoder_path = (
+            (self.config.model.pretrained_embeddings or {}).get("text_encoder")
+            or "Qwen/Qwen2.5-VL-7B-Instruct"
+        )
+        self.text_encoder = load_qwenvl(_text_encoder_path, weight_dtype=self.weight_dtype)
         logging.info(f"text_encoder device: {self.text_encoder.device}")
         # self.dit = pipe.transformer this is same as the following, verified
         from qflux.models.load_model import load_transformer

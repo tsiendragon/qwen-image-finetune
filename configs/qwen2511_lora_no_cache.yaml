@@ -1,0 +1,105 @@
+# =============================================================================
+# Qwen/Qwen-Image-Edit-2511 — LoRA fine-tuning WITHOUT embedding cache
+# =============================================================================
+# Simpler setup: no cache-build step needed. VAE and text encoder run every
+# iteration alongside the DIT transformer.
+#
+# Trade-offs vs. cache mode:
+#   - Pro:  single command, no separate cache step, less disk space needed
+#   - Con:  ~2-3x slower per iteration; VAE + text encoder must stay in GPU VRAM
+#
+#   Run:
+#     CUDA_VISIBLE_DEVICES=0 accelerate launch \
+#         --config_file accelerate_config.yaml \
+#         -m qflux.main --config configs/qwen2511_lora_no_cache.yaml
+#
+# VRAM requirement: ~50+ GB (BF16, batch_size=1) because all three models
+# (VAE, text encoder, transformer) must live in GPU memory simultaneously.
+# Use gradient_checkpointing and reduce batch_size if you run out of memory.
+# =============================================================================
+
+trainer: QwenImageEditPlus
+
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit-2511"
+  # pretrained_model_name_or_path: "/path/to/local/Qwen-Image-Edit-2511"
+  quantize: false
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+
+data:
+  class_path: "qflux.data.dataset.ImageDataset"
+  init_args:
+    # ── Option A: local dataset ──────────────────────────────────────────────
+    dataset_path: "/path/to/your/local/dataset"
+
+    # ── Option B: HuggingFace dataset ───────────────────────────────────────
+    # dataset_path:
+    #   - split: train
+    #     repo_id: TsienDragon/face_segmentation_20
+
+    caption_dropout_rate: 0.05
+    prompt_image_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}   # resolves to false → no cache
+    cache_drop_rate: 0.1
+    processor:
+      class_path: "qflux.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [1024, 1024]
+        controls_size: [[1024, 1024]]
+  batch_size: 1
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/path/to/output/qwen2511-lora-no-cache"
+  report_to: "tensorboard"
+  tracker_project_name: "qwen2511_lora_no_cache"
+
+optimizer:
+  class_path: bitsandbytes.optim.Adam8bit
+  init_args:
+    lr: 0.0001
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 50
+  num_cycles: 0.5
+  power: 1.0
+
+train:
+  gradient_accumulation_steps: 1
+  max_train_steps: 6000
+  num_epochs: 100
+  checkpointing_steps: 200
+  checkpoints_total_limit: 10
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: true
+
+cache:
+  use_cache: false                  # ← KEY DIFFERENCE: no cache
+  cache_dir: "/tmp/qwen2511-no-cache-placeholder"
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
+
+resume: null
+
+validation:
+  enabled: false
+  steps: 200
+  max_samples: 4

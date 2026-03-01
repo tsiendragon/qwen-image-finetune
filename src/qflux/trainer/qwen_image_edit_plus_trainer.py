@@ -6,7 +6,6 @@ import PIL
 import torch
 import torch.nn.functional as F  # NOQA
 from diffusers import QwenImageEditPlusPipeline
-from torch._tensor import Tensor
 
 from qflux.models.load_model import load_qwenvl, load_transformer, load_vae
 from qflux.trainer.qwen_image_edit_trainer import QwenImageEditTrainer
@@ -47,9 +46,14 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
 
         # Separate individual components
 
-        self.vae = load_vae("Qwen/Qwen-Image-Edit-2509", weight_dtype=self.weight_dtype)  # use original one
-        # same to model constructed from vae self.vae = pipe.vae
-        self.text_encoder = load_qwenvl("Qwen/Qwen-Image-Edit-2509", weight_dtype=self.weight_dtype)  # use original one
+        self.vae = load_vae(self.config.model.pretrained_model_name_or_path, weight_dtype=self.weight_dtype)
+        # Resolve text encoder path: use pretrained_embeddings.text_encoder if set (for offline/local use),
+        # otherwise fall back to the HuggingFace model ID bundled with the pipeline.
+        _text_encoder_path = (
+            (self.config.model.pretrained_embeddings or {}).get("text_encoder")
+            or "Qwen/Qwen2.5-VL-7B-Instruct"
+        )
+        self.text_encoder = load_qwenvl(_text_encoder_path, weight_dtype=self.weight_dtype)
         logging.info(f"text_encoder device: {self.text_encoder.device}")
         # self.dit = pipe.transformer this is same as the following, verified
 
@@ -199,13 +203,18 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
 
         if "negative_prompt" in batch and batch["true_cfg_scale"] > 1:
             # only for predict stage
-            negative_prompt_embeds, negative_prompt_embeds_mask, model_inputs, hidden_states = self.encode_prompt(
-                prompt=batch["negative_prompt"], image=condition_images, debug=debug
-            )
-            batch["negative_prompt_embeds_model_inputs"] = model_inputs
+            if debug:
+                negative_prompt_embeds, negative_prompt_embeds_mask, model_inputs, hidden_states = self.encode_prompt(
+                    prompt=batch["negative_prompt"], image=condition_images, debug=True
+                )
+                batch["negative_prompt_embeds_model_inputs"] = model_inputs
+                batch["negative_prompt_hidden_states"] = hidden_states
+            else:
+                negative_prompt_embeds, negative_prompt_embeds_mask = self.encode_prompt(
+                    prompt=batch["negative_prompt"], image=condition_images
+                )
             batch["negative_prompt_embeds_mask"] = negative_prompt_embeds_mask
             batch["negative_prompt_embeds"] = negative_prompt_embeds
-            batch["negative_prompt_hidden_states"] = hidden_states
 
         # get latents
         if "image" in batch:
@@ -332,7 +341,7 @@ class QwenImageEditPlusTrainer(QwenImageEditTrainer):
         img_prompt_template = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
         if isinstance(image, list):
             base_img_prompt = ""
-            for i, _ in enumerate[Tensor](image):
+            for i, _ in enumerate(image):
                 base_img_prompt += img_prompt_template.format(i + 1)
         elif image is not None:
             base_img_prompt = img_prompt_template.format(1)
