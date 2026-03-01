@@ -31,6 +31,10 @@ def import_trainer(config: Config):
         from qflux.trainer.qwen_image_edit_plus_trainer import QwenImageEditPlusTrainer
 
         return QwenImageEditPlusTrainer
+    elif trainer_type == "QwenImageT2I":
+        from qflux.trainer.qwen_image_t2i_trainer import QwenImageT2ITrainer
+
+        return QwenImageT2ITrainer
     elif trainer_type == "DreamOmni2":
         from qflux.trainer.dreamomni2_trainer import DreamOmni2Trainer
 
