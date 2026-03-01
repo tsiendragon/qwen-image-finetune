@@ -62,7 +62,7 @@ This repository provides a comprehensive framework for fine-tuning image editing
   - `data.init_args.processor.init_args.controls_pixels: [512*512]`
 But this still got limitations for the randomness of shapes used in training. Next we may add H/W buckets to support real dynamic shapes training.
 
-- **Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/spec/models/qwen_image_edit_plus.md). Refer [predict notebook](tests/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
+- **Qwen-Image-Edit-Plus (2509) Support (v2.3.0)**: Complete support for the enhanced Qwen-Image-Edit-Plus model architecture with native multi-image composition capabilities. Read here for [changes of the Qwen-Image-Edit-Plus version](docs/spec/models/qwen_image_edit_plus.md). Refer [predict notebook](tests/src/trainer/test_qwen_image_edit_plus.ipynb) for the predict example notebook. Pretrained model provided in [TsienDragon/qwen-image-edit-plus-lora-face-seg](https://huggingface.co/TsienDragon/qwen-image-edit-plus-lora-face-seg)
 
 **⚠️ Important**: Qwen-Image-Edit-Plus (2509) requires the latest version of diffusers. Please install it using:
 
@@ -689,8 +689,8 @@ images_out = pipe(prompt_image, prompt,negative_prompt="", num_inference_steps=2
 ### Multi Control
 
 ## Notebooks Tutorials
-- [Predict with Flux-Kontext](tests/trainer/test_flux_kontext_predict.ipynb)
-- [Predict with Qwen-Image-Edit](tests/trainer/test_qwen-image-edit.ipynb)
+- [Predict with Flux-Kontext](tests/src/trainer/test_flux_kontext_predict.ipynb)
+- [Predict with Qwen-Image-Edit](tests/src/trainer/test_qwen-image-edit.ipynb)
 ## Debug
 [Record of bugs encountered in `docs/debug.md`](docs/debug.md)
 
