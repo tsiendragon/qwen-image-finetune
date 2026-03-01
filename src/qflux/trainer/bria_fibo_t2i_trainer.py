@@ -144,7 +144,10 @@ class BriaFiboT2ITrainer(BaseTrainer):
     # ------------------------------------------------------------------ #
 
     def _normalize_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """Apply per-channel normalization: (latent - mean) * std.
+        """Apply per-channel normalization: (latent - mean) / std.
+
+        Matches pipeline convention: latents_std_var = 1/config.latents_std,
+        so (latent - mean) * (1/std) == (latent - mean) / std.
 
         latents: (B, C, H, W) — 4D VAE-scale latents.
         """
@@ -152,15 +155,15 @@ class BriaFiboT2ITrainer(BaseTrainer):
         std = self._latents_std.to(latents.device, dtype=latents.dtype)
         mean = mean.reshape(1, -1, 1, 1)
         std = std.reshape(1, -1, 1, 1)
-        return (latents - mean) * std
+        return (latents - mean) / std
 
     def _denormalize_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """Undo per-channel normalization: latent / std + mean."""
+        """Undo per-channel normalization: latent * std + mean."""
         mean = self._latents_mean.to(latents.device, dtype=latents.dtype)
         std = self._latents_std.to(latents.device, dtype=latents.dtype)
         mean = mean.reshape(1, -1, 1, 1)
         std = std.reshape(1, -1, 1, 1)
-        return latents / std + mean
+        return latents * std + mean
 
     # ------------------------------------------------------------------ #
     # Packing / unpacking helpers                                          #
@@ -249,6 +252,25 @@ class BriaFiboT2ITrainer(BaseTrainer):
         layers = [h.to(dtype=self.weight_dtype) for h in all_hidden]
 
         return encoder_hs, layers, attention_mask.bool()
+
+    def prepare_latents(
+        self,
+        image: torch.Tensor | None,
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Prepare noise latents and (optionally) VAE-encoded image latents."""
+        h_lat = int(height) // self.vae_scale_factor
+        w_lat = int(width) // self.vae_scale_factor
+        device = next(self.vae.parameters()).device
+        noise = randn_tensor((batch_size, num_channels_latents, h_lat, w_lat), device=device, dtype=dtype)
+        image_latents = None
+        if image is not None:
+            image_latents = self._vae_encode(image.to(device=device, dtype=dtype))
+        return noise, image_latents
 
     # ------------------------------------------------------------------ #
     # VAE                                                                  #

@@ -198,6 +198,28 @@ class ChromaT2ITrainer(BaseTrainer):
         text_ids = self._prepare_text_ids(prompt_embeds.shape[1], device=device, dtype=self.weight_dtype)
         return prompt_embeds, attention_mask.bool(), text_ids
 
+    def prepare_latents(
+        self,
+        image: torch.Tensor | None,
+        batch_size: int,
+        num_channels_latents: int,
+        height: int,
+        width: int,
+        dtype: torch.dtype,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Prepare noise latents and (optionally) VAE-encoded image latents.
+
+        Dimensions are kept divisible by 2 to support 2×2 packing.
+        """
+        h_lat = 2 * (int(height) // (self.vae_scale_factor * 2))
+        w_lat = 2 * (int(width) // (self.vae_scale_factor * 2))
+        device = next(self.vae.parameters()).device
+        noise = randn_tensor((batch_size, num_channels_latents, h_lat, w_lat), device=device, dtype=dtype)
+        image_latents = None
+        if image is not None:
+            image_latents = self._vae_encode(image.to(device=device, dtype=dtype))
+        return noise, image_latents
+
     # ------------------------------------------------------------------ #
     # VAE                                                                  #
     # ------------------------------------------------------------------ #
