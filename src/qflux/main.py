@@ -71,6 +71,14 @@ def import_trainer(config: Config):
         from qflux.trainer.sana_sprint_t2i_trainer import SanaSprintT2ITrainer
 
         return SanaSprintT2ITrainer
+    elif trainer_type == "BriaFiboT2I":
+        from qflux.trainer.bria_fibo_t2i_trainer import BriaFiboT2ITrainer
+
+        return BriaFiboT2ITrainer
+    elif trainer_type == "BriaFiboEdit":
+        from qflux.trainer.bria_fibo_edit_trainer import BriaFiboEditTrainer
+
+        return BriaFiboEditTrainer
     else:
         raise ValueError(f"Invalid trainer type: {trainer_type}")
 

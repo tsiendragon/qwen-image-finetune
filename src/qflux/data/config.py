@@ -612,6 +612,8 @@ class TrainerKind(str, Enum):
     LongCatImageEdit = "LongCatImageEdit"
     ChromaT2I = "ChromaT2I"
     SanaSprintT2I = "SanaSprintT2I"
+    BriaFiboT2I = "BriaFiboT2I"
+    BriaFiboEdit = "BriaFiboEdit"
 
 
 class TrainConfig(BaseModel):

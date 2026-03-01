@@ -352,6 +352,59 @@ text_ids 全零（FLUX 约定），img_ids `[0, row, col]`，
 
 ---
 
+## Bria FIBO T2I（`BriaFiboT2ITrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：BriaFiboTransformer2DModel，AutoencoderKLWan（5D 因果 VAE，`vae_scale_factor=16`，
+per-channel mean/std normalization），SmolLM3 文本编码器（last 2 hidden layers 拼接 → 4096-dim，
+同时传入所有层 per-layer conditioning），`FlowMatchEulerDiscreteScheduler` + dynamic shift，
+latents packed 为序列 `(B, H*W, C)`（无 2×2 packing），
+attention mask 转为 `(B, 1, seq, seq)` 矩阵（einsum + 0/-inf）。
+
+注意：`text_encoder_layers`（所有层隐状态）过大无法缓存，训练时每步重新运行文本编码器。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `bria_fibo_t2i_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `bria_fibo_t2i_lora_with_cache.yaml` | ⬜ 未测试 | 文本编码器保留在 GPU |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_bria_fibo_t2i_vs_diffusers.py` | 与官方 `BriaFiboPipeline` 对比：权重、SmolLM3 embeddings、端到端输出 | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_bria_fibo_t2i_fp16.yaml` | Bria FIBO T2I 测试配置文件 | ✅ 已创建 |
+
+---
+
+## Bria FIBO Edit（`BriaFiboEditTrainer`）
+
+新增模型支持，以下内容尚未验证。
+
+架构特点：继承 `BriaFiboT2ITrainer`，新增源图像条件：源图像 VAE 编码（`.latent_dist.mean` + 归一化）
+→ packed 序列，`img_ids[..., 0] = 1`（源图像标记），
+model input = `cat([noisy_target, source_latents], dim=1)`，
+output sliced to `[:, :target_seq_len, :]`。
+
+### 训练流程
+
+| 场景 | 配置文件 | 状态 | 备注 |
+|------|---------|------|------|
+| LoRA + embedding cache (cache 阶段) | `bria_fibo_edit_lora_with_cache.yaml --cache` | ⬜ 未测试 | |
+| LoRA + embedding cache (train 阶段) | `bria_fibo_edit_lora_with_cache.yaml` | ⬜ 未测试 | |
+
+### 自动化测试
+
+| 测试文件 | 测试内容 | 状态 |
+|---------|---------|------|
+| `tests/e2e/test_bria_fibo_edit_vs_diffusers.py` | 与官方 `BriaFiboEditPipeline` 对比：权重、VAE源编码、embeddings、端到端输出 | ⬜ 已创建，待 GPU 验证 |
+| `tests/test_configs/test_example_bria_fibo_edit_fp16.yaml` | Bria FIBO Edit 测试配置文件 | ✅ 已创建 |
+
+---
+
 ## Sana Sprint T2I（`SanaSprintT2ITrainer`）
 
 新增模型支持，以下内容尚未验证。
