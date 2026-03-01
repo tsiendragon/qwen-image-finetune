@@ -369,6 +369,7 @@ class ModelConfig(BaseModel):
     lora: LoraConfig = Field(default_factory=LoraConfig)
     quantize: bool = False
     use_vlm_prompt_enhancer: bool = False  # Enable VLM-based prompt enhancement (DreamOmni2 trainer)
+    full_finetune: bool = False  # True = train all DIT params; False = LoRA only
 
 
 # ----------------------------

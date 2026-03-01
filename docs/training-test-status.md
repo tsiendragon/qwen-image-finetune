@@ -19,6 +19,7 @@ Update this file after each test run. Add notes with GPU model, date, and any is
 | LoRA + 本地模型离线训练 (cache 阶段) | `qwen2511_lora_local_model.yaml --cache` | ⬜ 未测试 | 需提前下载模型 |
 | LoRA + 本地模型离线训练 (train 阶段) | `qwen2511_lora_local_model.yaml` | ⬜ 未测试 | |
 | 全层 LoRA (`all-linear`, r=64) | `qwen2511_lora_full_coverage.yaml` | ⬜ 未测试 | 显存占用待测 |
+| 全参数微调（无 LoRA） | `qwen2511_full_finetune.yaml` | ⬜ 未测试 | 需 ~80GB+ 显存；输出 `transformer.safetensors` |
 | 多 GPU 训练 (DDP) | 任意 2511 config + multi-GPU accelerate | ⬜ 未测试 | |
 | 从已有 LoRA checkpoint 恢复训练 | `lora.pretrained_weight` 字段 | ⬜ 未测试 | |
 

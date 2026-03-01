@@ -604,16 +604,22 @@ class BaseTrainer(ValidationMixin, ABC):
         self.setup_signal_handlers()
         self.setup_accelerator()
         self.load_model()
-        if self.config.resume is not None:
-            import glob
+        if self.config.model.full_finetune:
+            if self.config.resume is not None:
+                ckpt_file = os.path.join(self.config.resume, "transformer.safetensors")
+                self.dit.load_state_dict(safetensors.torch.load_file(ckpt_file), strict=True)
+                logging.info(f"Resumed full finetune checkpoint from {ckpt_file}")
+        else:
+            if self.config.resume is not None:
+                import glob as _glob
 
-            # add the checkpoint in lora.pretrained_weight config
-            model_files = glob.glob(os.path.join(self.config.resume, "*.safetensors"))
-            if len(model_files) > 0:
-                self.config.model.lora.pretrained_weight = model_files[0]
-            else:
-                self.config.model.lora.pretrained_weight = os.path.join(self.config.resume, LORA_FILE_BASE_NAME)
-            logging.info(f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}")
+                # add the checkpoint in lora.pretrained_weight config
+                model_files = _glob.glob(os.path.join(self.config.resume, "*.safetensors"))
+                if len(model_files) > 0:
+                    self.config.model.lora.pretrained_weight = model_files[0]
+                else:
+                    self.config.model.lora.pretrained_weight = os.path.join(self.config.resume, LORA_FILE_BASE_NAME)
+                logging.info(f"Loaded checkpoint from {self.config.model.lora.pretrained_weight}")
         if self.config.model.quantize:
             self.dit = self.quantize_model(
                 self.dit,
@@ -622,7 +628,8 @@ class BaseTrainer(ValidationMixin, ABC):
         self.dit.to("cpu")
         self.setup_validation(train_dataloader.dataset)
         self.accelerator.wait_for_everyone()
-        self.__class__.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
+        if not self.config.model.full_finetune:
+            self.__class__.load_pretrain_lora_model(self.dit, self.config, self.adapter_name)
 
         self.setup_model_device_train_mode(stage="fit", cache=self.use_cache)
         self.configure_optimizers()
@@ -824,6 +831,22 @@ class BaseTrainer(ValidationMixin, ABC):
             logging.info(f"[FSDP] Saved LoRA weights to {save_folder} (local-only, no trunk gather)")
         self.accelerator.wait_for_everyone()
 
+    def save_full_model(self, save_folder):
+        """Save full DIT transformer weights (used when full_finetune=True)."""
+        if self.accelerator is not None:
+            unwrapped_transformer = self.accelerator.unwrap_model(self.dit)
+        else:
+            unwrapped_transformer = self.dit
+        if is_compiled_module(unwrapped_transformer):
+            unwrapped_transformer = unwrapped_transformer._orig_mod
+        os.makedirs(save_folder, exist_ok=True)
+        save_path = os.path.join(save_folder, "transformer.safetensors")
+        safetensors.torch.save_file(
+            {k: v.contiguous() for k, v in unwrapped_transformer.state_dict().items()},
+            save_path,
+        )
+        logging.info(f"Saved full transformer weights to {save_path}")
+
     def save_checkpoint(self, epoch, global_step, is_last=False):
         """Save checkpoint"""
         self.fps_logger.pause()
@@ -834,7 +857,10 @@ class BaseTrainer(ValidationMixin, ABC):
         save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-{epoch}-{global_step}")
         if is_last:
             save_path = os.path.join(self.config.logging.output_dir, f"checkpoint-last-{epoch}-{global_step}-last")
-        if self.is_fsdp_enabled():
+        if self.config.model.full_finetune:
+            if self.accelerator.is_main_process:
+                self.save_full_model(save_path)
+        elif self.is_fsdp_enabled():
             os.makedirs(save_path, exist_ok=True)
             self.save_lora_fsdp(save_path, adapter_name=self.adapter_name)
         elif self.accelerator.is_main_process:

@@ -314,13 +314,14 @@ class QwenImageEditTrainer(BaseTrainer):
 
             gc.collect()
             # self.dit.to(self.accelerator.device)
-            self.dit.requires_grad_(False)
             self.dit.train()
-            for name, param in self.dit.named_parameters():
-                if "lora" in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
+            if self.config.model.full_finetune:
+                self.dit.requires_grad_(True)
+            else:
+                self.dit.requires_grad_(False)
+                for name, param in self.dit.named_parameters():
+                    if "lora" in name:
+                        param.requires_grad = True
 
         elif stage == "fit":
             # Non-cache mode: need all encoders
@@ -331,13 +332,14 @@ class QwenImageEditTrainer(BaseTrainer):
 
             self.vae.requires_grad_(False).eval()
             self.text_encoder.requires_grad_(False).eval()
-            self.dit.requires_grad_(False)
             self.dit.train()
-            for name, param in self.dit.named_parameters():
-                if "lora" in name:
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
+            if self.config.model.full_finetune:
+                self.dit.requires_grad_(True)
+            else:
+                self.dit.requires_grad_(False)
+                for name, param in self.dit.named_parameters():
+                    if "lora" in name:
+                        param.requires_grad = True
 
         elif stage == "cache":
             # Cache mode: need encoders, don't need transformer

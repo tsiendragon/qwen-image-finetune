@@ -1,0 +1,121 @@
+# =============================================================================
+# Qwen/Qwen-Image-Edit-2511 — Full Parameter Fine-tuning (no LoRA)
+# =============================================================================
+# Trains ALL transformer parameters. Produces a full model checkpoint rather
+# than a LoRA adapter file.
+#
+# VRAM requirements: ~80 GB+ (A100/H100 recommended). The transformer,
+# optimizer states, and gradients must all reside in GPU memory simultaneously.
+# Use gradient_checkpointing: true and gradient_accumulation_steps >= 4 to
+# reduce peak memory.
+#
+# Commands (same cache-then-train workflow as LoRA):
+#   Step 1 – build embedding cache:
+#     CUDA_VISIBLE_DEVICES=0 python -m qflux.main \
+#         --config configs/qwen2511_full_finetune.yaml --cache
+#
+#   Step 2 – train:
+#     CUDA_VISIBLE_DEVICES=0 accelerate launch \
+#         --config_file accelerate_config.yaml \
+#         -m qflux.main --config configs/qwen2511_full_finetune.yaml
+#
+# Resume from a checkpoint:
+#   resume: "/path/to/output/qwen2511-full/checkpoint-last-N-M-last"
+#   (The trainer will load transformer.safetensors from that folder.)
+#
+# Output: each checkpoint contains a single "transformer.safetensors" file
+# with the full transformer weights, which can be loaded directly with
+# load_transformer() or diffusers' from_pretrained().
+# =============================================================================
+
+trainer: QwenImageEditPlus
+
+model:
+  pretrained_model_name_or_path: "Qwen/Qwen-Image-Edit-2511"
+  # For offline use, point to a local copy:
+  # pretrained_model_name_or_path: "/your/model/dir/Qwen-Image-Edit-2511"
+  # pretrained_embeddings:
+  #   text_encoder: "/your/model/dir/Qwen2.5-VL-7B-Instruct"
+
+  full_finetune: true          # ← key flag: disables LoRA, trains all DIT params
+
+  quantize: false
+
+  # lora block is ignored when full_finetune=true, kept here for schema compliance
+  lora:
+    r: 16
+    lora_alpha: 16
+    init_lora_weights: "gaussian"
+    target_modules: ["to_k", "to_q", "to_v", "to_out.0"]
+    pretrained_weight: null
+
+data:
+  class_path: "qflux.data.dataset.ImageDataset"
+  init_args:
+    dataset_path: "/path/to/your/local/dataset"
+    # Expected layout:
+    #   training_images/sample_001.{png,txt}
+    #   control_images/sample_001.png
+    caption_dropout_rate: 0.05
+    prompt_image_dropout_rate: 0.05
+    cache_dir: ${cache.cache_dir}
+    use_cache: ${cache.use_cache}
+    cache_drop_rate: 0.1
+    processor:
+      class_path: "qflux.data.preprocess.ImageProcessor"
+      init_args:
+        process_type: center_crop
+        target_size: [1024, 1024]
+        controls_size: [[1024, 1024]]
+  batch_size: 1
+  num_workers: 2
+  shuffle: true
+
+logging:
+  output_dir: "/path/to/output/qwen2511-full"
+  report_to: "tensorboard"
+  tracker_project_name: "qwen2511_full_finetune"
+
+optimizer:
+  # AdamW with a lower learning rate is typical for full fine-tuning.
+  # bitsandbytes Adam8bit also works and reduces optimizer memory by ~50%.
+  class_path: bitsandbytes.optim.Adam8bit
+  init_args:
+    lr: 0.00002          # 2e-5 — lower than LoRA because all weights update
+    betas: [0.9, 0.999]
+
+lr_scheduler:
+  scheduler_type: "cosine"
+  warmup_steps: 100
+  num_cycles: 0.5
+  power: 1.0
+
+train:
+  gradient_accumulation_steps: 4   # accumulate to simulate larger batch
+  max_train_steps: 10000
+  num_epochs: 10
+  checkpointing_steps: 500
+  checkpoints_total_limit: 5
+  max_grad_norm: 1.0
+  mixed_precision: "bf16"
+  gradient_checkpointing: true      # essential for memory; reduces ~40% peak VRAM
+
+cache:
+  use_cache: true
+  cache_dir: "/path/to/cache/qwen2511-full"
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+
+predict:
+  devices:
+    vae: cuda:0
+    text_encoder: cuda:0
+    dit: cuda:0
+
+resume: null
+
+validation:
+  enabled: false
+  steps: 500
+  max_samples: 4
