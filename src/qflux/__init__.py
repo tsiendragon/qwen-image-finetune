@@ -13,5 +13,9 @@ if not os.environ.get("QFLUX_DOTENV_LOADED"):
     load_dotenv(env_path)
     os.environ["QFLUX_DOTENV_LOADED"] = "1"
     print("Environment variables loaded from .env file")
-    login(token=os.environ["HF_TOKEN"])
-    print("Logged in to Hugging Face")
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token:
+        login(token=hf_token)
+        print("Logged in to Hugging Face")
+    else:
+        print("HF_TOKEN not set, skipping Hugging Face login (offline mode)")

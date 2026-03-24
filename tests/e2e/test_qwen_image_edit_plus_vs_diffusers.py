@@ -18,6 +18,7 @@ Usage:
     pytest tests/e2e/test_qwen_image_edit_plus_vs_diffusers.py -m e2e -v
 """
 import logging
+import os
 
 import numpy as np
 import PIL.Image
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 # Model and test constants
 # ---------------------------------------------------------------------------
 
-MODEL_ID = "Qwen/Qwen-Image-Edit-2509"
+MODEL_ID = os.environ.get("QWEN_EDIT_PLUS_MODEL_PATH", "Qwen/Qwen-Image-Edit-2509")
 PROMPT = "change the hair color to dark blue"
 IMAGE_URL = "https://n.sinaimg.cn/ent/transform/775/w630h945/20201127/cee0-kentcvx8062290.jpg"
 
@@ -136,7 +137,16 @@ def diffusers_pipeline(infer_device):
 
 @pytest.fixture(scope="module")
 def raw_image() -> PIL.Image.Image:
-    return load_image(IMAGE_URL).convert("RGB")
+    local_path = os.environ.get("QWEN_TEST_IMAGE_PATH")
+    if local_path and os.path.isfile(local_path):
+        return PIL.Image.open(local_path).convert("RGB")
+    try:
+        return load_image(IMAGE_URL).convert("RGB")
+    except Exception:
+        logger.warning("Cannot download test image, generating random 512x512 image")
+        return PIL.Image.fromarray(
+            np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
+        )
 
 
 @pytest.fixture(scope="module")

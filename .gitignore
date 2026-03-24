@@ -2,7 +2,8 @@
 __pycache__/
 *.py[codz]
 *$py.class
-
+run_local.sh
+run_download_local.sh
 # C extensions
 *.so
 sub_modules/
