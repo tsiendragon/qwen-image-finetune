@@ -8,7 +8,10 @@ import PIL
 import swanlab
 import torch
 import torchvision
-import wandb
+try:
+    import wandb
+except Exception:
+    wandb = None
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from tensorboardX import SummaryWriter
