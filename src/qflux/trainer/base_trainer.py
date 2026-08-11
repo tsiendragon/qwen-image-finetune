@@ -1006,7 +1006,16 @@ class BaseTrainer(ValidationMixin, ABC):
 
             # DIFFUSERS can be loaded directly, otherwise, need to add lora first
             if lora_type != "PEFT":
-                transformer.load_lora_adapter(pretrained_weight, adapter_name=adapter_name)
+                # offline 模式下 diffusers 对本地文件路径会走 _best_guess_weight_name（需联网猜文件名）→ 崩。
+                # 本地文件必须拆成 dir + weight_name 显式传（与 infer 侧 load_lora_adapter 用法一致）。
+                if os.path.isfile(pretrained_weight):
+                    transformer.load_lora_adapter(
+                        os.path.dirname(pretrained_weight),
+                        weight_name=os.path.basename(pretrained_weight),
+                        adapter_name=adapter_name,
+                    )
+                else:
+                    transformer.load_lora_adapter(pretrained_weight, adapter_name=adapter_name)
                 logging.info(f"set_lora: {lora_type} Loaded lora from {pretrained_weight} for {adapter_name}")
             else:
                 # add lora first

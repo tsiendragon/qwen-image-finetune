@@ -39,6 +39,18 @@ class QwenImageT2ITrainer(QwenImageEditTrainer):
     def __init__(self, config):
         super().__init__(config)
 
+    def convert_img_shapes_to_latent_space(self, img_shapes):
+        """T2I override: only the target image shape is needed (no control shapes).
+        Truncates each per-sample shape list to the first entry before converting,
+        so the RoPE frequencies match the single-image latent token count.
+        """
+        t2i_shapes = []
+        for shape_per_batch in img_shapes:
+            # Keep only the first shape (target image), ignore any control shapes
+            first = shape_per_batch[:1] if isinstance(shape_per_batch, (list, tuple)) else [shape_per_batch]
+            t2i_shapes.append(first)
+        return super().convert_img_shapes_to_latent_space(t2i_shapes)
+
     def get_pipeline_class(self):
         return QwenImagePipeline
 
@@ -72,12 +84,14 @@ class QwenImageT2ITrainer(QwenImageEditTrainer):
             (self.config.model.pretrained_embeddings or {}).get("text_encoder")
             or self.config.model.pretrained_model_name_or_path
         )
-        # Load only the LLM backbone (not the VL processor version)
-        from transformers import AutoModelForCausalLM
+        # Load text encoder backbone. Use AutoModel to support both pure CausalLM
+        # (original Qwen/Qwen-Image) and VL variants (Qwen2_5_VL) stored locally.
+        from transformers import AutoModel
 
-        self.text_encoder = AutoModelForCausalLM.from_pretrained(
+        self.text_encoder = AutoModel.from_pretrained(
             _text_encoder_path,
             torch_dtype=self.weight_dtype,
+            trust_remote_code=True,
         )
         logging.info(f"text_encoder device: {self.text_encoder.device}")
 
@@ -251,6 +265,9 @@ class QwenImageT2ITrainer(QwenImageEditTrainer):
             h_img = batch.get("height", batch["image"].shape[3] if "image" in batch else None)
             w_img = batch.get("width", batch["image"].shape[4] if "image" in batch else None)
             img_shapes = [[(3, h_img, w_img)]] * (batch["image"].shape[0] if "image" in batch else 1)
+        # T2I has no control: keep only the FIRST shape per sample (target image only).
+        # The dataset may include control shapes if a control_images dir exists.
+        img_shapes = [shapes[:1] if isinstance(shapes, (list, tuple)) else shapes for shapes in img_shapes]
         img_shapes = self.convert_img_shapes_to_latent_space(img_shapes)
         batch["img_shapes"] = img_shapes
 
@@ -329,6 +346,10 @@ class QwenImageT2ITrainer(QwenImageEditTrainer):
             sigmas = self._get_sigmas(timesteps, n_dim=image_latents.ndim, dtype=image_latents.dtype)
             noisy_model_input = (1.0 - sigmas) * image_latents + sigmas * noise
             txt_seq_lens = prompt_embeds_mask.sum(dim=1).tolist()
+
+        # Clone to convert inference tensors (created inside no_grad) to regular
+        # autograd tensors — required for gradient_checkpointing compatibility.
+        noisy_model_input = noisy_model_input.clone()
 
         # T2I: hidden_states is just the noisy target latent (no control concat)
         model_pred = self.dit(
