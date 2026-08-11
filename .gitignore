@@ -99,6 +99,7 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+run_download_local.sh
 # IPython
 profile_default/
 ipython_config.py
